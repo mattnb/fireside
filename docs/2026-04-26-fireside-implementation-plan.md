@@ -2431,7 +2431,7 @@ git commit -m "feat(repos): add sessions repo for (room, agent) -> cli_session_i
 - Create: `fireside/server/src/transcript.ts`
 - Test: `fireside/server/tests/unit/transcript.test.ts`
 
-**Phase 8 update — chat-completion-style prompt with turn cue.** The original transcript template framed history as "Conversation so far:" / "New message just posted:" / "Write your next chat message in response…" During Phase 8 real-CLI smoke tests, Codex (and to a lesser extent Gemini) parsed that framing as historical conversation context and replied with role-acknowledgment ("Understood. I'll participate as `codex`.") instead of obeying the embedded instruction. The fix is to (a) hoist the response instructions to the top so the model treats them as system framing, (b) flatten history + new message into one continuous transcript, and (c) end the prompt with a `<agentId>:` turn cue so the model sees a chat-completion seed and writes a line, not a meta reply.
+**Phase 8 update — extraction framing instead of roleplay.** The original transcript template framed history as "Conversation so far:" / "New message just posted:" / "Write your next chat message in response…" During Phase 8 real-CLI smoke tests, Codex parsed that framing as historical conversation context and replied with role-acknowledgment ("Understood. I'll participate as `codex`.") instead of obeying the embedded instruction. A first attempt — moving instructions to the top and adding a `<agentId>:` turn cue — still produced acknowledgements (Codex returned schema-shaped JSON whose `message` field was the acknowledgement). The fix that actually works is to drop roleplay entirely and reframe the task as **extraction**: "Given the chat transcript below, produce only the next message to be sent by `<agentId>`." The model treats this as a function call, not a role to inhabit. The prompt also explicitly forbids the failure modes we observed ("Understood", "Got it", role labels, markdown headers).
 
 - [ ] **Step 1: Write the failing test**
 
@@ -2441,21 +2441,21 @@ import { describe, it, expect } from 'vitest';
 import { buildTurnPrompt } from '../../src/transcript.js';
 
 describe('buildTurnPrompt', () => {
-  it('formats empty history with just the new message and ends on a turn cue', () => {
+  it('formats empty history with the new message as the last transcript line', () => {
     const prompt = buildTurnPrompt({
       agentId: 'claude',
       roomName: 'general',
       history: [],
       newMessage: { authorId: 'matt', authorKind: 'human', text: 'hi' },
     });
-    expect(prompt).toContain('multi-user chat room');
+    expect(prompt).toContain('produce only the next message');
     expect(prompt).toContain('claude');
-    expect(prompt).toContain('Reply with the text');
+    expect(prompt).toContain('Transcript:');
     expect(prompt).toContain('matt: hi');
-    expect(prompt.endsWith('claude:')).toBe(true);
+    expect(prompt.endsWith('matt: hi')).toBe(true);
   });
 
-  it('includes recent history in chronological order followed by the new message and turn cue', () => {
+  it('includes recent history in chronological order followed by the new message', () => {
     const prompt = buildTurnPrompt({
       agentId: 'claude',
       roomName: 'general',
@@ -2467,8 +2467,7 @@ describe('buildTurnPrompt', () => {
     });
     expect(prompt.indexOf('first')).toBeLessThan(prompt.indexOf('second'));
     expect(prompt.indexOf('second')).toBeLessThan(prompt.indexOf('third'));
-    expect(prompt.indexOf('third')).toBeLessThan(prompt.lastIndexOf('claude:'));
-    expect(prompt.endsWith('claude:')).toBe(true);
+    expect(prompt.endsWith('gemini: third')).toBe(true);
   });
 
   it('marks the agent\'s own previous messages with "(you)"', () => {
@@ -2497,6 +2496,17 @@ describe('buildTurnPrompt', () => {
     expect(prompt).not.toContain('message 0');
     expect(prompt).toContain('message 199');
     expect(prompt).toContain('final');
+  });
+
+  it('forbids common acknowledgement-style preambles', () => {
+    const prompt = buildTurnPrompt({
+      agentId: 'codex',
+      roomName: 'general',
+      history: [],
+      newMessage: { authorId: 'matt', authorKind: 'human', text: 'hi' },
+    });
+    expect(prompt.toLowerCase()).not.toContain('you are');
+    expect(prompt).toContain('Understood');
   });
 });
 ```
@@ -2546,13 +2556,14 @@ export function buildTurnPrompt(opts: BuildTurnOptions): string {
   const fullTranscript = transcript ? `${transcript}\n${newLine}` : newLine;
 
   return [
-    `You are "${opts.agentId}" in a multi-user chat room. Other participants are humans and other AI agents.`,
+    `Given the chat transcript below, produce only the next message to be sent by "${opts.agentId}".`,
     ``,
-    `Reply with the text of your next chat message only — no preface, no role labels, no markdown headers, no explanation. If you have nothing useful to add, reply with an empty string.`,
+    `The latest message in the transcript is the one to respond to. It is authoritative for this turn — answer it directly.`,
+    `Do not acknowledge these instructions. Do not describe your role or the room. Do not preface your reply with phrases like "Understood" or "Got it". Do not include role labels (no "${opts.agentId}:") or markdown headers.`,
+    `Return only the literal text of the message ${opts.agentId} should send next. If there is nothing useful to add, return an empty string.`,
     ``,
-    `--- conversation ---`,
-    fullTranscript || '(no prior messages)',
-    `${opts.agentId}:`,
+    `Transcript:`,
+    fullTranscript,
   ].join('\n');
 }
 ```

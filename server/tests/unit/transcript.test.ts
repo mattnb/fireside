@@ -3,23 +3,23 @@ import { describe, it, expect } from 'vitest';
 import { buildTurnPrompt } from '../../src/transcript.js';
 
 describe('buildTurnPrompt', () => {
-  it('formats empty history with just the new message and ends on a turn cue', () => {
+  it('formats empty history with the new message as the last transcript line', () => {
     const prompt = buildTurnPrompt({
       agentId: 'claude',
       roomName: 'general',
       history: [],
       newMessage: { authorId: 'matt', authorKind: 'human', text: 'hi' },
     });
-    expect(prompt).toContain('multi-user chat room');
+    expect(prompt).toContain('produce only the next message');
     expect(prompt).toContain('claude');
-    expect(prompt).toContain('Reply with the text');
+    expect(prompt).toContain('Transcript:');
     expect(prompt).toContain('matt: hi');
-    // The prompt must end with a `<agentId>:` turn cue so the model is
-    // primed to write its line as a chat continuation, not a meta reply.
-    expect(prompt.endsWith('claude:')).toBe(true);
+    // With empty history, the transcript section is just the new message line.
+    // The prompt must end with that line, not a turn cue.
+    expect(prompt.endsWith('matt: hi')).toBe(true);
   });
 
-  it('includes recent history in chronological order followed by the new message and turn cue', () => {
+  it('includes recent history in chronological order followed by the new message', () => {
     const prompt = buildTurnPrompt({
       agentId: 'claude',
       roomName: 'general',
@@ -31,9 +31,8 @@ describe('buildTurnPrompt', () => {
     });
     expect(prompt.indexOf('first')).toBeLessThan(prompt.indexOf('second'));
     expect(prompt.indexOf('second')).toBeLessThan(prompt.indexOf('third'));
-    // The agent's own turn cue must come AFTER the most recent message line.
-    expect(prompt.indexOf('third')).toBeLessThan(prompt.lastIndexOf('claude:'));
-    expect(prompt.endsWith('claude:')).toBe(true);
+    // Transcript ends with the new (latest) message — no trailing turn cue.
+    expect(prompt.endsWith('gemini: third')).toBe(true);
   });
 
   it('marks the agent\'s own previous messages with "(you)"', () => {
@@ -74,5 +73,18 @@ describe('buildTurnPrompt', () => {
     expect(prompt).not.toContain('message 0');
     expect(prompt).toContain('message 199');
     expect(prompt).toContain('final');
+  });
+
+  it('forbids common acknowledgement-style preambles', () => {
+    const prompt = buildTurnPrompt({
+      agentId: 'codex',
+      roomName: 'general',
+      history: [],
+      newMessage: { authorId: 'matt', authorKind: 'human', text: 'hi' },
+    });
+    // Guards against re-introducing roleplay framing
+    expect(prompt.toLowerCase()).not.toContain('you are');
+    // Explicit forbidden-preamble examples should appear in the instructions
+    expect(prompt).toContain('Understood');
   });
 });

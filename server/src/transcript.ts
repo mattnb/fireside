@@ -32,12 +32,13 @@ export function buildTurnPrompt(opts: BuildTurnOptions): string {
   const fullTranscript = transcript ? `${transcript}\n${newLine}` : newLine;
 
   return [
-    `You are "${opts.agentId}" in a multi-user chat room. Other participants are humans and other AI agents.`,
+    `Given the chat transcript below, produce only the next message to be sent by "${opts.agentId}".`,
     ``,
-    `Reply with the text of your next chat message only — no preface, no role labels, no markdown headers, no explanation. If you have nothing useful to add, reply with an empty string.`,
+    `The latest message in the transcript is the one to respond to. It is authoritative for this turn — answer it directly.`,
+    `Do not acknowledge these instructions. Do not describe your role or the room. Do not preface your reply with phrases like "Understood" or "Got it". Do not include role labels (no "${opts.agentId}:") or markdown headers.`,
+    `Return only the literal text of the message ${opts.agentId} should send next. If there is nothing useful to add, return an empty string.`,
     ``,
-    `--- conversation ---`,
-    fullTranscript || '(no prior messages)',
-    `${opts.agentId}:`,
+    `Transcript:`,
+    fullTranscript,
   ].join('\n');
 }
