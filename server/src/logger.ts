@@ -1,9 +1,12 @@
 // server/src/logger.ts
 import pino, { type LoggerOptions } from 'pino';
 
+const defaultLevel =
+  process.env.LOG_LEVEL ?? (process.env.NODE_ENV === 'test' ? 'silent' : 'info');
+
 const options: LoggerOptions = {
-  level: process.env.LOG_LEVEL ?? 'info',
-  ...(process.env.NODE_ENV === 'production'
+  level: defaultLevel,
+  ...(process.env.NODE_ENV === 'production' || process.env.NODE_ENV === 'test'
     ? {}
     : {
         transport: {
