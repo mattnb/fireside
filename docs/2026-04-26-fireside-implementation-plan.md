@@ -3550,6 +3550,8 @@ node scripts/smoke-test.cjs
 
 Expected: 3 lines, all `OK`. If any line is `WRONG` or `FAIL`, that adapter's `parseOutput` does not match the actual CLI output. Open the corresponding fixture, compare against the failure stdout, and update the adapter constants (e.g. `RESULT_FIELD` in `claude.ts`).
 
+When the smoke test fails for a specific adapter, use `scripts/debug-agent.cjs` to capture the raw CLI output for that agent in isolation: `node scripts/debug-agent.cjs <claude|codex|gemini> "<message>"`. The script invokes the CLI through the same `runSubprocess` + registry path the broker uses, builds the prompt via `buildTurnPrompt` (so it's byte-for-byte what the broker would send), and dumps the exact prompt, argv, raw stdout, raw stderr, exit code, timed-out flag, and parse result. Run it before changing any adapter constants — it's the only way to see what the CLI is actually emitting versus what the parser expects.
+
 - [ ] **Step 3: End-to-end UI verification**
 
 Start the broker (`npm run dev`), open the UI, post `@claude reply with exactly: pong`. Verify Claude replies with `pong` within 60s. Repeat for `@codex` and `@gemini`. Then post `who is here?` (no mention) and verify all three agents reply (the broker fans out to room agents excluding the author).
