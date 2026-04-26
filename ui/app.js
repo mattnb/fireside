@@ -16,6 +16,7 @@ const newRoomBtn = $('#new-room-btn');
 const modal = $('#modal');
 const newRoomForm = $('#new-room-form');
 const newRoomName = $('#new-room-name');
+const membersBody = $('#members-body');
 
 const KNOWN_AGENTS = ['claude', 'codex', 'gemini'];
 const AVATAR_LETTER = { claude: 'C', codex: 'X', gemini: 'G' };
@@ -24,6 +25,9 @@ let rooms = [];
 let currentRoomId = null;
 let ws = null;
 let lastMessageAuthor = null;
+/* per-room state used to render the members panel */
+const roomHumans = new Map(); // roomId -> Set of human authorIds
+const thinking = new Set();   // agent ids currently dispatched in current room
 
 /* ---------- helpers ---------- */
 
@@ -167,12 +171,14 @@ async function loadRooms() {
     selectRoom(rooms[0].id);
   } else {
     renderChannelHeader(rooms.find((rm) => rm.id === currentRoomId) || null);
+    renderMembers();
   }
 }
 
 async function selectRoom(roomId) {
   if (!roomId || !rooms.find((r) => r.id === roomId)) return;
   currentRoomId = roomId;
+  thinking.clear();
   renderRoomList();
   const room = rooms.find((r) => r.id === roomId);
   renderChannelHeader(room);
@@ -186,11 +192,20 @@ async function selectRoom(roomId) {
     /* swallow — empty state will show */
   }
   messageList.innerHTML = '';
+  // Reset & rebuild humans set from history before rendering, so the members
+  // panel reflects the full known cast on first render.
+  roomHumans.set(roomId, new Set());
+  for (const m of messages) {
+    if (m.authorKind === 'human') roomHumans.get(roomId).add(m.authorId);
+  }
+  // Always include the active local user.
+  if (authorInput.value) roomHumans.get(roomId).add(authorInput.value);
   if (messages.length === 0) {
     showEmptyState(room);
   } else {
     for (const m of messages) appendMessage(m);
   }
+  renderMembers();
   if (ws && ws.readyState === WebSocket.OPEN) {
     ws.send(JSON.stringify({ type: 'subscribe', roomId }));
   }
@@ -203,6 +218,117 @@ function showLoading() {
   li.style.color = 'var(--text-faint)';
   li.textContent = 'loading…';
   messageList.appendChild(li);
+}
+
+/* ---------- members panel ---------- */
+
+function renderMembers() {
+  membersBody.innerHTML = '';
+  const room = rooms.find((r) => r.id === currentRoomId);
+  if (!room) {
+    const empty = document.createElement('div');
+    empty.className = 'members__empty';
+    empty.textContent = 'no room selected';
+    membersBody.appendChild(empty);
+    return;
+  }
+
+  /* agents section */
+  const agentsGroup = document.createElement('section');
+  agentsGroup.className = 'members__group';
+  const agentsHead = document.createElement('header');
+  agentsHead.className = 'members__group-head';
+  agentsHead.innerHTML = `<span>agents</span><span class="members__group-head__count">${room.agents.length}</span>`;
+  agentsGroup.appendChild(agentsHead);
+  if (room.agents.length === 0) {
+    const empty = document.createElement('div');
+    empty.className = 'members__empty';
+    empty.textContent = 'no agents in this room';
+    agentsGroup.appendChild(empty);
+  } else {
+    for (const id of room.agents) {
+      agentsGroup.appendChild(memberRow({ kind: 'agent', id }));
+    }
+  }
+  membersBody.appendChild(agentsGroup);
+
+  /* humans section */
+  const humans = Array.from(roomHumans.get(currentRoomId) || []);
+  // Make sure the active local user is represented even if they haven't posted.
+  if (authorInput.value && !humans.includes(authorInput.value)) {
+    humans.push(authorInput.value);
+  }
+  // Stable ordering: alphabetical, with self bubbled to the top.
+  humans.sort((a, b) => a.localeCompare(b));
+  const self = authorInput.value;
+  if (self && humans.includes(self)) {
+    humans.splice(humans.indexOf(self), 1);
+    humans.unshift(self);
+  }
+
+  const humansGroup = document.createElement('section');
+  humansGroup.className = 'members__group';
+  const humansHead = document.createElement('header');
+  humansHead.className = 'members__group-head';
+  humansHead.innerHTML = `<span>humans</span><span class="members__group-head__count">${humans.length}</span>`;
+  humansGroup.appendChild(humansHead);
+  if (humans.length === 0) {
+    const empty = document.createElement('div');
+    empty.className = 'members__empty';
+    empty.textContent = 'just embers and bots';
+    humansGroup.appendChild(empty);
+  } else {
+    for (const id of humans) {
+      humansGroup.appendChild(memberRow({ kind: 'human', id, isSelf: id === self }));
+    }
+  }
+  membersBody.appendChild(humansGroup);
+}
+
+function memberRow({ kind, id, isSelf }) {
+  const row = document.createElement('div');
+  row.className = 'member';
+  row.dataset.id = id;
+  row.dataset.kind = kind;
+  row.appendChild(avatarFor(kind, id));
+
+  const info = document.createElement('div');
+  info.className = 'member__info';
+
+  const nameEl = document.createElement('span');
+  nameEl.className = 'member__name';
+  nameEl.textContent = id;
+  if (isSelf) {
+    const tag = document.createElement('span');
+    tag.className = 'member__you';
+    tag.textContent = 'you';
+    nameEl.appendChild(tag);
+  }
+  info.appendChild(nameEl);
+
+  const status = document.createElement('span');
+  status.className = 'member__status';
+  const dot = document.createElement('span');
+  dot.className = 'dot';
+  let label;
+  if (kind === 'agent') {
+    if (thinking.has(id)) {
+      dot.classList.add('dot--thinking');
+      label = 'thinking…';
+    } else {
+      dot.classList.add('dot--online');
+      label = 'ready';
+    }
+  } else {
+    dot.classList.add(isSelf ? 'dot--online' : 'dot--idle');
+    label = isSelf ? 'connected' : 'around';
+  }
+  status.appendChild(dot);
+  status.appendChild(document.createTextNode(label));
+  info.appendChild(status);
+
+  row.appendChild(info);
+  return row;
 }
 
 function showEmptyState(room) {
@@ -224,6 +350,33 @@ function appendMessage(msg) {
   // Drop empty-state on first real message
   const empty = messageList.querySelector('.empty-state');
   if (empty) empty.remove();
+
+  // Track membership and thinking state derived from the message stream.
+  if (msg.roomId === currentRoomId) {
+    if (msg.authorKind === 'human') {
+      const room = rooms.find((r) => r.id === msg.roomId);
+      if (!roomHumans.has(msg.roomId)) roomHumans.set(msg.roomId, new Set());
+      roomHumans.get(msg.roomId).add(msg.authorId);
+      // Human just spoke — agents in this room are about to be dispatched.
+      if (room) for (const a of room.agents) thinking.add(a);
+      renderMembers();
+    } else if (msg.authorKind === 'agent') {
+      // Agent finished — clear its thinking state.
+      thinking.delete(msg.authorId);
+      renderMembers();
+    } else if (msg.authorKind === 'system') {
+      // A system failure message about an agent ('claude failed: ...') means
+      // that agent's turn ended without a successful reply — clear thinking.
+      const failed = /^\(([a-z]+) failed/i.exec(msg.text);
+      if (failed && KNOWN_AGENTS.includes(failed[1])) {
+        thinking.delete(failed[1]);
+      } else {
+        // Unknown system message — clear all to avoid sticky spinners.
+        thinking.clear();
+      }
+      renderMembers();
+    }
+  }
 
   const li = document.createElement('li');
   li.className = 'msg';
@@ -309,6 +462,12 @@ function setAuthor(name) {
   authorInput.value = name;
   meAvatar.textContent = (name || '?').slice(0, 1).toUpperCase();
   localStorage.setItem('fireside.author', name);
+  // Reflect the rename in the members panel of the current room.
+  if (currentRoomId) {
+    if (!roomHumans.has(currentRoomId)) roomHumans.set(currentRoomId, new Set());
+    roomHumans.get(currentRoomId).add(name);
+    renderMembers();
+  }
 }
 
 setAuthor(localStorage.getItem('fireside.author') || 'matt');
