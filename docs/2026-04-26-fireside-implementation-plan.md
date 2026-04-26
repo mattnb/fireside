@@ -587,6 +587,7 @@ describe('killTree', () => {
       stdio: ['ignore', 'pipe', 'inherit'],
       windowsHide: true,
     });
+    proc.catch(() => {}); // attach immediately so kill-induced rejection is handled
     let firstLine = '';
     await new Promise<void>((resolve) => {
       proc.stdout!.on('data', (b: Buffer) => {
@@ -594,7 +595,8 @@ describe('killTree', () => {
         if (firstLine.includes('\n')) resolve();
       });
     });
-    const { parent, child } = JSON.parse(firstLine.split('\n')[0]);
+    // `[0]!` is required because `noUncheckedIndexedAccess` typed `split()[0]` as `string | undefined`.
+    const { parent, child } = JSON.parse(firstLine.split('\n')[0]!);
     expect(parent).toBeGreaterThan(0);
     expect(child).toBeGreaterThan(0);
 
@@ -603,9 +605,6 @@ describe('killTree', () => {
 
     expect(await isPidAlive(parent)).toBe(false);
     expect(await isPidAlive(child)).toBe(false);
-
-    // Drain any error from the killed proc
-    proc.catch(() => {});
   }, 20_000);
 
   it('isPidAlive returns false for a non-existent pid', async () => {
@@ -770,9 +769,21 @@ Expected: FAIL — module not found.
 
 ```ts
 // server/src/windows/spawn.ts
-import { execa, type ExecaError, type ResultPromise } from 'execa';
+import path from 'node:path';
+import { execa, type ExecaError } from 'execa';
 import { killTree } from './tree-kill.js';
 import { normalizeLineEndings } from './encoding.js';
+
+function shouldUseShell(command: string): boolean {
+  if (process.platform !== 'win32') return false;
+  // Bare command names ('claude', 'codex') need shell:true so cmd.exe resolves
+  // PATHEXT to find their .cmd shims. Absolute or path-qualified commands must
+  // bypass the shell — cmd.exe word-splits unquoted paths-with-spaces like
+  // `C:\Program Files\nodejs\node.exe`.
+  if (path.isAbsolute(command)) return false;
+  if (command.includes('/') || command.includes('\\')) return false;
+  return true;
+}
 
 export class SubprocessTimeoutError extends Error {
   constructor(public command: string, public timeoutMs: number) {
@@ -809,18 +820,26 @@ export async function runSubprocess(opts: RunOptions): Promise<RunResult> {
     ...process.env,
     ...opts.env,
   };
-  const child: ResultPromise = execa(opts.command, opts.args ?? [], {
-    cwd: opts.cwd,
+  const child = execa(opts.command, opts.args ?? [], {
+    // Conditional spread: TypeScript's `exactOptionalPropertyTypes` rejects
+    // `cwd: undefined` because execa types `cwd` as `string` (not `string | undefined`).
+    ...(opts.cwd !== undefined ? { cwd: opts.cwd } : {}),
     env,
     encoding: 'utf8',
     windowsHide: true,
-    // shell: true is required so that Windows resolves `claude.cmd`/`codex.cmd`/`gemini.cmd`
-    // via PATHEXT. execa with shell:true also handles arg quoting.
-    shell: process.platform === 'win32',
+    // shell:true is required on Windows so cmd.exe resolves `claude.cmd`/`codex.cmd`/`gemini.cmd`
+    // via PATHEXT. But path-qualified commands (e.g. `process.execPath` in tests, or any
+    // absolute path) must bypass the shell because cmd.exe word-splits unquoted
+    // paths-with-spaces like `C:\Program Files\nodejs\node.exe`.
+    shell: shouldUseShell(opts.command),
     stdin: 'pipe',
     stdout: 'pipe',
     stderr: 'pipe',
     reject: false,
+    // execa strips trailing newlines by default. We want byte-faithful capture
+    // (callers may parse line-delimited or trailing-newline-sensitive output),
+    // and our own normalizeLineEndings handles CRLF→LF.
+    stripFinalNewline: false,
     // execa's own timeout uses SIGTERM which is unreliable on Windows for .cmd
     // shims. We manage our own timer + tree-kill.
   });
