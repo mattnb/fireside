@@ -15,9 +15,25 @@ function shouldUseShell(command: string): boolean {
 }
 
 export class SubprocessTimeoutError extends Error {
-  constructor(public command: string, public timeoutMs: number) {
+  constructor(
+    public command: string,
+    public timeoutMs: number,
+    public stdout: string = '',
+    public stderr: string = '',
+  ) {
     super(`subprocess timed out after ${timeoutMs}ms: ${command}`);
     this.name = 'SubprocessTimeoutError';
+  }
+}
+
+export class SubprocessSpawnError extends Error {
+  constructor(
+    public command: string,
+    public override cause: unknown,
+  ) {
+    const causeMsg = cause instanceof Error ? cause.message : String(cause);
+    super(`failed to spawn subprocess: ${command} — ${causeMsg}`);
+    this.name = 'SubprocessSpawnError';
   }
 }
 
@@ -39,6 +55,28 @@ export interface RunResult {
 
 const DEFAULT_TIMEOUT = 120_000;
 
+/**
+ * True if the error from execa indicates the child process never started
+ * (ENOENT, EACCES, invalid cwd, etc.). A real run that exited non-zero still
+ * populates `exitCode` with a number; a spawn failure leaves `exitCode`
+ * undefined and surfaces the underlying syscall failure on `code` (or on
+ * `cause.code`). On Windows, execa's auto-cmd.exe wrapping can mask "command
+ * not recognized" as a real exit-1 with stderr — those are NOT spawn failures,
+ * they are actual cmd.exe runs that returned an error code.
+ */
+function isSpawnFailure(err: ExecaError): boolean {
+  if (typeof err.exitCode === 'number') return false;
+  const errCode = (err as ExecaError & { code?: unknown }).code;
+  if (typeof errCode === 'string') return true;
+  const cause = (err as ExecaError & { cause?: { code?: unknown } }).cause;
+  if (cause && typeof cause.code === 'string') return true;
+  return (
+    err.exitCode === undefined &&
+    (err.stdout === undefined || err.stdout === '') &&
+    (err.stderr === undefined || err.stderr === '')
+  );
+}
+
 export async function runSubprocess(opts: RunOptions): Promise<RunResult> {
   const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT;
   const env = {
@@ -54,20 +92,12 @@ export async function runSubprocess(opts: RunOptions): Promise<RunResult> {
     env,
     encoding: 'utf8',
     windowsHide: true,
-    // shell:true is required on Windows so cmd.exe resolves `claude.cmd`/`codex.cmd`/`gemini.cmd`
-    // via PATHEXT. But path-qualified commands (e.g. process.execPath) must bypass the shell
-    // because cmd.exe word-splits unquoted paths-with-spaces like `C:\Program Files\nodejs\node.exe`.
     shell: shouldUseShell(opts.command),
     stdin: 'pipe',
     stdout: 'pipe',
     stderr: 'pipe',
     reject: false,
-    // execa strips trailing newlines by default. We want byte-faithful capture
-    // (callers may parse line-delimited or trailing-newline-sensitive output),
-    // and our own normalizeLineEndings handles CRLF→LF.
     stripFinalNewline: false,
-    // execa's own timeout uses SIGTERM which is unreliable on Windows for .cmd
-    // shims. We manage our own timer + tree-kill.
   });
 
   // Write stdin and close it (EOF).
@@ -76,8 +106,12 @@ export async function runSubprocess(opts: RunOptions): Promise<RunResult> {
     child.stdin.end();
   }
 
+  let completed = false;
   let timedOut = false;
   const timer = setTimeout(async () => {
+    // Race guard: if the child already finished and we're just waiting on the
+    // event loop to clear the timer, don't flip timedOut and don't kill.
+    if (completed) return;
     timedOut = true;
     if (child.pid) {
       try {
@@ -88,23 +122,40 @@ export async function runSubprocess(opts: RunOptions): Promise<RunResult> {
     }
   }, timeoutMs);
 
-  let result;
+  let result: ExecaError | Awaited<typeof child> | undefined;
   try {
     result = await child;
   } catch (err) {
     result = err as ExecaError;
-  } finally {
-    clearTimeout(timer);
+  }
+  completed = true;
+  clearTimeout(timer);
+
+  // C1: distinguish a real run-with-non-zero-exit from a complete failure to
+  // launch the binary (ENOENT etc). The latter must surface as a
+  // SubprocessSpawnError so callers don't mistake "never ran" for "ran cleanly
+  // with no output". Don't classify timeouts as spawn errors.
+  if (result instanceof Error && isSpawnFailure(result as ExecaError) && !timedOut) {
+    throw new SubprocessSpawnError(opts.command, result);
   }
 
+  // I1: pre-compute normalized stdout/stderr so the timeout error can carry
+  // whatever we managed to capture before the child was killed.
+  const stdout = normalizeLineEndings(
+    result && typeof result.stdout === 'string' ? result.stdout : '',
+  );
+  const stderr = normalizeLineEndings(
+    result && typeof result.stderr === 'string' ? result.stderr : '',
+  );
+
   if (timedOut) {
-    throw new SubprocessTimeoutError(opts.command, timeoutMs);
+    throw new SubprocessTimeoutError(opts.command, timeoutMs, stdout, stderr);
   }
 
   return {
-    stdout: normalizeLineEndings(typeof result.stdout === 'string' ? result.stdout : ''),
-    stderr: normalizeLineEndings(typeof result.stderr === 'string' ? result.stderr : ''),
-    exitCode: typeof result.exitCode === 'number' ? result.exitCode : null,
+    stdout,
+    stderr,
+    exitCode: result && typeof result.exitCode === 'number' ? result.exitCode : null,
     timedOut: false,
   };
 }
