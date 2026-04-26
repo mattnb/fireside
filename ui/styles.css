@@ -1,0 +1,19 @@
+:root { color-scheme: light dark; }
+* { box-sizing: border-box; }
+body { font-family: system-ui, -apple-system, Segoe UI, sans-serif; margin: 0; height: 100vh; display: flex; flex-direction: column; }
+header { padding: .75rem 1rem; border-bottom: 1px solid #8884; display: flex; align-items: center; justify-content: space-between; gap: 1rem; }
+h1 { margin: 0; font-size: 1rem; }
+main { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+#message-list { flex: 1; list-style: none; margin: 0; padding: 1rem; overflow-y: auto; display: flex; flex-direction: column; gap: .5rem; }
+.msg { padding: .4rem .6rem; border-radius: .4rem; max-width: 65ch; line-height: 1.4; white-space: pre-wrap; }
+.msg.human { background: #4d8cf83a; align-self: flex-start; }
+.msg.agent { background: #50aa6e36; align-self: flex-start; }
+.msg.system { background: #aaaaaa36; align-self: center; font-style: italic; font-size: .875rem; }
+.msg .author { font-weight: 600; margin-right: .5rem; }
+#composer { display: flex; gap: .5rem; padding: .75rem 1rem; border-top: 1px solid #8884; }
+#composer input { padding: .5rem; border: 1px solid #8886; border-radius: .35rem; font: inherit; }
+#author-input { flex: 0 0 10rem; }
+#message-input { flex: 1; }
+#composer button { padding: .5rem 1rem; border: none; border-radius: .35rem; background: #2a6cdb; color: white; font: inherit; cursor: pointer; }
+#composer button:hover { background: #2056b3; }
+select, header button { font: inherit; padding: .35rem .6rem; }

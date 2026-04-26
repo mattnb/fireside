@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>fireside</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <header>
+    <h1>fireside</h1>
+    <div id="room-controls">
+      <select id="room-select"></select>
+      <button id="new-room-btn">+ new room</button>
+    </div>
+  </header>
+  <main>
+    <ol id="message-list" aria-live="polite"></ol>
+    <form id="composer">
+      <input id="author-input" type="text" placeholder="your name" autocomplete="off" />
+      <input id="message-input" type="text" placeholder="say something… (use @claude / @codex / @gemini to direct)" autocomplete="off" />
+      <button type="submit">send</button>
+    </form>
+  </main>
+  <script src="/app.js"></script>
+</body>
+</html>
