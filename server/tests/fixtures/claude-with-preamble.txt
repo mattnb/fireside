@@ -1,0 +1,2 @@
+Greetings, sire.
+{"type":"result","subtype":"success","result":"pong","session_id":"abc-preamble"}

@@ -1,6 +1,7 @@
 // server/src/agents/claude.ts
 import type { AgentReply, AgentSpec } from './types.js';
 import { AgentParseError } from './types.js';
+import { extractTopLevelJsonObject } from './json-extract.js';
 
 // Field names captured from Phase 2 fixture (claude-headless.json):
 //   top-level `result` carries the assistant text
@@ -19,23 +20,20 @@ export const claudeSpec: AgentSpec = {
     return args;
   },
   parseOutput(stdout, stderr): AgentReply {
-    const trimmed = stdout.trim();
-    if (!trimmed) {
+    if (!stdout.trim()) {
       throw new AgentParseError('claude', 'empty stdout', stdout, stderr);
     }
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(trimmed);
-    } catch (err) {
+    // Claude can emit a session-startup greeting (per CLAUDE.md instructions)
+    // before the JSON object on stdout. Use a tolerant extractor so the
+    // adapter does not crash on that preamble.
+    const parsed = extractTopLevelJsonObject(stdout);
+    if (!parsed || typeof parsed !== 'object') {
       throw new AgentParseError(
         'claude',
-        `not valid JSON: ${(err as Error).message}`,
+        'no top-level JSON object found in stdout',
         stdout,
         stderr,
       );
-    }
-    if (!parsed || typeof parsed !== 'object') {
-      throw new AgentParseError('claude', 'JSON root is not an object', stdout, stderr);
     }
     const obj = parsed as Record<string, unknown>;
     const text = typeof obj[RESULT_FIELD] === 'string' ? (obj[RESULT_FIELD] as string) : null;

@@ -1,6 +1,7 @@
 // server/src/agents/gemini.ts
 import type { AgentReply, AgentSpec } from './types.js';
 import { AgentParseError } from './types.js';
+import { extractTopLevelJsonObject } from './json-extract.js';
 
 // Field names captured from Phase 2 fixture (gemini-headless.json):
 //   top-level `response` carries the assistant text
@@ -29,21 +30,16 @@ export const geminiSpec: AgentSpec = {
     return args;
   },
   parseOutput(stdout, stderr): AgentReply {
-    const trimmed = stdout.trim();
-    if (!trimmed) throw new AgentParseError('gemini', 'empty stdout', stdout, stderr);
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(trimmed);
-    } catch (err) {
+    if (!stdout.trim()) throw new AgentParseError('gemini', 'empty stdout', stdout, stderr);
+    // Gemini may emit a preamble on stdout before the JSON object. Tolerate it.
+    const parsed = extractTopLevelJsonObject(stdout);
+    if (!parsed || typeof parsed !== 'object') {
       throw new AgentParseError(
         'gemini',
-        `not valid JSON: ${(err as Error).message}`,
+        'no top-level JSON object found in stdout',
         stdout,
         stderr,
       );
-    }
-    if (!parsed || typeof parsed !== 'object') {
-      throw new AgentParseError('gemini', 'JSON root is not an object', stdout, stderr);
     }
     const obj = parsed as Record<string, unknown>;
     const text = pickString(obj, RESPONSE_FIELDS);

@@ -8,6 +8,7 @@ import { AgentParseError } from '../../src/agents/types.js';
 
 const FIXTURE_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../fixtures');
 const headless = readFileSync(path.join(FIXTURE_DIR, 'gemini-headless.json'), 'utf8');
+const withPreamble = readFileSync(path.join(FIXTURE_DIR, 'gemini-with-preamble.json'), 'utf8');
 
 describe('gemini adapter', () => {
   it('builds argv for fresh session', () => {
@@ -28,5 +29,11 @@ describe('gemini adapter', () => {
 
   it('throws on garbage stdout', () => {
     expect(() => geminiSpec.parseOutput('not json', '')).toThrow(AgentParseError);
+  });
+
+  it('parses output with preamble before JSON', () => {
+    const reply = geminiSpec.parseOutput(withPreamble, '');
+    expect(reply.text).toBe('pong');
+    expect(reply.sessionId).toBe('def-preamble');
   });
 });

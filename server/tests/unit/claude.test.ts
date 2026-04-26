@@ -8,6 +8,7 @@ import { AgentParseError } from '../../src/agents/types.js';
 
 const FIXTURE_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../fixtures');
 const headless = readFileSync(path.join(FIXTURE_DIR, 'claude-headless.json'), 'utf8');
+const withPreamble = readFileSync(path.join(FIXTURE_DIR, 'claude-with-preamble.txt'), 'utf8');
 
 describe('claude adapter', () => {
   it('builds correct argv for fresh session', () => {
@@ -33,5 +34,11 @@ describe('claude adapter', () => {
 
   it('raises AgentParseError on garbage stdout', () => {
     expect(() => claudeSpec.parseOutput('not json', '')).toThrow(AgentParseError);
+  });
+
+  it('parses output with preamble before JSON', () => {
+    const reply = claudeSpec.parseOutput(withPreamble, '');
+    expect(reply.text).toBe('pong');
+    expect(reply.sessionId).toBe('abc-preamble');
   });
 });

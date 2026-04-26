@@ -51,6 +51,7 @@ fireside/
 │   │   ├── agents/
 │   │   │   ├── types.ts              # AgentSpec, AgentInvocation, AgentReply
 │   │   │   ├── runner.ts             # generic run-one-turn primitive
+│   │   │   ├── json-extract.ts       # tolerant top-level JSON object extractor (preamble-safe)
 │   │   │   ├── claude.ts             # Claude Code adapter
 │   │   │   ├── codex.ts              # Codex CLI adapter
 │   │   │   ├── gemini.ts             # Gemini CLI adapter
@@ -1289,6 +1290,7 @@ import { AgentParseError } from '../../src/agents/types.js';
 
 const FIXTURE_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../fixtures');
 const headless = readFileSync(path.join(FIXTURE_DIR, 'claude-headless.json'), 'utf8');
+const withPreamble = readFileSync(path.join(FIXTURE_DIR, 'claude-with-preamble.txt'), 'utf8');
 
 describe('claude adapter', () => {
   it('builds correct argv for fresh session', () => {
@@ -1315,6 +1317,15 @@ describe('claude adapter', () => {
   it('raises AgentParseError on garbage stdout', () => {
     expect(() => claudeSpec.parseOutput('not json', '')).toThrow(AgentParseError);
   });
+
+  // Real-CLI captures showed Claude can emit a session-startup greeting on
+  // stdout BEFORE the JSON object (driven by user-level CLAUDE.md). The
+  // adapter must tolerate that preamble.
+  it('parses output with preamble before JSON', () => {
+    const reply = claudeSpec.parseOutput(withPreamble, '');
+    expect(reply.text).toBe('pong');
+    expect(reply.sessionId).toBe('abc-preamble');
+  });
 });
 ```
 
@@ -1334,6 +1345,7 @@ Open your `server/tests/fixtures/claude-headless.json` first and confirm field n
 // server/src/agents/claude.ts
 import type { AgentReply, AgentSpec } from './types.js';
 import { AgentParseError } from './types.js';
+import { extractTopLevelJsonObject } from './json-extract.js';
 
 // Adjust these to match your fixture (Task 2.1).
 const RESULT_FIELD = 'result';
@@ -1350,23 +1362,20 @@ export const claudeSpec: AgentSpec = {
     return args;
   },
   parseOutput(stdout, stderr): AgentReply {
-    const trimmed = stdout.trim();
-    if (!trimmed) {
+    if (!stdout.trim()) {
       throw new AgentParseError('claude', 'empty stdout', stdout, stderr);
     }
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(trimmed);
-    } catch (err) {
+    // Claude can emit a session-startup greeting (per CLAUDE.md instructions)
+    // before the JSON object on stdout. Use a tolerant extractor so the
+    // adapter does not crash on that preamble.
+    const parsed = extractTopLevelJsonObject(stdout);
+    if (!parsed || typeof parsed !== 'object') {
       throw new AgentParseError(
         'claude',
-        `not valid JSON: ${(err as Error).message}`,
+        'no top-level JSON object found in stdout',
         stdout,
         stderr,
       );
-    }
-    if (!parsed || typeof parsed !== 'object') {
-      throw new AgentParseError('claude', 'JSON root is not an object', stdout, stderr);
     }
     const obj = parsed as Record<string, unknown>;
     const text = typeof obj[RESULT_FIELD] === 'string' ? (obj[RESULT_FIELD] as string) : null;
@@ -1592,6 +1601,7 @@ import { AgentParseError } from '../../src/agents/types.js';
 
 const FIXTURE_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../fixtures');
 const headless = readFileSync(path.join(FIXTURE_DIR, 'gemini-headless.json'), 'utf8');
+const withPreamble = readFileSync(path.join(FIXTURE_DIR, 'gemini-with-preamble.json'), 'utf8');
 
 describe('gemini adapter', () => {
   it('builds argv for fresh session', () => {
@@ -1613,6 +1623,14 @@ describe('gemini adapter', () => {
   it('throws on garbage stdout', () => {
     expect(() => geminiSpec.parseOutput('not json', '')).toThrow(AgentParseError);
   });
+
+  // Real-CLI captures showed Gemini may emit a preamble line before the JSON
+  // object. The adapter must tolerate it.
+  it('parses output with preamble before JSON', () => {
+    const reply = geminiSpec.parseOutput(withPreamble, '');
+    expect(reply.text).toBe('pong');
+    expect(reply.sessionId).toBe('def-preamble');
+  });
 });
 ```
 
@@ -1632,6 +1650,7 @@ Adjust the `RESPONSE_FIELDS` and `SESSION_FIELDS` arrays based on your fixture f
 // server/src/agents/gemini.ts
 import type { AgentReply, AgentSpec } from './types.js';
 import { AgentParseError } from './types.js';
+import { extractTopLevelJsonObject } from './json-extract.js';
 
 const RESPONSE_FIELDS = ['response', 'result', 'text', 'output'];
 const SESSION_FIELDS = ['session_id', 'sessionId', 'session'];
@@ -1655,16 +1674,16 @@ export const geminiSpec: AgentSpec = {
     return args;
   },
   parseOutput(stdout, stderr): AgentReply {
-    const trimmed = stdout.trim();
-    if (!trimmed) throw new AgentParseError('gemini', 'empty stdout', stdout, stderr);
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(trimmed);
-    } catch (err) {
-      throw new AgentParseError('gemini', `not valid JSON: ${(err as Error).message}`, stdout, stderr);
-    }
+    if (!stdout.trim()) throw new AgentParseError('gemini', 'empty stdout', stdout, stderr);
+    // Gemini may emit a preamble on stdout before the JSON object. Tolerate it.
+    const parsed = extractTopLevelJsonObject(stdout);
     if (!parsed || typeof parsed !== 'object') {
-      throw new AgentParseError('gemini', 'JSON root is not an object', stdout, stderr);
+      throw new AgentParseError(
+        'gemini',
+        'no top-level JSON object found in stdout',
+        stdout,
+        stderr,
+      );
     }
     const obj = parsed as Record<string, unknown>;
     const text = pickString(obj, RESPONSE_FIELDS);
