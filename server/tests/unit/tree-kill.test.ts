@@ -41,4 +41,8 @@ describe('killTree', () => {
     expect(await isPidAlive(0)).toBe(false);
     expect(await isPidAlive(999_999_999)).toBe(false);
   });
+
+  it('killTree resolves (does not reject) for a non-existent pid', async () => {
+    await expect(killTree(999_999_999)).resolves.toBeUndefined();
+  });
 });

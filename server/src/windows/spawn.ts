@@ -2,13 +2,17 @@
 import path from 'node:path';
 import { execa, type ExecaError } from 'execa';
 import { killTree } from './tree-kill.js';
-import { normalizeLineEndings } from './encoding.js';
+import { normalizeLineEndings, stripBom } from './encoding.js';
 
-function shouldUseShell(command: string): boolean {
+/**
+ * Determines whether `execa` must be invoked with `shell: true` to resolve the
+ * given command. On Windows, bare command names (`claude`, `codex`, `gemini`)
+ * have to go through cmd.exe so PATHEXT picks up their `.cmd` shims; absolute
+ * or path-qualified commands must bypass the shell because cmd.exe word-splits
+ * unquoted paths-with-spaces like `C:\Program Files\nodejs\node.exe`.
+ */
+export function shouldUseShell(command: string): boolean {
   if (process.platform !== 'win32') return false;
-  // Bare command names ('claude', 'codex') need shell:true so cmd.exe resolves
-  // PATHEXT to find their .cmd shims. Absolute or path-qualified commands must
-  // bypass the shell — cmd.exe word-splits unquoted paths-with-spaces.
   if (path.isAbsolute(command)) return false;
   if (command.includes('/') || command.includes('\\')) return false;
   return true;
@@ -79,20 +83,40 @@ function isSpawnFailure(err: ExecaError): boolean {
 
 export async function runSubprocess(opts: RunOptions): Promise<RunResult> {
   const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT;
+  // PYTHONIOENCODING is harmless on cmd.exe and helps any Python tool that
+  // ends up in the chain. We deliberately do NOT set LANG/LC_ALL — those are
+  // POSIX locale knobs that cmd.exe ignores; setting them here creates the
+  // false impression that UTF-8 is being enforced when it isn't. Real UTF-8
+  // enforcement on Windows happens via the `chcp 65001` prefix injected below
+  // for shell-resolved commands.
   const env = {
-    // Force UTF-8 across whatever shells/runtimes the child uses.
     PYTHONIOENCODING: 'utf-8',
-    LANG: 'en_US.UTF-8',
-    LC_ALL: 'en_US.UTF-8',
     ...process.env,
     ...opts.env,
   };
-  const child = execa(opts.command, opts.args ?? [], {
+
+  const useShell = shouldUseShell(opts.command);
+  let actualCommand = opts.command;
+  let actualArgs: string[] = opts.args ?? [];
+  if (useShell) {
+    // When cmd.exe runs the command we prepend `chcp 65001 >NUL && ` so the
+    // console code page is set to UTF-8 for the rest of the line. execa with
+    // `shell: true` accepts the entire command line as a single argv[0] and
+    // hands it to cmd.exe verbatim, so we collapse args into the string here
+    // and pass an empty args array.
+    const argString = actualArgs
+      .map((a) => (/\s/.test(a) ? `"${a.replace(/"/g, '\\"')}"` : a))
+      .join(' ');
+    actualCommand = `chcp 65001 >NUL && ${opts.command}${argString.length > 0 ? ' ' + argString : ''}`;
+    actualArgs = [];
+  }
+
+  const child = execa(actualCommand, actualArgs, {
     ...(opts.cwd !== undefined ? { cwd: opts.cwd } : {}),
     env,
     encoding: 'utf8',
     windowsHide: true,
-    shell: shouldUseShell(opts.command),
+    shell: useShell,
     stdin: 'pipe',
     stdout: 'pipe',
     stderr: 'pipe',
@@ -139,13 +163,14 @@ export async function runSubprocess(opts: RunOptions): Promise<RunResult> {
     throw new SubprocessSpawnError(opts.command, result);
   }
 
-  // I1: pre-compute normalized stdout/stderr so the timeout error can carry
-  // whatever we managed to capture before the child was killed.
+  // Pre-compute normalized stdout/stderr (BOM strip, then CRLF → LF) so the
+  // timeout error can carry whatever we managed to capture before the child
+  // was killed.
   const stdout = normalizeLineEndings(
-    result && typeof result.stdout === 'string' ? result.stdout : '',
+    stripBom(result && typeof result.stdout === 'string' ? result.stdout : ''),
   );
   const stderr = normalizeLineEndings(
-    result && typeof result.stderr === 'string' ? result.stderr : '',
+    stripBom(result && typeof result.stderr === 'string' ? result.stderr : ''),
   );
 
   if (timedOut) {

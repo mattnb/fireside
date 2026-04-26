@@ -611,6 +611,10 @@ describe('killTree', () => {
     expect(await isPidAlive(0)).toBe(false);
     expect(await isPidAlive(999_999_999)).toBe(false);
   });
+
+  it('killTree resolves (does not reject) for a non-existent pid', async () => {
+    await expect(killTree(999_999_999)).resolves.toBeUndefined();
+  });
 });
 ```
 
@@ -634,9 +638,15 @@ export function killTree(pid: number, signal: string = 'SIGTERM'): Promise<void>
     treeKill(pid, signal, (err) => {
       if (err) {
         // ESRCH (no such process) is fine — already dead.
-        if ((err as NodeJS.ErrnoException).code === 'ESRCH') resolve();
-        else reject(err);
-        return;
+        if ((err as NodeJS.ErrnoException).code === 'ESRCH') return resolve();
+        // On Windows, tree-kill shells out to `taskkill /pid <pid> /T /F`.
+        // When the pid doesn't exist taskkill exits non-zero and prints
+        // `ERROR: The process "<pid>" not found.` to stderr. tree-kill surfaces
+        // this as an Error whose .message contains both the command and that
+        // line. Treat "process not found" the same as ESRCH.
+        const msg = (err as Error).message ?? '';
+        if (/not found|no tasks/i.test(msg)) return resolve();
+        return reject(err);
       }
       resolve();
     });
@@ -646,12 +656,17 @@ export function killTree(pid: number, signal: string = 'SIGTERM'): Promise<void>
 export async function isPidAlive(pid: number): Promise<boolean> {
   if (!pid || pid <= 0) return false;
   if (process.platform === 'win32') {
-    const r = await execa('tasklist', ['/FI', `PID eq ${pid}`, '/NH'], {
+    // /FO CSV gives a stable shape: "image","pid","session","sessionnum","memory".
+    // /NH suppresses the header. When tasklist finds nothing it writes
+    // `INFO: No tasks…` to STDERR (not stdout) and stdout is empty, so a
+    // substring check on `,"<pid>",` (the unambiguous quoted PID column) is
+    // robust against PIDs that happen to appear inside image names or memory
+    // sizes.
+    const r = await execa('tasklist', ['/FI', `PID eq ${pid}`, '/NH', '/FO', 'CSV'], {
       reject: false,
       windowsHide: true,
     });
-    // tasklist prints "INFO: No tasks are running..." when not found.
-    return r.stdout.includes(String(pid));
+    return r.stdout.includes(`,"${pid}",`);
   }
   try {
     process.kill(pid, 0);
@@ -668,7 +683,7 @@ export async function isPidAlive(pid: number): Promise<boolean> {
 npx vitest run server/tests/unit/tree-kill.test.ts
 ```
 
-Expected: 2 passed. If the first test fails with `ETIMEDOUT`, increase the test timeout. If `child` is still alive after kill, `tree-kill` is not falling back to `taskkill /T` — verify the package installed correctly.
+Expected: 3 passed. If the first test fails with `ETIMEDOUT`, increase the test timeout. If `child` is still alive after kill, `tree-kill` is not falling back to `taskkill /T` — verify the package installed correctly.
 
 - [ ] **Step 6: Commit**
 
@@ -692,7 +707,12 @@ This is the single chokepoint through which **every** subprocess invocation in f
 ```ts
 // server/tests/unit/spawn.test.ts
 import { describe, it, expect } from 'vitest';
-import { runSubprocess, SubprocessTimeoutError } from '../../src/windows/spawn.js';
+import {
+  runSubprocess,
+  shouldUseShell,
+  SubprocessSpawnError,
+  SubprocessTimeoutError,
+} from '../../src/windows/spawn.js';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 
@@ -726,7 +746,10 @@ describe('runSubprocess', () => {
     // `cat` would hang forever without stdin.end(); this proves we close it.
     const result = await runSubprocess({
       command: process.execPath,
-      args: ['-e', 'let b="";process.stdin.on("data",c=>b+=c);process.stdin.on("end",()=>process.stdout.write("got:"+b))'],
+      args: [
+        '-e',
+        'let b="";process.stdin.on("data",c=>b+=c);process.stdin.on("end",()=>process.stdout.write("got:"+b))',
+      ],
       stdin: 'payload',
       timeoutMs: 5000,
     });
@@ -754,6 +777,68 @@ describe('runSubprocess', () => {
     expect(result.stdout).toBe('ok');
     expect(result.stderr).toBe('warn');
   });
+
+  it('throws SubprocessSpawnError when the spawn syscall fails (bad cwd)', async () => {
+    // We want a true ENOENT/spawn failure — the child never starts, so
+    // exitCode is undefined and stderr is empty. Pointing at a non-existent
+    // cwd reliably triggers this on every platform: Node.js fails the spawn
+    // before the program is even attempted. (On Windows, a bogus *binary*
+    // path is wrapped by cmd.exe and surfaces as a normal exit-1 with stderr
+    // — that's NOT what SubprocessSpawnError represents.)
+    await expect(
+      runSubprocess({
+        command: process.execPath,
+        args: ['-v'],
+        cwd:
+          process.platform === 'win32'
+            ? 'Z:\\nonexistent-fireside-test-dir\\never-here'
+            : '/nonexistent-fireside-test-dir/never-here',
+        timeoutMs: 5000,
+      }),
+    ).rejects.toBeInstanceOf(SubprocessSpawnError);
+  });
+
+  it.skipIf(process.platform !== 'win32')(
+    'preserves non-ASCII characters through the shell path',
+    async () => {
+      // `cmd` is a bare command name -> resolved via shouldUseShell -> uses the
+      // chcp 65001 prefix injected into the command line.
+      const result = await runSubprocess({
+        command: 'cmd',
+        args: ['/c', 'echo', '日本語'],
+        timeoutMs: 5000,
+      });
+      expect(result.stdout).toContain('日本語');
+    },
+  );
+});
+
+describe('shouldUseShell', () => {
+  it.skipIf(process.platform !== 'win32')(
+    'returns true for bare command names on Windows',
+    () => {
+      expect(shouldUseShell('claude')).toBe(true);
+      expect(shouldUseShell('codex')).toBe(true);
+    },
+  );
+  it.skipIf(process.platform !== 'win32')(
+    'returns false for absolute paths on Windows',
+    () => {
+      expect(shouldUseShell('C:\\Program Files\\nodejs\\node.exe')).toBe(false);
+      expect(shouldUseShell('/usr/local/bin/node')).toBe(false);
+    },
+  );
+  it.skipIf(process.platform !== 'win32')(
+    'returns false for path-qualified commands',
+    () => {
+      expect(shouldUseShell('./bin/foo')).toBe(false);
+      expect(shouldUseShell('subdir\\foo.exe')).toBe(false);
+    },
+  );
+  it.skipIf(process.platform === 'win32')('always returns false on non-Windows', () => {
+    expect(shouldUseShell('claude')).toBe(false);
+    expect(shouldUseShell('/usr/bin/node')).toBe(false);
+  });
 });
 ```
 
@@ -772,23 +857,42 @@ Expected: FAIL — module not found.
 import path from 'node:path';
 import { execa, type ExecaError } from 'execa';
 import { killTree } from './tree-kill.js';
-import { normalizeLineEndings } from './encoding.js';
+import { normalizeLineEndings, stripBom } from './encoding.js';
 
-function shouldUseShell(command: string): boolean {
+/**
+ * Determines whether `execa` must be invoked with `shell: true` to resolve the
+ * given command. On Windows, bare command names (`claude`, `codex`, `gemini`)
+ * have to go through cmd.exe so PATHEXT picks up their `.cmd` shims; absolute
+ * or path-qualified commands must bypass the shell because cmd.exe word-splits
+ * unquoted paths-with-spaces like `C:\Program Files\nodejs\node.exe`.
+ */
+export function shouldUseShell(command: string): boolean {
   if (process.platform !== 'win32') return false;
-  // Bare command names ('claude', 'codex') need shell:true so cmd.exe resolves
-  // PATHEXT to find their .cmd shims. Absolute or path-qualified commands must
-  // bypass the shell — cmd.exe word-splits unquoted paths-with-spaces like
-  // `C:\Program Files\nodejs\node.exe`.
   if (path.isAbsolute(command)) return false;
   if (command.includes('/') || command.includes('\\')) return false;
   return true;
 }
 
 export class SubprocessTimeoutError extends Error {
-  constructor(public command: string, public timeoutMs: number) {
+  constructor(
+    public command: string,
+    public timeoutMs: number,
+    public stdout: string = '',
+    public stderr: string = '',
+  ) {
     super(`subprocess timed out after ${timeoutMs}ms: ${command}`);
     this.name = 'SubprocessTimeoutError';
+  }
+}
+
+export class SubprocessSpawnError extends Error {
+  constructor(
+    public command: string,
+    public override cause: unknown,
+  ) {
+    const causeMsg = cause instanceof Error ? cause.message : String(cause);
+    super(`failed to spawn subprocess: ${command} — ${causeMsg}`);
+    this.name = 'SubprocessSpawnError';
   }
 }
 
@@ -810,35 +914,69 @@ export interface RunResult {
 
 const DEFAULT_TIMEOUT = 120_000;
 
+/**
+ * True if the error from execa indicates the child process never started
+ * (ENOENT, EACCES, invalid cwd, etc.). A real run that exited non-zero still
+ * populates `exitCode` with a number; a spawn failure leaves `exitCode`
+ * undefined and surfaces the underlying syscall failure on `code` (or on
+ * `cause.code`). On Windows, execa's auto-cmd.exe wrapping can mask "command
+ * not recognized" as a real exit-1 with stderr — those are NOT spawn failures,
+ * they are actual cmd.exe runs that returned an error code.
+ */
+function isSpawnFailure(err: ExecaError): boolean {
+  if (typeof err.exitCode === 'number') return false;
+  const errCode = (err as ExecaError & { code?: unknown }).code;
+  if (typeof errCode === 'string') return true;
+  const cause = (err as ExecaError & { cause?: { code?: unknown } }).cause;
+  if (cause && typeof cause.code === 'string') return true;
+  return (
+    err.exitCode === undefined &&
+    (err.stdout === undefined || err.stdout === '') &&
+    (err.stderr === undefined || err.stderr === '')
+  );
+}
+
 export async function runSubprocess(opts: RunOptions): Promise<RunResult> {
   const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT;
+  // PYTHONIOENCODING is harmless on cmd.exe and helps any Python tool that
+  // ends up in the chain. We deliberately do NOT set LANG/LC_ALL — those are
+  // POSIX locale knobs that cmd.exe ignores. Real UTF-8 enforcement on Windows
+  // happens via the `chcp 65001` prefix injected below for shell-resolved
+  // commands.
   const env = {
-    // Force UTF-8 across whatever shells/runtimes the child uses.
     PYTHONIOENCODING: 'utf-8',
-    LANG: 'en_US.UTF-8',
-    LC_ALL: 'en_US.UTF-8',
     ...process.env,
     ...opts.env,
   };
-  const child = execa(opts.command, opts.args ?? [], {
+
+  const useShell = shouldUseShell(opts.command);
+  let actualCommand = opts.command;
+  let actualArgs: string[] = opts.args ?? [];
+  if (useShell) {
+    // When cmd.exe runs the command we prepend `chcp 65001 >NUL && ` so the
+    // console code page is set to UTF-8 for the rest of the line. execa with
+    // `shell: true` accepts the entire command line as a single argv[0] and
+    // hands it to cmd.exe verbatim, so we collapse args into the string.
+    const argString = actualArgs
+      .map((a) => (/\s/.test(a) ? `"${a.replace(/"/g, '\\"')}"` : a))
+      .join(' ');
+    actualCommand = `chcp 65001 >NUL && ${opts.command}${argString.length > 0 ? ' ' + argString : ''}`;
+    actualArgs = [];
+  }
+
+  const child = execa(actualCommand, actualArgs, {
     // Conditional spread: TypeScript's `exactOptionalPropertyTypes` rejects
     // `cwd: undefined` because execa types `cwd` as `string` (not `string | undefined`).
     ...(opts.cwd !== undefined ? { cwd: opts.cwd } : {}),
     env,
     encoding: 'utf8',
     windowsHide: true,
-    // shell:true is required on Windows so cmd.exe resolves `claude.cmd`/`codex.cmd`/`gemini.cmd`
-    // via PATHEXT. But path-qualified commands (e.g. `process.execPath` in tests, or any
-    // absolute path) must bypass the shell because cmd.exe word-splits unquoted
-    // paths-with-spaces like `C:\Program Files\nodejs\node.exe`.
-    shell: shouldUseShell(opts.command),
+    shell: useShell,
     stdin: 'pipe',
     stdout: 'pipe',
     stderr: 'pipe',
     reject: false,
-    // execa strips trailing newlines by default. We want byte-faithful capture
-    // (callers may parse line-delimited or trailing-newline-sensitive output),
-    // and our own normalizeLineEndings handles CRLF→LF.
+    // execa strips trailing newlines by default. We want byte-faithful capture.
     stripFinalNewline: false,
     // execa's own timeout uses SIGTERM which is unreliable on Windows for .cmd
     // shims. We manage our own timer + tree-kill.
@@ -850,8 +988,12 @@ export async function runSubprocess(opts: RunOptions): Promise<RunResult> {
     child.stdin.end();
   }
 
+  let completed = false;
   let timedOut = false;
   const timer = setTimeout(async () => {
+    // Race guard: if the child already finished and we're just waiting on the
+    // event loop to clear the timer, don't flip timedOut and don't kill.
+    if (completed) return;
     timedOut = true;
     if (child.pid) {
       try {
@@ -862,23 +1004,40 @@ export async function runSubprocess(opts: RunOptions): Promise<RunResult> {
     }
   }, timeoutMs);
 
-  let result;
+  let result: ExecaError | Awaited<typeof child> | undefined;
   try {
     result = await child;
   } catch (err) {
     result = err as ExecaError;
-  } finally {
-    clearTimeout(timer);
+  }
+  completed = true;
+  clearTimeout(timer);
+
+  // C1: distinguish a real run-with-non-zero-exit from a complete failure to
+  // launch the binary (ENOENT etc). The latter must surface as a
+  // SubprocessSpawnError so callers don't mistake "never ran" for "ran cleanly
+  // with no output". Don't classify timeouts as spawn errors.
+  if (result instanceof Error && isSpawnFailure(result as ExecaError) && !timedOut) {
+    throw new SubprocessSpawnError(opts.command, result);
   }
 
+  // Normalize stdout/stderr (BOM strip, then CRLF → LF) so we can also pass
+  // the captured output into the timeout error for debugging.
+  const stdout = normalizeLineEndings(
+    stripBom(result && typeof result.stdout === 'string' ? result.stdout : ''),
+  );
+  const stderr = normalizeLineEndings(
+    stripBom(result && typeof result.stderr === 'string' ? result.stderr : ''),
+  );
+
   if (timedOut) {
-    throw new SubprocessTimeoutError(opts.command, timeoutMs);
+    throw new SubprocessTimeoutError(opts.command, timeoutMs, stdout, stderr);
   }
 
   return {
-    stdout: normalizeLineEndings(typeof result.stdout === 'string' ? result.stdout : ''),
-    stderr: normalizeLineEndings(typeof result.stderr === 'string' ? result.stderr : ''),
-    exitCode: typeof result.exitCode === 'number' ? result.exitCode : null,
+    stdout,
+    stderr,
+    exitCode: result && typeof result.exitCode === 'number' ? result.exitCode : null,
     timedOut: false,
   };
 }
@@ -890,9 +1049,13 @@ export async function runSubprocess(opts: RunOptions): Promise<RunResult> {
 npx vitest run server/tests/unit/spawn.test.ts
 ```
 
-Expected: 5 passed.
+Expected: 10 passed, 1 skipped on Windows (the non-Windows shouldUseShell test); 7 passed, 4 skipped on non-Windows. Total 11 tests in this file: 5 original `runSubprocess` cases + the spawn-failure case + the UTF-8 shell case + 4 `shouldUseShell` cases (3 Windows + 1 non-Windows).
 
 If the timeout test fails because the child doesn't actually die (parent test hangs after the assertion): the most likely cause is `tree-kill` not finding `taskkill`. Verify `where taskkill` returns `C:\Windows\System32\taskkill.exe` in your shell.
+
+If the UTF-8 shell-path test asserts `???` instead of `日本語`, your `chcp 65001` prefix isn't being applied — verify the shell-path branch in `runSubprocess` is constructing the cmd line correctly.
+
+Across all three Phase 1 test files, the full vitest run summary on Windows should read **20 passed, 1 skipped (21)** — 7 encoding + 3 tree-kill + 11 spawn (1 of which is a non-Windows-only skip).
 
 - [ ] **Step 5: Commit**
 
