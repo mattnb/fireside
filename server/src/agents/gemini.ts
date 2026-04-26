@@ -24,7 +24,7 @@ export const geminiSpec: AgentSpec = {
   id: 'gemini',
   displayName: 'Gemini',
   command: 'gemini',
-  defaultTimeoutMs: 240_000,
+  defaultTimeoutMs: 20_000,
   // Gemini-cli auto-detects projects from its cwd (presence of `docs/`,
   // source code, package.json) and enters agentic / tool-using mode — it
   // narrates intent, attempts file/shell tool calls, and never produces the
