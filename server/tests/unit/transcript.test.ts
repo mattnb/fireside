@@ -10,10 +10,10 @@ describe('buildTurnPrompt', () => {
       history: [],
       newMessage: { authorId: 'matt', authorKind: 'human', text: 'hi' },
     });
-    expect(prompt).toContain('You are participating');
+    expect(prompt).toContain('AI participant');
     expect(prompt).toContain('claude');
     expect(prompt).toContain('matt: hi');
-    expect(prompt).toContain('your reply');
+    expect(prompt).toContain('response to the new message');
   });
 
   it('includes recent history in chronological order', () => {

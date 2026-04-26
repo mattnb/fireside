@@ -31,16 +31,15 @@ export function buildTurnPrompt(opts: BuildTurnOptions): string {
   const newLine = formatLine(opts.agentId, opts.newMessage);
 
   return [
-    `You are participating in a multi-agent chat room called "${opts.roomName}".`,
-    `You are "${opts.agentId}". Other participants may be human or other AI agents.`,
-    `Reply with the text of your message only — no preamble, no thinking-aloud, no markdown headers.`,
-    `If you have nothing useful to add, reply with an empty message.`,
+    `You are an AI participant named "${opts.agentId}" in a multi-user chat room.`,
+    `Other participants are humans and other AI agents.`,
     ``,
-    `--- recent transcript ---`,
+    `Conversation so far:`,
     transcript || '(no prior messages)',
-    `--- new message ---`,
+    ``,
+    `New message just posted:`,
     newLine,
     ``,
-    `Compose your reply:`,
+    `Write your next chat message as "${opts.agentId}", in response to the new message above. Output ONLY the text of your message — no quotes, no JSON, no preface, no role labels, no markdown headers, no explanation. If you have nothing to add, output an empty string.`,
   ].join('\n');
 }
