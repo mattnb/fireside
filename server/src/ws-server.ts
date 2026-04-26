@@ -41,6 +41,17 @@ export function attachWebSocketServer(httpServer: HttpServer, broker: Broker): W
     }
   });
 
+  broker.on('roomDeleted', (evt: { roomId: string }) => {
+    const payload = JSON.stringify({ type: 'roomDeleted', roomId: evt.roomId });
+    for (const [client, state] of clients.entries()) {
+      // Broadcast to ALL clients (not just subscribers of that room) — they
+      // need to remove it from their room list regardless of subscription.
+      if (client.readyState === client.OPEN) client.send(payload);
+      // Also drop the room from any client's subscription set.
+      state.rooms.delete(evt.roomId);
+    }
+  });
+
   wss.on('connection', (client) => {
     clients.set(client, { rooms: new Set() });
 

@@ -44,6 +44,12 @@ export function buildHttpServer(deps: HttpDeps) {
     return room;
   });
 
+  app.delete<{ Params: { id: string } }>('/api/rooms/:id', async (req, reply) => {
+    const ok = deps.broker.deleteRoom(req.params.id);
+    if (!ok) return reply.code(404).send({ error: 'not found' });
+    return reply.code(204).send();
+  });
+
   app.get<{ Params: { id: string }; Querystring: { limit?: string } }>(
     '/api/rooms/:id/messages',
     async (req, reply) => {

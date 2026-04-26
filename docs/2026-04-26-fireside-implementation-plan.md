@@ -2180,6 +2180,8 @@ git add server/src/repos/rooms.ts server/tests/unit/rooms-repo.test.ts
 git commit -m "feat(repos): add rooms repo with create/get/list/setAgents"
 ```
 
+**Followup (room deletion):** A `deleteRoom(db, roomId): boolean` was added later in support of the UI delete flow. It explicitly removes rows from `sessions` (no FK), then deletes the `rooms` row; messages cascade automatically via the `ON DELETE CASCADE` FK on `messages.room_id`. Returns `true` only when a room actually existed and was removed.
+
 ---
 
 ### Task 4.3: Messages repo (TDD)
@@ -2989,6 +2991,8 @@ git add server/tests/integration/timeout.test.ts
 git commit -m "test(broker): verify timeout produces system message, not crash"
 ```
 
+**Followup (room deletion event):** The broker later gained a `deleteRoom(roomId): boolean` method that delegates to the rooms repo and, when a row is actually removed, emits a `roomDeleted` event with payload `{ roomId }`. The WS server subscribes to this alongside `messageAppended`.
+
 ---
 
 ## Phase 6 — HTTP + WebSocket Server
@@ -3143,6 +3147,8 @@ Expected: no errors.
 git add server/src/http-server.ts
 git commit -m "feat(server): add Fastify HTTP server with REST routes"
 ```
+
+**Followup (room deletion route):** A `DELETE /api/rooms/:id` route was added later. It calls `broker.deleteRoom(id)` and returns `204 No Content` on success or `404` when no such room existed. The broker's `deleteRoom` is what triggers the `roomDeleted` WS broadcast — the HTTP layer is just the entry point.
 
 ---
 
@@ -3355,6 +3361,8 @@ Expected: 2 passed.
 git add server/src/ws-server.ts server/tests/integration/ws-flow.test.ts
 git commit -m "feat(server): add WebSocket fanout with per-room subscription"
 ```
+
+**Followup (roomDeleted broadcast):** The WS server later subscribed to the broker's `roomDeleted` event and broadcasts `{ type: 'roomDeleted', roomId }` to **every** connected client (not just subscribers of that room) so all open tabs can drop the room from their list. The broadcast also clears the `roomId` from each client's subscription set.
 
 ---
 

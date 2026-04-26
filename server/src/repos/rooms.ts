@@ -51,3 +51,11 @@ export function listRooms(db: Database): Room[] {
 export function setRoomAgents(db: Database, roomId: string, agents: AgentId[]): void {
   db.prepare(`UPDATE rooms SET agents_json = ? WHERE id = ?`).run(JSON.stringify(agents), roomId);
 }
+
+export function deleteRoom(db: Database, roomId: string): boolean {
+  // Foreign-key cascade on messages.room_id handles message deletion.
+  // sessions.room_id has no FK, so delete it explicitly.
+  db.prepare('DELETE FROM sessions WHERE room_id = ?').run(roomId);
+  const r = db.prepare('DELETE FROM rooms WHERE id = ?').run(roomId);
+  return r.changes > 0;
+}

@@ -110,4 +110,48 @@ describe('WebSocket fanout', () => {
 
     wsA.close();
   });
+
+  it('broadcasts roomDeleted to all clients and clears subscriptions', async () => {
+    const room = createRoom(db, { name: 'doomed', agents: [] });
+
+    const ws = new WebSocket(`ws://127.0.0.1:${port}/ws`);
+    await new Promise<void>((resolve, reject) => {
+      ws.once('open', () => resolve());
+      ws.once('error', reject);
+    });
+
+    // Wait for the subscribed ack before installing the recording listener so
+    // we don't need to filter the ack out of `received` later.
+    await new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error('subscribe timed out')), 5000);
+      const onSubscribed = (data: import('ws').RawData) => {
+        const msg = JSON.parse(data.toString()) as { type: string; roomId?: string };
+        if (msg.type === 'subscribed' && msg.roomId === room.id) {
+          clearTimeout(timer);
+          ws.off('message', onSubscribed);
+          resolve();
+        }
+      };
+      ws.on('message', onSubscribed);
+      ws.send(JSON.stringify({ type: 'subscribe', roomId: room.id }));
+    });
+
+    const received: Array<{ type: string; roomId?: string }> = [];
+    ws.on('message', (data) => received.push(JSON.parse(data.toString())));
+
+    broker.deleteRoom(room.id);
+
+    await new Promise<void>((resolve) => {
+      const timer = setInterval(() => {
+        if (received.some((r) => r.type === 'roomDeleted')) {
+          clearInterval(timer);
+          resolve();
+        }
+      }, 25);
+    });
+
+    const evt = received.find((r) => r.type === 'roomDeleted');
+    expect(evt!.roomId).toBe(room.id);
+    ws.close();
+  });
 });
