@@ -18,6 +18,7 @@ describe('killTree', () => {
       stdio: ['ignore', 'pipe', 'inherit'],
       windowsHide: true,
     });
+    proc.catch(() => {}); // attach immediately so kill-induced rejection is handled
     let firstLine = '';
     await new Promise<void>((resolve) => {
       proc.stdout!.on('data', (b: Buffer) => {
@@ -34,9 +35,6 @@ describe('killTree', () => {
 
     expect(await isPidAlive(parent)).toBe(false);
     expect(await isPidAlive(child)).toBe(false);
-
-    // Drain any error from the killed proc
-    proc.catch(() => {});
   }, 20_000);
 
   it('isPidAlive returns false for a non-existent pid', async () => {
