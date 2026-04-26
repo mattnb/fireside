@@ -31,17 +31,11 @@
   console.log(prompt);
   console.log('=== ARGS ===');
   const args = spec.buildArgs(prompt, null);
-  console.log(
-    JSON.stringify(
-      args.map((a) => (a.length > 200 ? a.slice(0, 200) + `... [${a.length} chars]` : a)),
-      null,
-      2,
-    ),
-  );
+  console.log(JSON.stringify(args, null, 2));
   const stdin = spec.buildStdin ? spec.buildStdin(prompt, null) : '';
   if (stdin) {
     console.log('=== STDIN ===');
-    console.log(stdin.length > 400 ? stdin.slice(0, 400) + `... [${stdin.length} chars]` : stdin);
+    console.log(stdin);
   }
   console.log('=== RUNNING ===');
   const t0 = Date.now();
