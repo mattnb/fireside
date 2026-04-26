@@ -3498,8 +3498,7 @@ This script exercises each adapter against the real CLI, end-to-end. Failures he
 ```js
 #!/usr/bin/env node
 // Calls each real CLI through the runner once. Run AFTER `verify-clis` and AFTER fixtures are captured.
-import('./smoke-test.mjs').catch(async () => {
-  // CommonJS shim: invoke the TypeScript-compiled output.
+(async () => {
   const { runAgentTurn } = await import('../dist/server/src/agents/runner.js');
   const { getAgentSpec } = await import('../dist/server/src/agents/registry.js');
 
@@ -3518,6 +3517,9 @@ import('./smoke-test.mjs').catch(async () => {
       console.log(`FAIL: ${err.message}`);
     }
   }
+})().catch((err) => {
+  console.error('smoke-test crashed:', err);
+  process.exit(1);
 });
 ```
 
@@ -3538,7 +3540,7 @@ Start the broker (`npm run dev`), open the UI, post `@claude reply with exactly:
 
 ```bash
 git add scripts/smoke-test.cjs
-git commit -m "test: add real-CLI smoke test script"
+git commit -m "chore(scripts): add real-CLI smoke test"
 ```
 
 ---
