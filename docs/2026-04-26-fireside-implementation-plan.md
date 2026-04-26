@@ -19,7 +19,7 @@ fireside/
 ├── package.json
 ├── tsconfig.json
 ├── vitest.config.ts
-├── .eslintrc.cjs
+├── eslint.config.mjs
 ├── .prettierrc
 ├── .gitignore
 ├── .editorconfig
@@ -237,7 +237,7 @@ Expected: dependencies appear in `package.json`. `better-sqlite3` will compile a
 - [ ] **Step 2: Install dev deps**
 
 ```bash
-npm install --save-dev typescript@^5.6.3 tsx@^4.19.2 @types/node@^22.9.0 @types/ws@^8.5.13 @types/better-sqlite3@^7.6.11 vitest@^2.1.6 @vitest/coverage-v8@^2.1.6 eslint@^9.15.0 @typescript-eslint/parser@^8.16.0 @typescript-eslint/eslint-plugin@^8.16.0 prettier@^3.4.1
+npm install --save-dev typescript@^5.6.3 tsx@^4.19.2 @types/node@^22.9.0 @types/ws@^8.5.13 @types/better-sqlite3@^7.6.11 vitest@^2.1.6 @vitest/coverage-v8@^2.1.6 eslint@^9.15.0 typescript-eslint@^8.16.0 @eslint/js@^9.15.0 globals@^15.14.0 prettier@^3.4.1
 ```
 
 - [ ] **Step 3: Verify install**
@@ -260,26 +260,45 @@ git commit -m "chore: install runtime and dev dependencies"
 ### Task 0.4: Configure ESLint, Prettier, Vitest
 
 **Files:**
-- Create: `fireside/.eslintrc.cjs`
+- Create: `fireside/eslint.config.mjs`
 - Create: `fireside/.prettierrc`
 - Create: `fireside/vitest.config.ts`
 
-- [ ] **Step 1: Create `.eslintrc.cjs`**
+- [ ] **Step 1: Create `eslint.config.mjs`**
 
 ```js
-module.exports = {
-  root: true,
-  parser: '@typescript-eslint/parser',
-  plugins: ['@typescript-eslint'],
-  extends: ['eslint:recommended', 'plugin:@typescript-eslint/recommended'],
-  parserOptions: { ecmaVersion: 2022, sourceType: 'module' },
-  env: { node: true, es2022: true },
-  ignorePatterns: ['dist/', 'node_modules/', 'ui/'],
-  rules: {
-    '@typescript-eslint/no-unused-vars': ['error', { argsIgnorePattern: '^_' }],
-    '@typescript-eslint/no-explicit-any': 'warn',
+// eslint.config.mjs
+import js from '@eslint/js';
+import tseslint from 'typescript-eslint';
+import globals from 'globals';
+
+export default [
+  {
+    ignores: ['dist/**', 'node_modules/**', 'ui/**', 'data/**', 'coverage/**'],
   },
-};
+  js.configs.recommended,
+  ...tseslint.configs.recommended,
+  {
+    languageOptions: {
+      ecmaVersion: 2022,
+      sourceType: 'module',
+      globals: { ...globals.node, ...globals.es2022 },
+    },
+    rules: {
+      '@typescript-eslint/no-unused-vars': ['error', { argsIgnorePattern: '^_' }],
+      '@typescript-eslint/no-explicit-any': 'warn',
+    },
+  },
+  {
+    files: ['**/*.cjs'],
+    languageOptions: { sourceType: 'commonjs', globals: { ...globals.node } },
+    rules: {
+      // CommonJS files legitimately use require(); the TS-ESLint rule
+      // exists to discourage require() in TypeScript/ESM source, not in .cjs.
+      '@typescript-eslint/no-require-imports': 'off',
+    },
+  },
+];
 ```
 
 - [ ] **Step 2: Create `.prettierrc`**
@@ -323,7 +342,7 @@ Expected: `No test files found, exiting with code 1`. That's correct — we have
 - [ ] **Step 5: Commit**
 
 ```bash
-git add .eslintrc.cjs .prettierrc vitest.config.ts
+git add eslint.config.mjs .prettierrc vitest.config.ts
 git commit -m "chore: configure eslint, prettier, vitest"
 ```
 
