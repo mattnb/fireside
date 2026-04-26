@@ -1582,6 +1582,13 @@ git commit -m "feat(agents): add Codex CLI adapter"
 - Create: `fireside/server/src/agents/gemini.ts`
 - Test: `fireside/server/tests/unit/gemini.test.ts`
 
+**Phase 8 update — pure-chat mode via `defaultCwd`.** Real-CLI smoke testing showed gemini-cli auto-detects projects from its working directory (presence of `docs/`, source code, `package.json`) and switches into agentic mode: it narrates intent on stdout, attempts blocked tool calls (`run_shell_command`, file reads) on stderr, and never produces JSON. Gemini 0.39.1's `--help` exposes no `--no-tools` flag, and `--allowed-tools` is deprecated. The cleanest fix is to spawn gemini with a neutral cwd. Concrete changes (already shipped):
+
+- `AgentSpec` gained an optional `defaultCwd?: string` field (`server/src/agents/types.ts`).
+- `geminiSpec` sets `defaultCwd: os.tmpdir()` (`server/src/agents/gemini.ts`).
+- `runAgentTurn` uses `opts.cwd ?? spec.defaultCwd` and only forwards a `cwd` when one is set (`server/src/agents/runner.ts`), so claude/codex still inherit the broker's cwd unchanged.
+- A unit test in `server/tests/unit/runner.test.ts` mocks `runSubprocess` and verifies all three branches: caller cwd wins, spec.defaultCwd is used when caller omits, neither set means cwd is omitted entirely.
+
 - [ ] **Step 1: Write the failing test**
 
 ```ts

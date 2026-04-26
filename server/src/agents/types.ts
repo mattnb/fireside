@@ -14,6 +14,14 @@ export interface AgentSpec {
   parseOutput(stdout: string, stderr: string): AgentReply;
   /** Default per-turn timeout in ms. */
   defaultTimeoutMs: number;
+  /** Optional default working directory for this agent's subprocess.
+   *  Used by runners when the caller does not pass an explicit `cwd`.
+   *  The Gemini CLI auto-detects projects from cwd (presence of `docs/`,
+   *  source files, etc.) and switches into agentic / tool-using mode that
+   *  refuses to produce JSON. Setting `defaultCwd` to a neutral directory
+   *  (e.g. the OS tmpdir) keeps gemini in pure-chat mode. Other agents
+   *  inherit the broker's cwd by leaving this unset. */
+  defaultCwd?: string;
 }
 
 export interface AgentReply {

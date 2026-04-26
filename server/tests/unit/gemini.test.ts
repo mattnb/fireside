@@ -36,4 +36,13 @@ describe('gemini adapter', () => {
     expect(reply.text).toBe('pong');
     expect(reply.sessionId).toBe('def-preamble');
   });
+
+  it('declares a defaultCwd outside the project so gemini stays in pure-chat mode', () => {
+    // Without this, gemini-cli detects the broker's cwd as a project (it sees
+    // `docs/`, source files, package.json) and switches into agentic /
+    // tool-using mode, narrating intent and never producing JSON. The exact
+    // path doesn't matter — only that the spec advertises one.
+    expect(typeof geminiSpec.defaultCwd).toBe('string');
+    expect((geminiSpec.defaultCwd as string).length).toBeGreaterThan(0);
+  });
 });

@@ -20,3 +20,5 @@ Codex on Windows occasionally emits `ERROR codex_core::session: failed to record
 ## Gemini CLI
 
 - Empirical per-turn latency on this Windows install: 60–180s with web-search disabled; 240s default timeout in the gemini adapter.
+
+Gemini-cli auto-detects project context (presence of `docs/`, source code, `package.json`) and enters agentic mode — narrating intent on stdout, attempting blocked tool calls (`run_shell_command`, file reads) on stderr, and never producing the JSON we asked for via `--output-format json`. To force pure-chat mode the gemini spec sets `defaultCwd: os.tmpdir()`, and the broker's `runAgentTurn` plumbs that into the spawned subprocess as the working directory whenever the caller doesn't pass an explicit `cwd`. Without this, gemini reads project files, attempts tool calls, and produces narrated text instead of JSON; with it, gemini sees a neutral cwd, stays in headless single-shot mode, and emits the expected JSON envelope. (Gemini 0.39.1's `--help` exposes no `--no-tools` flag and the `--allowed-tools` flag is deprecated, so cwd manipulation is the cleanest available knob.)

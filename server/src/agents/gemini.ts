@@ -1,4 +1,5 @@
 // server/src/agents/gemini.ts
+import os from 'node:os';
 import type { AgentReply, AgentSpec } from './types.js';
 import { AgentParseError } from './types.js';
 import { extractTopLevelJsonObject } from './json-extract.js';
@@ -24,6 +25,13 @@ export const geminiSpec: AgentSpec = {
   displayName: 'Gemini',
   command: 'gemini',
   defaultTimeoutMs: 240_000,
+  // Gemini-cli auto-detects projects from its cwd (presence of `docs/`,
+  // source code, package.json) and enters agentic / tool-using mode — it
+  // narrates intent, attempts file/shell tool calls, and never produces the
+  // JSON we asked for. Forcing cwd to the OS tmpdir keeps gemini in pure
+  // headless-chat mode where `-p` + `--output-format json` actually return
+  // a JSON object.
+  defaultCwd: os.tmpdir(),
   buildArgs(prompt, sessionId) {
     const args = ['-p', prompt, '--output-format', 'json'];
     if (sessionId) args.push('--resume');
