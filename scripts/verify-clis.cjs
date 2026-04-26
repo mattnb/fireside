@@ -6,6 +6,8 @@ const { execa } = require('execa');
 
 async function probe(name, args, expectedSubstring) {
   try {
+    // TODO(phase1): Once windows/tree-kill.ts exists, use it to ensure orphaned
+    // node.exe grandchildren are killed if a CLI hangs during --version probing.
     const result = await execa(name, args, {
       timeout: 30_000,
       windowsHide: true,

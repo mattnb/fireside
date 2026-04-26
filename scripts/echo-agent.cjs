@@ -3,6 +3,8 @@
 // Used as a stand-in for a real CLI in tests.
 let buf = '';
 process.stdin.setEncoding('utf8');
+process.stdin.on('error', () => process.exit(1));
+process.stdout.on('error', () => process.exit(1));
 process.stdin.on('data', (chunk) => (buf += chunk));
 process.stdin.on('end', () => {
   let parsed;
@@ -15,5 +17,5 @@ process.stdin.on('end', () => {
     sessionId: parsed.sessionId || 'echo-session-1',
     text: `echo: ${parsed.prompt || '(empty)'}`,
   };
-  process.stdout.write(JSON.stringify(reply));
+  process.stdout.write(JSON.stringify(reply) + '\n');
 });
