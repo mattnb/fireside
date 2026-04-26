@@ -37,8 +37,7 @@ export class Broker extends EventEmitter {
     const room = getRoom(this.deps.db, roomId);
     if (!room) throw new Error(`unknown room: ${roomId}`);
 
-    const message = addMessage(this.deps.db, { roomId, authorId, authorKind, text });
-    this.emit('messageAppended', message);
+    const message = this.appendDirect(roomId, authorId, authorKind, text);
 
     // Only inbound human/system messages can trigger agent replies. Agent messages do not.
     if (authorKind === 'agent') return message;
@@ -47,6 +46,22 @@ export class Broker extends EventEmitter {
     await Promise.all(
       responders.map((agentId) => this.runAgentReply(roomId, agentId, message)),
     );
+    return message;
+  }
+
+  /**
+   * Persist a message and emit `messageAppended` without dispatching agent replies.
+   * Used for broker-internal system messages (failure notifications) where fanning
+   * out would create a recursion loop.
+   */
+  private appendDirect(
+    roomId: string,
+    authorId: string,
+    authorKind: AuthorKind,
+    text: string,
+  ): Message {
+    const message = addMessage(this.deps.db, { roomId, authorId, authorKind, text });
+    this.emit('messageAppended', message);
     return message;
   }
 
@@ -61,7 +76,7 @@ export class Broker extends EventEmitter {
   private async runAgentReply(roomId: string, agentId: AgentId, trigger: Message): Promise<void> {
     const spec = this.deps.getSpec(agentId);
     if (!spec) {
-      await this.append(roomId, 'system', 'system', `(no adapter for agent "${agentId}")`);
+      this.appendDirect(roomId, 'system', 'system', `(no adapter for agent "${agentId}")`);
       return;
     }
     const room = getRoom(this.deps.db, roomId);
@@ -85,7 +100,7 @@ export class Broker extends EventEmitter {
       reply = await this.deps.runAgent(spec, prompt, sessionId);
     } catch (err) {
       const errMsg = err instanceof Error ? err.message : String(err);
-      await this.append(roomId, 'system', 'system', `(${agentId} failed: ${errMsg})`);
+      this.appendDirect(roomId, 'system', 'system', `(${agentId} failed: ${errMsg})`);
       return;
     }
 
