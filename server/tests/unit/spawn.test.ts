@@ -49,6 +49,44 @@ describe('runSubprocess', () => {
     expect(result.stdout).toBe('got:payload');
   });
 
+  it('does not open a stdin pipe when no stdin content is provided', async () => {
+    // The observable difference between `stdio: 'ignore'` and `stdio: 'pipe'`
+    // (with an immediate .end()) on the child side is the constructor of
+    // process.stdin: 'ignore' wires fd 0 to the OS null device, which Node
+    // exposes as a ReadStream; 'pipe' exposes a Socket. Codex's "Reading
+    // additional input from stdin..." path triggers when the child sees a
+    // pipe; with 'ignore' it never triggers because the null device returns
+    // EOF synchronously and the CLI skips the stdin-append branch.
+    const result = await runSubprocess({
+      command: process.execPath,
+      args: [
+        '-e',
+        'process.stdout.write(process.stdin.constructor.name)',
+      ],
+      timeoutMs: 5000,
+    });
+    expect(result.exitCode).toBe(0);
+    // 'ReadStream' on Windows + POSIX when stdin is the null device.
+    expect(result.stdout).toBe('ReadStream');
+  });
+
+  it('opens a stdin pipe when stdin content is provided', async () => {
+    // Counterpart to the test above — with non-empty stdin we wire a real
+    // pipe. Constructor flips to Socket, and the child reads our payload back
+    // out, proving the pipe is functional (not just present).
+    const result = await runSubprocess({
+      command: process.execPath,
+      args: [
+        '-e',
+        'let b="";process.stdin.on("data",c=>b+=c);process.stdin.on("end",()=>process.stdout.write(process.stdin.constructor.name+":"+b))',
+      ],
+      stdin: 'hello',
+      timeoutMs: 5000,
+    });
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toBe('Socket:hello');
+  });
+
   it('throws SubprocessTimeoutError when command exceeds timeout', async () => {
     await expect(
       runSubprocess({

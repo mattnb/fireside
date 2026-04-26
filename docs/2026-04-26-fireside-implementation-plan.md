@@ -757,6 +757,35 @@ describe('runSubprocess', () => {
     expect(result.stdout).toBe('got:payload');
   });
 
+  it('does not open a stdin pipe when no stdin content is provided', async () => {
+    // 'ignore' wires the child's fd 0 to the OS null device — Node exposes
+    // that as a ReadStream, not a Socket. CLIs that sniff stdin (Codex's
+    // "Reading additional input from stdin..." path) skip the append branch
+    // when stdin is the null device.
+    const result = await runSubprocess({
+      command: process.execPath,
+      args: ['-e', 'process.stdout.write(process.stdin.constructor.name)'],
+      timeoutMs: 5000,
+    });
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toBe('ReadStream');
+  });
+
+  it('opens a stdin pipe when stdin content is provided', async () => {
+    // Counterpart: with non-empty stdin we DO want a real pipe. Constructor
+    // flips to Socket and the child reads our payload back out.
+    const result = await runSubprocess({
+      command: process.execPath,
+      args: [
+        '-e',
+        'let b="";process.stdin.on("data",c=>b+=c);process.stdin.on("end",()=>process.stdout.write(process.stdin.constructor.name+":"+b))',
+      ],
+      stdin: 'hello',
+      timeoutMs: 5000,
+    });
+    expect(result.stdout).toBe('Socket:hello');
+  });
+
   it('throws SubprocessTimeoutError when command exceeds timeout', async () => {
     await expect(
       runSubprocess({
@@ -954,6 +983,8 @@ export async function runSubprocess(opts: RunOptions): Promise<RunResult> {
   const actualCommand = opts.command;
   const actualArgs: string[] = opts.args ?? [];
 
+  const hasStdin = typeof opts.stdin === 'string' && opts.stdin.length > 0;
+
   const child = execa(actualCommand, actualArgs, {
     // Conditional spread: TypeScript's `exactOptionalPropertyTypes` rejects
     // `cwd: undefined` because execa types `cwd` as `string` (not `string | undefined`).
@@ -967,7 +998,13 @@ export async function runSubprocess(opts: RunOptions): Promise<RunResult> {
     // (e.g. broker prompts). cross-spawn (used internally by execa) handles
     // PATHEXT resolution and .cmd shim argument escaping with shell: false.
     shell: false,
-    stdin: 'pipe',
+    // Only open a stdin pipe when there is actually content to write.
+    // Opening a pipe and immediately .end()-ing it still presents the child
+    // with a real (but empty) stdin handle, and some CLIs (Codex) interpret
+    // that as "input is being streamed in" and append it to the argv prompt
+    // — mangling the broker's turn cue. With 'ignore' the child's fd 0 is
+    // wired to the OS null device and the sniff-and-append path doesn't fire.
+    stdin: hasStdin ? 'pipe' : 'ignore',
     stdout: 'pipe',
     stderr: 'pipe',
     reject: false,
@@ -977,9 +1014,10 @@ export async function runSubprocess(opts: RunOptions): Promise<RunResult> {
     // shims. We manage our own timer + tree-kill.
   });
 
-  // Write stdin and close it (EOF).
-  if (child.stdin) {
-    if (opts.stdin && opts.stdin.length > 0) child.stdin.write(opts.stdin, 'utf8');
+  // Write stdin and close it (EOF). Only when we actually have content —
+  // otherwise stdin is 'ignore' and child.stdin is null.
+  if (hasStdin && child.stdin) {
+    child.stdin.write(opts.stdin as string, 'utf8');
     child.stdin.end();
   }
 
@@ -1044,13 +1082,13 @@ export async function runSubprocess(opts: RunOptions): Promise<RunResult> {
 npx vitest run server/tests/unit/spawn.test.ts
 ```
 
-Expected on Windows: 9 passed in this file — 5 original `runSubprocess` cases + spawn-failure case + non-ASCII argv case + multi-line argv case + 1 collapsed `shouldUseShell` invariant assertion. On non-Windows the two Windows-only cases skip, leaving 7 passed.
+Expected on Windows: 11 passed in this file — 5 original `runSubprocess` cases + spawn-failure case + non-ASCII argv case + multi-line argv case + 2 conditional-stdin cases (no-stdin → ReadStream, with-stdin → Socket) + 1 collapsed `shouldUseShell` invariant assertion. On non-Windows the two Windows-only cases skip, leaving 9 passed.
 
 If the timeout test fails because the child doesn't actually die (parent test hangs after the assertion): the most likely cause is `tree-kill` not finding `taskkill`. Verify `where taskkill` returns `C:\Windows\System32\taskkill.exe` in your shell.
 
 If the multi-line argv test fails: `shell: true` is sneaking back in somewhere. Verify `shouldUseShell` returns false unconditionally and the `runSubprocess` execa options pass `shell: false`. Don't reintroduce a shell branch — investigate.
 
-Across all three Phase 1 test files, the full vitest run summary on Windows should read **19 passed (19)** — 7 encoding + 3 tree-kill + 9 spawn (no skips on Windows after the shouldUseShell collapse).
+Across all three Phase 1 test files, the full vitest run summary on Windows should read **21 passed (21)** — 7 encoding + 3 tree-kill + 11 spawn (no skips on Windows after the shouldUseShell collapse).
 
 - [ ] **Step 5: Commit**
 

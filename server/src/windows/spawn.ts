@@ -101,6 +101,16 @@ export async function runSubprocess(opts: RunOptions): Promise<RunResult> {
   const actualCommand = opts.command;
   const actualArgs: string[] = opts.args ?? [];
 
+  // Only open a stdin pipe when there is actually content to write. Opening a
+  // pipe and immediately calling .end() still presents the child with a real
+  // (but empty) stdin handle, and some CLIs interpret that as "input is being
+  // streamed in" and append it to whatever was passed via argv. Codex in
+  // particular logs `Reading additional input from stdin...` to stderr and
+  // appends a `<stdin>` block AFTER the argv prompt, which mangles the turn
+  // cue. With `stdio: 'ignore'` the child sees stdin as closed/unreadable from
+  // the start and skips that path entirely.
+  const hasStdin = typeof opts.stdin === 'string' && opts.stdin.length > 0;
+
   const child = execa(actualCommand, actualArgs, {
     ...(opts.cwd !== undefined ? { cwd: opts.cwd } : {}),
     env,
@@ -112,16 +122,17 @@ export async function runSubprocess(opts: RunOptions): Promise<RunResult> {
     // (e.g. broker prompts). cross-spawn (used internally by execa) handles
     // PATHEXT resolution and .cmd shim argument escaping with shell: false.
     shell: false,
-    stdin: 'pipe',
+    stdin: hasStdin ? 'pipe' : 'ignore',
     stdout: 'pipe',
     stderr: 'pipe',
     reject: false,
     stripFinalNewline: false,
   });
 
-  // Write stdin and close it (EOF).
-  if (child.stdin) {
-    if (opts.stdin && opts.stdin.length > 0) child.stdin.write(opts.stdin, 'utf8');
+  // Write stdin and close it (EOF). Only when we actually have content —
+  // otherwise stdin is 'ignore' and child.stdin is null.
+  if (hasStdin && child.stdin) {
+    child.stdin.write(opts.stdin as string, 'utf8');
     child.stdin.end();
   }
 
