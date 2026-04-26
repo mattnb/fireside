@@ -3625,21 +3625,49 @@ This script exercises each adapter against the real CLI, end-to-end. Failures he
 ```js
 #!/usr/bin/env node
 // Calls each real CLI through the runner once. Run AFTER `verify-clis` and AFTER fixtures are captured.
+//
+// Two passes:
+//   1. Direct prompt — exercises the CLI parsing path with a minimal prompt.
+//   2. Broker transcript prompt — wraps the same intent in `buildTurnPrompt`
+//      (byte-for-byte what the broker sends). Direct-prompt passing while
+//      transcript-prompt failing has been observed; the second pass closes
+//      that gap.
 (async () => {
   const { runAgentTurn } = await import('../dist/server/src/agents/runner.js');
   const { getAgentSpec } = await import('../dist/server/src/agents/registry.js');
+  const { buildTurnPrompt } = await import('../dist/server/src/transcript.js');
 
   const cases = [
     { id: 'claude', prompt: 'reply with exactly: pong' },
     { id: 'codex',  prompt: 'reply with exactly: pong' },
     { id: 'gemini', prompt: 'reply with exactly: pong' },
   ];
+
+  console.log('--- Pass 1: direct prompts ---');
   for (const c of cases) {
     process.stdout.write(`[${c.id}] running... `);
     try {
       const reply = await runAgentTurn({ spec: getAgentSpec(c.id), prompt: c.prompt, sessionId: null });
       const ok = reply.text.toLowerCase().includes('pong');
       console.log(ok ? `OK (sessionId=${reply.sessionId})` : `WRONG: ${JSON.stringify(reply.text).slice(0,100)}`);
+    } catch (err) {
+      console.log(`FAIL: ${err.message}`);
+    }
+  }
+
+  console.log('\n--- Pass 2: broker transcript prompts ---');
+  for (const c of cases) {
+    process.stdout.write(`[${c.id}] (transcript) running... `);
+    const transcriptPrompt = buildTurnPrompt({
+      agentId: c.id,
+      roomName: 'smoke',
+      history: [],
+      newMessage: { authorId: 'matt', authorKind: 'human', text: c.prompt },
+    });
+    try {
+      const reply = await runAgentTurn({ spec: getAgentSpec(c.id), prompt: transcriptPrompt, sessionId: null });
+      const ok = reply.text.toLowerCase().includes('pong');
+      console.log(ok ? `OK (sessionId=${reply.sessionId})` : `WRONG: ${JSON.stringify(reply.text).slice(0,200)}`);
     } catch (err) {
       console.log(`FAIL: ${err.message}`);
     }
@@ -3657,7 +3685,7 @@ npm run build
 node scripts/smoke-test.cjs
 ```
 
-Expected: 3 lines, all `OK`. If any line is `WRONG` or `FAIL`, that adapter's `parseOutput` does not match the actual CLI output. Open the corresponding fixture, compare against the failure stdout, and update the adapter constants (e.g. `RESULT_FIELD` in `claude.ts`).
+Expected: 6 lines, all `OK` — three for the direct-prompt pass and three for the broker transcript-prompt pass. If any line is `WRONG` or `FAIL`, that adapter's `parseOutput` does not match the actual CLI output, OR (when only the Pass-2 line fails) the CLI doesn't behave well against the broker's transcript prompt. Open the corresponding fixture, compare against the failure stdout, and update the adapter constants (e.g. `RESULT_FIELD` in `claude.ts`) or the transcript template if Pass 2 fails alone.
 
 When the smoke test fails for a specific adapter, use `scripts/debug-agent.cjs` to capture the raw CLI output for that agent in isolation: `node scripts/debug-agent.cjs <claude|codex|gemini> "<message>"`. The script invokes the CLI through the same `runSubprocess` + registry path the broker uses, builds the prompt via `buildTurnPrompt` (so it's byte-for-byte what the broker would send), and dumps the exact prompt, argv, raw stdout, raw stderr, exit code, timed-out flag, and parse result. Run it before changing any adapter constants — it's the only way to see what the CLI is actually emitting versus what the parser expects.
 
