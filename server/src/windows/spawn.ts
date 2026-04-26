@@ -1,21 +1,25 @@
 // server/src/windows/spawn.ts
-import path from 'node:path';
 import { execa, type ExecaError } from 'execa';
 import { killTree } from './tree-kill.js';
 import { normalizeLineEndings, stripBom } from './encoding.js';
 
 /**
- * Determines whether `execa` must be invoked with `shell: true` to resolve the
- * given command. On Windows, bare command names (`claude`, `codex`, `gemini`)
- * have to go through cmd.exe so PATHEXT picks up their `.cmd` shims; absolute
- * or path-qualified commands must bypass the shell because cmd.exe word-splits
- * unquoted paths-with-spaces like `C:\Program Files\nodejs\node.exe`.
+ * We never need `shell: true`. `execa` (via `cross-spawn`) already handles the
+ * two Windows-specific concerns that originally motivated `shell: true`:
+ *   1. PATHEXT resolution — bare names like `claude` resolve to `claude.cmd`
+ *      automatically without involving cmd.exe.
+ *   2. `.cmd` shim argument escaping — multi-line argv strings (e.g. broker
+ *      prompts containing newlines) pass through untouched.
+ *
+ * Going through cmd.exe required us to manually concatenate one command line,
+ * which cmd.exe terminates at the first embedded newline — that silently
+ * truncated multi-line prompts and caused Phase 8 real-CLI test failures.
+ *
+ * Kept as a function (rather than inlining `false` at the call site) so tests
+ * can document the always-false invariant.
  */
-export function shouldUseShell(command: string): boolean {
-  if (process.platform !== 'win32') return false;
-  if (path.isAbsolute(command)) return false;
-  if (command.includes('/') || command.includes('\\')) return false;
-  return true;
+export function shouldUseShell(_command: string): boolean {
+  return false;
 }
 
 export class SubprocessTimeoutError extends Error {
@@ -83,40 +87,31 @@ function isSpawnFailure(err: ExecaError): boolean {
 
 export async function runSubprocess(opts: RunOptions): Promise<RunResult> {
   const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT;
-  // PYTHONIOENCODING is harmless on cmd.exe and helps any Python tool that
-  // ends up in the chain. We deliberately do NOT set LANG/LC_ALL — those are
-  // POSIX locale knobs that cmd.exe ignores; setting them here creates the
-  // false impression that UTF-8 is being enforced when it isn't. Real UTF-8
-  // enforcement on Windows happens via the `chcp 65001` prefix injected below
-  // for shell-resolved commands.
+  // PYTHONIOENCODING helps any Python tool that ends up in the chain. We
+  // deliberately do NOT set LANG/LC_ALL — those are POSIX locale knobs that
+  // Windows ignores. UTF-8 of child stdout is handled by execa's
+  // `encoding: 'utf8'` decode of the raw byte buffer, so no console-codepage
+  // dance (`chcp 65001`) is required when we bypass cmd.exe entirely.
   const env = {
     PYTHONIOENCODING: 'utf-8',
     ...process.env,
     ...opts.env,
   };
 
-  const useShell = shouldUseShell(opts.command);
-  let actualCommand = opts.command;
-  let actualArgs: string[] = opts.args ?? [];
-  if (useShell) {
-    // When cmd.exe runs the command we prepend `chcp 65001 >NUL && ` so the
-    // console code page is set to UTF-8 for the rest of the line. execa with
-    // `shell: true` accepts the entire command line as a single argv[0] and
-    // hands it to cmd.exe verbatim, so we collapse args into the string here
-    // and pass an empty args array.
-    const argString = actualArgs
-      .map((a) => (/\s/.test(a) ? `"${a.replace(/"/g, '\\"')}"` : a))
-      .join(' ');
-    actualCommand = `chcp 65001 >NUL && ${opts.command}${argString.length > 0 ? ' ' + argString : ''}`;
-    actualArgs = [];
-  }
+  const actualCommand = opts.command;
+  const actualArgs: string[] = opts.args ?? [];
 
   const child = execa(actualCommand, actualArgs, {
     ...(opts.cwd !== undefined ? { cwd: opts.cwd } : {}),
     env,
     encoding: 'utf8',
     windowsHide: true,
-    shell: useShell,
+    // shell: false is critical on Windows. With shell: true, execa concatenates
+    // a single command line and hands it to cmd.exe — cmd.exe terminates that
+    // line at the first embedded newline, silently truncating multi-line argv
+    // (e.g. broker prompts). cross-spawn (used internally by execa) handles
+    // PATHEXT resolution and .cmd shim argument escaping with shell: false.
+    shell: false,
     stdin: 'pipe',
     stdout: 'pipe',
     stderr: 'pipe',

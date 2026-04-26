@@ -800,45 +800,45 @@ describe('runSubprocess', () => {
   });
 
   it.skipIf(process.platform !== 'win32')(
-    'preserves non-ASCII characters through the shell path',
+    'preserves non-ASCII characters in argv',
     async () => {
-      // `cmd` is a bare command name -> resolved via shouldUseShell -> uses the
-      // chcp 65001 prefix injected into the command line.
+      // With shell: false, argv passes byte-for-byte to node.exe and execa
+      // decodes the child's stdout as UTF-8 — no chcp dance required.
       const result = await runSubprocess({
-        command: 'cmd',
-        args: ['/c', 'echo', '日本語'],
+        command: 'node',
+        args: ['-e', 'process.stdout.write("日本語")'],
         timeoutMs: 5000,
       });
-      expect(result.stdout).toContain('日本語');
+      expect(result.stdout).toBe('日本語');
+    },
+  );
+
+  it.skipIf(process.platform !== 'win32')(
+    'passes multi-line argv through to a bare-name command on Windows',
+    async () => {
+      // Use 'node' (a bare name on Windows that resolves via PATHEXT to node.exe).
+      // Pass a multi-line string as a single arg; child echoes it verbatim.
+      // With shell: true this fails because cmd.exe terminates the command
+      // line at the first embedded newline.
+      const multiLine = 'line1\nline2\nline3';
+      const result = await runSubprocess({
+        command: 'node',
+        args: ['-e', `process.stdout.write(${JSON.stringify(multiLine)})`],
+        timeoutMs: 10_000,
+      });
+      expect(result.exitCode).toBe(0);
+      expect(result.stdout).toBe(multiLine);
     },
   );
 });
 
 describe('shouldUseShell', () => {
-  it.skipIf(process.platform !== 'win32')(
-    'returns true for bare command names on Windows',
-    () => {
-      expect(shouldUseShell('claude')).toBe(true);
-      expect(shouldUseShell('codex')).toBe(true);
-    },
-  );
-  it.skipIf(process.platform !== 'win32')(
-    'returns false for absolute paths on Windows',
-    () => {
-      expect(shouldUseShell('C:\\Program Files\\nodejs\\node.exe')).toBe(false);
-      expect(shouldUseShell('/usr/local/bin/node')).toBe(false);
-    },
-  );
-  it.skipIf(process.platform !== 'win32')(
-    'returns false for path-qualified commands',
-    () => {
-      expect(shouldUseShell('./bin/foo')).toBe(false);
-      expect(shouldUseShell('subdir\\foo.exe')).toBe(false);
-    },
-  );
-  it.skipIf(process.platform === 'win32')('always returns false on non-Windows', () => {
+  it('always returns false — execa/cross-spawn handles PATHEXT and .cmd escaping', () => {
     expect(shouldUseShell('claude')).toBe(false);
-    expect(shouldUseShell('/usr/bin/node')).toBe(false);
+    expect(shouldUseShell('codex')).toBe(false);
+    expect(shouldUseShell('C:\\Program Files\\nodejs\\node.exe')).toBe(false);
+    expect(shouldUseShell('/usr/local/bin/node')).toBe(false);
+    expect(shouldUseShell('./bin/foo')).toBe(false);
   });
 });
 ```
@@ -855,23 +855,24 @@ Expected: FAIL — module not found.
 
 ```ts
 // server/src/windows/spawn.ts
-import path from 'node:path';
 import { execa, type ExecaError } from 'execa';
 import { killTree } from './tree-kill.js';
 import { normalizeLineEndings, stripBom } from './encoding.js';
 
 /**
- * Determines whether `execa` must be invoked with `shell: true` to resolve the
- * given command. On Windows, bare command names (`claude`, `codex`, `gemini`)
- * have to go through cmd.exe so PATHEXT picks up their `.cmd` shims; absolute
- * or path-qualified commands must bypass the shell because cmd.exe word-splits
- * unquoted paths-with-spaces like `C:\Program Files\nodejs\node.exe`.
+ * We never need `shell: true`. `execa` (via `cross-spawn`) already handles the
+ * two Windows-specific concerns that originally motivated `shell: true`:
+ *   1. PATHEXT resolution — bare names like `claude` resolve to `claude.cmd`
+ *      automatically without involving cmd.exe.
+ *   2. `.cmd` shim argument escaping — multi-line argv strings (e.g. broker
+ *      prompts containing newlines) pass through untouched.
+ *
+ * Going through cmd.exe required us to manually concatenate one command line,
+ * which cmd.exe terminates at the first embedded newline — that silently
+ * truncated multi-line prompts and caused Phase 8 real-CLI test failures.
  */
-export function shouldUseShell(command: string): boolean {
-  if (process.platform !== 'win32') return false;
-  if (path.isAbsolute(command)) return false;
-  if (command.includes('/') || command.includes('\\')) return false;
-  return true;
+export function shouldUseShell(_command: string): boolean {
+  return false;
 }
 
 export class SubprocessTimeoutError extends Error {
@@ -939,31 +940,19 @@ function isSpawnFailure(err: ExecaError): boolean {
 
 export async function runSubprocess(opts: RunOptions): Promise<RunResult> {
   const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT;
-  // PYTHONIOENCODING is harmless on cmd.exe and helps any Python tool that
-  // ends up in the chain. We deliberately do NOT set LANG/LC_ALL — those are
-  // POSIX locale knobs that cmd.exe ignores. Real UTF-8 enforcement on Windows
-  // happens via the `chcp 65001` prefix injected below for shell-resolved
-  // commands.
+  // PYTHONIOENCODING helps any Python tool that ends up in the chain. We
+  // deliberately do NOT set LANG/LC_ALL — those are POSIX locale knobs that
+  // Windows ignores. UTF-8 of child stdout is handled by execa's
+  // `encoding: 'utf8'` decode of the raw byte buffer, so no console-codepage
+  // dance (`chcp 65001`) is required when we bypass cmd.exe entirely.
   const env = {
     PYTHONIOENCODING: 'utf-8',
     ...process.env,
     ...opts.env,
   };
 
-  const useShell = shouldUseShell(opts.command);
-  let actualCommand = opts.command;
-  let actualArgs: string[] = opts.args ?? [];
-  if (useShell) {
-    // When cmd.exe runs the command we prepend `chcp 65001 >NUL && ` so the
-    // console code page is set to UTF-8 for the rest of the line. execa with
-    // `shell: true` accepts the entire command line as a single argv[0] and
-    // hands it to cmd.exe verbatim, so we collapse args into the string.
-    const argString = actualArgs
-      .map((a) => (/\s/.test(a) ? `"${a.replace(/"/g, '\\"')}"` : a))
-      .join(' ');
-    actualCommand = `chcp 65001 >NUL && ${opts.command}${argString.length > 0 ? ' ' + argString : ''}`;
-    actualArgs = [];
-  }
+  const actualCommand = opts.command;
+  const actualArgs: string[] = opts.args ?? [];
 
   const child = execa(actualCommand, actualArgs, {
     // Conditional spread: TypeScript's `exactOptionalPropertyTypes` rejects
@@ -972,7 +961,12 @@ export async function runSubprocess(opts: RunOptions): Promise<RunResult> {
     env,
     encoding: 'utf8',
     windowsHide: true,
-    shell: useShell,
+    // shell: false is critical on Windows. With shell: true, execa concatenates
+    // a single command line and hands it to cmd.exe — cmd.exe terminates that
+    // line at the first embedded newline, silently truncating multi-line argv
+    // (e.g. broker prompts). cross-spawn (used internally by execa) handles
+    // PATHEXT resolution and .cmd shim argument escaping with shell: false.
+    shell: false,
     stdin: 'pipe',
     stdout: 'pipe',
     stderr: 'pipe',
@@ -1050,13 +1044,13 @@ export async function runSubprocess(opts: RunOptions): Promise<RunResult> {
 npx vitest run server/tests/unit/spawn.test.ts
 ```
 
-Expected: 10 passed, 1 skipped on Windows (the non-Windows shouldUseShell test); 7 passed, 4 skipped on non-Windows. Total 11 tests in this file: 5 original `runSubprocess` cases + the spawn-failure case + the UTF-8 shell case + 4 `shouldUseShell` cases (3 Windows + 1 non-Windows).
+Expected on Windows: 9 passed in this file — 5 original `runSubprocess` cases + spawn-failure case + non-ASCII argv case + multi-line argv case + 1 collapsed `shouldUseShell` invariant assertion. On non-Windows the two Windows-only cases skip, leaving 7 passed.
 
 If the timeout test fails because the child doesn't actually die (parent test hangs after the assertion): the most likely cause is `tree-kill` not finding `taskkill`. Verify `where taskkill` returns `C:\Windows\System32\taskkill.exe` in your shell.
 
-If the UTF-8 shell-path test asserts `???` instead of `日本語`, your `chcp 65001` prefix isn't being applied — verify the shell-path branch in `runSubprocess` is constructing the cmd line correctly.
+If the multi-line argv test fails: `shell: true` is sneaking back in somewhere. Verify `shouldUseShell` returns false unconditionally and the `runSubprocess` execa options pass `shell: false`. Don't reintroduce a shell branch — investigate.
 
-Across all three Phase 1 test files, the full vitest run summary on Windows should read **20 passed, 1 skipped (21)** — 7 encoding + 3 tree-kill + 11 spawn (1 of which is a non-Windows-only skip).
+Across all three Phase 1 test files, the full vitest run summary on Windows should read **19 passed (19)** — 7 encoding + 3 tree-kill + 9 spawn (no skips on Windows after the shouldUseShell collapse).
 
 - [ ] **Step 5: Commit**
 

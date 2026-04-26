@@ -91,43 +91,42 @@ describe('runSubprocess', () => {
   });
 
   it.skipIf(process.platform !== 'win32')(
-    'preserves non-ASCII characters through the shell path',
+    'preserves non-ASCII characters in argv',
     async () => {
-      // `cmd` is a bare command name -> resolved via shouldUseShell -> uses the chcp 65001 prefix.
+      // With shell: false, argv passes byte-for-byte to node.exe and execa
+      // decodes the child's stdout as UTF-8 — no chcp dance required.
       const result = await runSubprocess({
-        command: 'cmd',
-        args: ['/c', 'echo', '日本語'],
+        command: 'node',
+        args: ['-e', 'process.stdout.write("日本語")'],
         timeoutMs: 5000,
       });
-      expect(result.stdout).toContain('日本語');
+      expect(result.stdout).toBe('日本語');
+    },
+  );
+
+  it.skipIf(process.platform !== 'win32')(
+    'passes multi-line argv through to a bare-name command on Windows',
+    async () => {
+      // Use 'node' (a bare name on Windows that resolves via PATHEXT to node.exe).
+      // Pass a multi-line string as a single arg; child echoes it verbatim.
+      const multiLine = 'line1\nline2\nline3';
+      const result = await runSubprocess({
+        command: 'node',
+        args: ['-e', `process.stdout.write(${JSON.stringify(multiLine)})`],
+        timeoutMs: 10_000,
+      });
+      expect(result.exitCode).toBe(0);
+      expect(result.stdout).toBe(multiLine);
     },
   );
 });
 
 describe('shouldUseShell', () => {
-  it.skipIf(process.platform !== 'win32')(
-    'returns true for bare command names on Windows',
-    () => {
-      expect(shouldUseShell('claude')).toBe(true);
-      expect(shouldUseShell('codex')).toBe(true);
-    },
-  );
-  it.skipIf(process.platform !== 'win32')(
-    'returns false for absolute paths on Windows',
-    () => {
-      expect(shouldUseShell('C:\\Program Files\\nodejs\\node.exe')).toBe(false);
-      expect(shouldUseShell('/usr/local/bin/node')).toBe(false);
-    },
-  );
-  it.skipIf(process.platform !== 'win32')(
-    'returns false for path-qualified commands',
-    () => {
-      expect(shouldUseShell('./bin/foo')).toBe(false);
-      expect(shouldUseShell('subdir\\foo.exe')).toBe(false);
-    },
-  );
-  it.skipIf(process.platform === 'win32')('always returns false on non-Windows', () => {
+  it('always returns false — execa/cross-spawn handles PATHEXT and .cmd escaping', () => {
     expect(shouldUseShell('claude')).toBe(false);
-    expect(shouldUseShell('/usr/bin/node')).toBe(false);
+    expect(shouldUseShell('codex')).toBe(false);
+    expect(shouldUseShell('C:\\Program Files\\nodejs\\node.exe')).toBe(false);
+    expect(shouldUseShell('/usr/local/bin/node')).toBe(false);
+    expect(shouldUseShell('./bin/foo')).toBe(false);
   });
 });
