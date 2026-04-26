@@ -1,5 +1,7 @@
 // server/src/agents/gemini.ts
 import os from 'node:os';
+import path from 'node:path';
+import fs from 'node:fs';
 import type { AgentReply, AgentSpec } from './types.js';
 import { AgentParseError } from './types.js';
 import { extractTopLevelJsonObject } from './json-extract.js';
@@ -20,22 +22,27 @@ function pickString(obj: Record<string, unknown>, fields: string[]): string | nu
   return null;
 }
 
+function createEmptyCwd(): string {
+  return fs.mkdtempSync(path.join(os.tmpdir(), 'fireside-gemini-cwd-'));
+}
+
 export const geminiSpec: AgentSpec = {
   id: 'gemini',
   displayName: 'Gemini',
   command: 'gemini',
-  defaultTimeoutMs: 20_000,
-  // Gemini-cli auto-detects projects from its cwd (presence of `docs/`,
-  // source code, package.json) and enters agentic / tool-using mode — it
-  // narrates intent, attempts file/shell tool calls, and never produces the
-  // JSON we asked for. Forcing cwd to the OS tmpdir keeps gemini in pure
-  // headless-chat mode where `-p` + `--output-format json` actually return
-  // a JSON object.
-  defaultCwd: os.tmpdir(),
-  buildArgs(prompt, sessionId) {
-    const args = ['-p', prompt, '--output-format', 'json'];
-    if (sessionId) args.push('--resume');
+  defaultTimeoutMs: 480_000,
+  // Gemini-cli auto-detects context from cwd and mishandles multi-line prompt
+  // text passed as the `-p` argv value on Windows. Keep `-p` present to force
+  // headless mode, send the real prompt through stdin, and run each turn in a
+  // fresh empty cwd so stale temp files cannot become project context.
+  buildCwd: createEmptyCwd,
+  buildArgs(_prompt, sessionId) {
+    const args = ['-p', '', '--output-format', 'json'];
+    if (sessionId) args.push('--resume', sessionId);
     return args;
+  },
+  buildStdin(prompt) {
+    return prompt;
   },
   parseOutput(stdout, stderr): AgentReply {
     if (!stdout.trim()) throw new AgentParseError('gemini', 'empty stdout', stdout, stderr);
