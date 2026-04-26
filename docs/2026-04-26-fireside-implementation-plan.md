@@ -1453,6 +1453,8 @@ git commit -m "feat(agents): add Claude Code adapter"
 
 Codex emits **JSONL**, not a single JSON object. We need to walk the events to find the session-id event and the final assistant-message event.
 
+Codex's argv-prompt path has a non-TTY-stdin interaction quirk on Windows that causes the model to receive an empty `<stdin>` block instead of the argv prompt. Use stdin-based prompt passing (positional `-`) to avoid it.
+
 - [ ] **Step 1: Write the failing test**
 
 ```ts
@@ -1468,24 +1470,34 @@ const FIXTURE_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '
 const fresh = readFileSync(path.join(FIXTURE_DIR, 'codex-exec-jsonl.txt'), 'utf8');
 
 describe('codex adapter', () => {
-  it('builds argv for fresh session', () => {
+  it('builds argv for fresh session (prompt via stdin)', () => {
     const argv = codexSpec.buildArgs('hi', null);
     expect(argv[0]).toBe('exec');
     expect(argv).toContain('--json');
-    expect(argv).toContain('hi');
-    expect(argv.includes('resume')).toBe(false);
+    expect(argv).toContain('--output-schema');
+    expect(argv[argv.length - 1]).toBe('-');
+    expect(argv).not.toContain('hi');
   });
 
-  it('builds argv for resumed session using explicit thread id (no --last)', () => {
+  it('builds argv for resumed session (prompt via stdin)', () => {
     const argv = codexSpec.buildArgs('again', 'abc-123');
-    // codex exec resume <SESSION_ID> [flags] <prompt> — verified against
-    // `codex exec resume --help`. --last would risk cross-resuming another
-    // room's session in a multi-room/multi-agent system.
-    expect(argv.slice(0, 3)).toEqual(['exec', 'resume', 'abc-123']);
+    // codex exec resume --json --output-schema <path> <SESSION_ID> -
+    // Session id is the [SESSION_ID] positional from `codex exec resume --help`;
+    // `-` is the prompt-source sentinel (kept LAST). --last would risk
+    // cross-resuming another room's session in a multi-room/multi-agent system.
+    expect(argv[0]).toBe('exec');
+    expect(argv[1]).toBe('resume');
+    expect(argv).toContain('abc-123');
     expect(argv).not.toContain('--last');
     expect(argv).toContain('--json');
     expect(argv).toContain('--output-schema');
-    expect(argv[argv.length - 1]).toBe('again');
+    expect(argv[argv.length - 1]).toBe('-');
+    expect(argv).not.toContain('again');
+  });
+
+  it('passes the prompt via stdin', () => {
+    expect(codexSpec.buildStdin?.('hello prompt', null)).toBe('hello prompt');
+    expect(codexSpec.buildStdin?.('multi\nline\nprompt', 'sid')).toBe('multi\nline\nprompt');
   });
 
   it('parses fresh JSONL fixture (raw text fallback when text is not JSON)', () => {
@@ -1636,14 +1648,19 @@ export const codexSpec: AgentSpec = {
   displayName: 'Codex',
   command: 'codex',
   defaultTimeoutMs: 120_000,
-  buildArgs(prompt, sessionId) {
+  buildArgs(_prompt, sessionId) {
     const schema = ensureSchemaFile();
-    // codex exec resume [SESSION_ID] [PROMPT] — explicit thread id, never
-    // --last (multi-room safety).
+    // Prompt goes via stdin (positional `-`). Codex's argv-prompt path was
+    // empirically observed on Windows to ignore the argv prompt entirely under
+    // our spawn config; the stdin path is the documented and reliable route.
     if (sessionId) {
-      return ['exec', 'resume', sessionId, '--json', '--output-schema', schema, prompt];
+      // codex exec resume --json --output-schema <path> <SESSION_ID> -
+      return ['exec', 'resume', '--json', '--output-schema', schema, sessionId, '-'];
     }
-    return ['exec', '--json', '--output-schema', schema, prompt];
+    return ['exec', '--json', '--output-schema', schema, '-'];
+  },
+  buildStdin(prompt) {
+    return prompt;
   },
   parseOutput(stdout, stderr): AgentReply {
     const events = parseJsonl(stdout);

@@ -122,16 +122,26 @@ export const codexSpec: AgentSpec = {
   displayName: 'Codex',
   command: 'codex',
   defaultTimeoutMs: 120_000,
-  buildArgs(prompt, sessionId) {
+  buildArgs(_prompt, sessionId) {
     const schema = ensureSchemaFile();
-    // Codex's `exec resume` syntax is `codex exec resume [SESSION_ID] [PROMPT]`
-    // (verified against `codex exec resume --help`). The session id is a
-    // positional argument before the prompt; using --last would risk
-    // cross-resuming the wrong thread in a multi-room/multi-agent system.
+    // Codex with argv-prompt + non-TTY stdin (our spawn config) was empirically
+    // observed to ignore the argv prompt and emit "I don't see the chat
+    // transcript included..." instead of processing the turn cue. Switching to
+    // the stdin path (positional `-` as the prompt-source sentinel) makes codex
+    // read the transcript correctly and reply normally. The prompt itself goes
+    // through `buildStdin` below; argv only points codex at stdin.
+    //
+    // Order for resume: `codex exec resume --json --output-schema <path>
+    // <session_id> -`. Per `codex exec resume --help`, the session id is the
+    // positional [SESSION_ID]; `-` is kept as the LAST positional (prompt-
+    // source). --last is intentionally avoided — multi-room/multi-agent safety.
     if (sessionId) {
-      return ['exec', 'resume', sessionId, '--json', '--output-schema', schema, prompt];
+      return ['exec', 'resume', '--json', '--output-schema', schema, sessionId, '-'];
     }
-    return ['exec', '--json', '--output-schema', schema, prompt];
+    return ['exec', '--json', '--output-schema', schema, '-'];
+  },
+  buildStdin(prompt) {
+    return prompt;
   },
   parseOutput(stdout, stderr): AgentReply {
     const events = parseJsonl(stdout);

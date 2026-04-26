@@ -15,12 +15,15 @@ describe('codex adapter', () => {
     _resetSchemaPathForTests();
   });
 
-  it('builds argv for fresh session with --output-schema pointing at a real file', () => {
+  it('builds argv for fresh session (prompt via stdin)', () => {
     const argv = codexSpec.buildArgs('hi', null);
     expect(argv[0]).toBe('exec');
     expect(argv).toContain('--json');
-    expect(argv).toContain('hi');
+    expect(argv).toContain('--output-schema');
     expect(argv.includes('resume')).toBe(false);
+    // Prompt is no longer in argv — codex reads it from stdin via positional `-`.
+    expect(argv[argv.length - 1]).toBe('-');
+    expect(argv).not.toContain('hi');
 
     // --output-schema path must exist on disk and contain the schema we expect.
     const schemaIdx = argv.indexOf('--output-schema');
@@ -36,19 +39,24 @@ describe('codex adapter', () => {
     const props = schema['properties'] as Record<string, unknown>;
     expect(props['message']).toBeDefined();
     expect(schema['required']).toEqual(['message']);
-
-    // Prompt is the trailing positional arg.
-    expect(argv[argv.length - 1]).toBe('hi');
   });
 
-  it('builds argv for resumed session using explicit thread id (no --last)', () => {
+  it('builds argv for resumed session (prompt via stdin)', () => {
     const argv = codexSpec.buildArgs('again', 'abc-123');
-    // codex exec resume <SESSION_ID> [flags] <prompt>
-    expect(argv.slice(0, 3)).toEqual(['exec', 'resume', 'abc-123']);
+    // codex exec resume --json --output-schema <path> <SESSION_ID> -
+    expect(argv[0]).toBe('exec');
+    expect(argv[1]).toBe('resume');
+    expect(argv).toContain('abc-123');
     expect(argv).not.toContain('--last');
     expect(argv).toContain('--json');
     expect(argv).toContain('--output-schema');
-    expect(argv[argv.length - 1]).toBe('again');
+    expect(argv[argv.length - 1]).toBe('-');
+    expect(argv).not.toContain('again');
+  });
+
+  it('passes the prompt via stdin', () => {
+    expect(codexSpec.buildStdin?.('hello prompt', null)).toBe('hello prompt');
+    expect(codexSpec.buildStdin?.('multi\nline\nprompt', 'sid')).toBe('multi\nline\nprompt');
   });
 
   it('reuses the same schema file across calls', () => {
