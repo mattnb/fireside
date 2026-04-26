@@ -1,0 +1,89 @@
+{
+  "session_id": "2dd6c5b8-2ac8-4cdc-831e-f424a2c84c28",
+  "response": "The last word I said was pong.",
+  "stats": {
+    "models": {
+      "gemini-2.5-flash-lite": {
+        "api": {
+          "totalRequests": 1,
+          "totalErrors": 0,
+          "totalLatencyMs": 1118
+        },
+        "tokens": {
+          "input": 1234,
+          "prompt": 1234,
+          "candidates": 41,
+          "total": 1338,
+          "cached": 0,
+          "thoughts": 63,
+          "tool": 0
+        },
+        "roles": {
+          "utility_router": {
+            "totalRequests": 1,
+            "totalErrors": 0,
+            "totalLatencyMs": 1118,
+            "tokens": {
+              "input": 1234,
+              "prompt": 1234,
+              "candidates": 41,
+              "total": 1338,
+              "cached": 0,
+              "thoughts": 63,
+              "tool": 0
+            }
+          }
+        }
+      },
+      "gemini-3-flash-preview": {
+        "api": {
+          "totalRequests": 1,
+          "totalErrors": 0,
+          "totalLatencyMs": 1621
+        },
+        "tokens": {
+          "input": 6885,
+          "prompt": 6885,
+          "candidates": 8,
+          "total": 6920,
+          "cached": 0,
+          "thoughts": 27,
+          "tool": 0
+        },
+        "roles": {
+          "main": {
+            "totalRequests": 1,
+            "totalErrors": 0,
+            "totalLatencyMs": 1621,
+            "tokens": {
+              "input": 6885,
+              "prompt": 6885,
+              "candidates": 8,
+              "total": 6920,
+              "cached": 0,
+              "thoughts": 27,
+              "tool": 0
+            }
+          }
+        }
+      }
+    },
+    "tools": {
+      "totalCalls": 0,
+      "totalSuccess": 0,
+      "totalFail": 0,
+      "totalDurationMs": 0,
+      "totalDecisions": {
+        "accept": 0,
+        "reject": 0,
+        "modify": 0,
+        "auto_accept": 0
+      },
+      "byName": {}
+    },
+    "files": {
+      "totalLinesAdded": 0,
+      "totalLinesRemoved": 0
+    }
+  }
+}
