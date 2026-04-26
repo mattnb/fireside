@@ -1476,21 +1476,42 @@ describe('codex adapter', () => {
     expect(argv.includes('resume')).toBe(false);
   });
 
-  it('builds argv for resumed session', () => {
+  it('builds argv for resumed session using explicit thread id (no --last)', () => {
     const argv = codexSpec.buildArgs('again', 'abc-123');
-    expect(argv).toEqual(expect.arrayContaining(['exec', 'resume', '--last', '--json', 'again']));
+    // codex exec resume <SESSION_ID> [flags] <prompt> — verified against
+    // `codex exec resume --help`. --last would risk cross-resuming another
+    // room's session in a multi-room/multi-agent system.
+    expect(argv.slice(0, 3)).toEqual(['exec', 'resume', 'abc-123']);
+    expect(argv).not.toContain('--last');
+    expect(argv).toContain('--json');
+    expect(argv).toContain('--output-schema');
+    expect(argv[argv.length - 1]).toBe('again');
   });
 
-  it('parses fresh JSONL fixture', () => {
+  it('parses fresh JSONL fixture (raw text fallback when text is not JSON)', () => {
+    // Pre-schema fixture: agent_message.text is the bare word "pong" — not
+    // JSON. Parser falls through and returns raw text (graceful degradation).
     const reply = codexSpec.parseOutput(fresh, '');
     expect(reply.text.toLowerCase()).toContain('pong');
     expect(reply.sessionId).toMatch(/.+/);
   });
 
+  it('extracts message field when agent_message.text is schema-constrained JSON', () => {
+    const stream = [
+      JSON.stringify({ type: 'thread.started', thread_id: 's1' }),
+      JSON.stringify({
+        type: 'item.completed',
+        item: { id: 'item_0', type: 'agent_message', text: '{"message":"pong"}' },
+      }),
+    ].join('\n');
+    const reply = codexSpec.parseOutput(stream, '');
+    expect(reply.text).toBe('pong');
+  });
+
   it('throws when no assistant message event present', () => {
     expect(() =>
       codexSpec.parseOutput(
-        '{"type":"thread.started","session_id":"s1"}\n{"type":"unknown"}',
+        '{"type":"thread.started","thread_id":"s1"}\n{"type":"unknown"}',
         '',
       ),
     ).toThrow(AgentParseError);
@@ -1516,6 +1537,9 @@ Adjust `findSessionId` and `findAssistantText` below to match your fixture.
 
 ```ts
 // server/src/agents/codex.ts
+import os from 'node:os';
+import path from 'node:path';
+import fs from 'node:fs';
 import type { AgentReply, AgentSpec } from './types.js';
 import { AgentParseError } from './types.js';
 
@@ -1538,32 +1562,73 @@ function parseJsonl(input: string): JsonlEvent[] {
   return events;
 }
 
+// Codex emits the session id as `thread_id` on `thread.started`. We accept
+// session_id / sessionId as forward-compat fallbacks.
 function findSessionId(events: JsonlEvent[]): string | null {
   for (const e of events) {
-    const sid = (e as Record<string, unknown>)['session_id'] ?? (e as Record<string, unknown>)['sessionId'];
-    if (typeof sid === 'string') return sid;
+    const obj = e as Record<string, unknown>;
+    const tid = obj['thread_id'] ?? obj['session_id'] ?? obj['sessionId'];
+    if (typeof tid === 'string') return tid;
   }
   return null;
 }
 
+// With --output-schema enforced, the model emits a JSON document conforming
+// to CODEX_REPLY_SCHEMA — i.e. agent_message.text becomes the JSON-stringified
+// `{"message":"..."}` payload. Parse and pull `message`. If the field isn't
+// JSON (older codex / schema not enforced), fall back to raw text.
 function findAssistantText(events: JsonlEvent[]): string | null {
-  // Walk in reverse so we pick the LAST assistant message in case of multiple.
   for (let i = events.length - 1; i >= 0; i--) {
     const e = events[i] as Record<string, unknown>;
-    if (e['type'] === 'turn.completed') {
-      const msg = e['message'] ?? e['response'];
-      if (typeof msg === 'string') return msg;
-      if (msg && typeof msg === 'object') {
-        const content = (msg as Record<string, unknown>)['content'];
-        if (typeof content === 'string') return content;
+    if (e['type'] === 'item.completed') {
+      const item = e['item'];
+      if (item && typeof item === 'object') {
+        const itemObj = item as Record<string, unknown>;
+        if (itemObj['type'] === 'agent_message' && typeof itemObj['text'] === 'string') {
+          const raw = itemObj['text'] as string;
+          try {
+            const parsed = JSON.parse(raw) as unknown;
+            if (
+              parsed !== null &&
+              typeof parsed === 'object' &&
+              'message' in (parsed as Record<string, unknown>) &&
+              typeof (parsed as Record<string, unknown>)['message'] === 'string'
+            ) {
+              return (parsed as Record<string, unknown>)['message'] as string;
+            }
+          } catch {
+            // raw isn't JSON — schema wasn't enforced, fall through to raw.
+          }
+          return raw;
+        }
       }
-    }
-    if (e['type'] === 'item.message' && e['role'] === 'assistant') {
-      const content = e['content'];
-      if (typeof content === 'string') return content;
     }
   }
   return null;
+}
+
+const CODEX_REPLY_SCHEMA = {
+  type: 'object',
+  properties: {
+    message: {
+      type: 'string',
+      description:
+        'The text of your next chat message. Do not include role labels, JSON wrappers, markdown, or explanations. Just the literal text of what you would say.',
+    },
+  },
+  required: ['message'],
+};
+
+// codex's --output-schema takes a file path. Write the schema once per
+// process; reuse on every turn. Re-create if it's been deleted under us.
+let schemaPath: string | null = null;
+function ensureSchemaFile(): string {
+  if (schemaPath !== null && fs.existsSync(schemaPath)) return schemaPath;
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fireside-codex-schema-'));
+  const filePath = path.join(dir, 'reply-schema.json');
+  fs.writeFileSync(filePath, JSON.stringify(CODEX_REPLY_SCHEMA), 'utf8');
+  schemaPath = filePath;
+  return filePath;
 }
 
 export const codexSpec: AgentSpec = {
@@ -1572,10 +1637,13 @@ export const codexSpec: AgentSpec = {
   command: 'codex',
   defaultTimeoutMs: 120_000,
   buildArgs(prompt, sessionId) {
+    const schema = ensureSchemaFile();
+    // codex exec resume [SESSION_ID] [PROMPT] — explicit thread id, never
+    // --last (multi-room safety).
     if (sessionId) {
-      return ['exec', 'resume', '--last', '--json', prompt];
+      return ['exec', 'resume', sessionId, '--json', '--output-schema', schema, prompt];
     }
-    return ['exec', '--json', prompt];
+    return ['exec', '--json', '--output-schema', schema, prompt];
   },
   parseOutput(stdout, stderr): AgentReply {
     const events = parseJsonl(stdout);

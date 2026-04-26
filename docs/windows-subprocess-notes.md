@@ -20,6 +20,18 @@ Why: opening a pipe and immediately calling `.end()` still presents the child wi
 
 Codex emits structured events as JSONL on stdout when invoked with `codex exec --json "<prompt>"`. The session id is carried on the first `thread.started` event under the field `thread_id`. The final assistant text appears on an `item.completed` event whose nested `item.type` is `agent_message` (the text lives on `item.text`). The trailing `turn.completed` event carries token usage only — no message text.
 
+### Schema-constrained output (`--output-schema`)
+Codex's `exec` and `exec resume` accept `--output-schema <FILE>` — a JSON Schema describing the model's final response shape. The fireside codex adapter writes a small schema once per process to `os.tmpdir()/fireside-codex-schema-*/reply-schema.json`:
+
+```json
+{ "type": "object", "properties": { "message": { "type": "string", "description": "The text of your next chat message. Do not include role labels, JSON wrappers, markdown, or explanations. Just the literal text of what you would say." } }, "required": ["message"] }
+```
+
+With the schema in place, the model is forced to emit `{"message":"..."}` and the parser pulls `message` out. If the constraint isn't honored on a given turn (older codex, future schema regression), the parser falls back to the raw `agent_message.text` so we degrade gracefully instead of throwing. This stops codex from meta-acknowledging or refusing in agentic prose — the schema is not optional from the model's perspective.
+
+### Resume by explicit thread id
+`codex exec resume [SESSION_ID] [PROMPT]` accepts the thread id as a positional argument. The fireside adapter passes the stored `thread_id` directly — never `--last`. `--last` would resume "the most recent recorded session" globally, which is wrong in a multi-room/multi-agent system where another room's turn could have run in between.
+
 ### Known stderr noise
 Codex on Windows occasionally emits `ERROR codex_core::session: failed to record rollout items: thread <id> not found` to stderr. This is benign — the stdout JSONL is captured correctly and resume continues to work. The broker's runSubprocess captures stderr separately, so this won't pollute parsed output.
 
