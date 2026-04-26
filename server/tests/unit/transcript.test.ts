@@ -3,20 +3,23 @@ import { describe, it, expect } from 'vitest';
 import { buildTurnPrompt } from '../../src/transcript.js';
 
 describe('buildTurnPrompt', () => {
-  it('formats empty history with just the new message', () => {
+  it('formats empty history with just the new message and ends on a turn cue', () => {
     const prompt = buildTurnPrompt({
       agentId: 'claude',
       roomName: 'general',
       history: [],
       newMessage: { authorId: 'matt', authorKind: 'human', text: 'hi' },
     });
-    expect(prompt).toContain('AI participant');
+    expect(prompt).toContain('multi-user chat room');
     expect(prompt).toContain('claude');
+    expect(prompt).toContain('Reply with the text');
     expect(prompt).toContain('matt: hi');
-    expect(prompt).toContain('response to the new message');
+    // The prompt must end with a `<agentId>:` turn cue so the model is
+    // primed to write its line as a chat continuation, not a meta reply.
+    expect(prompt.endsWith('claude:')).toBe(true);
   });
 
-  it('includes recent history in chronological order', () => {
+  it('includes recent history in chronological order followed by the new message and turn cue', () => {
     const prompt = buildTurnPrompt({
       agentId: 'claude',
       roomName: 'general',
@@ -28,16 +31,18 @@ describe('buildTurnPrompt', () => {
     });
     expect(prompt.indexOf('first')).toBeLessThan(prompt.indexOf('second'));
     expect(prompt.indexOf('second')).toBeLessThan(prompt.indexOf('third'));
+    // The agent's own turn cue must come AFTER the most recent message line.
+    expect(prompt.indexOf('third')).toBeLessThan(prompt.lastIndexOf('claude:'));
+    expect(prompt.endsWith('claude:')).toBe(true);
   });
 
-  it('does not echo the agent\'s own previous messages with a special prefix that would confuse it', () => {
+  it('marks the agent\'s own previous messages with "(you)"', () => {
     const prompt = buildTurnPrompt({
       agentId: 'claude',
       roomName: 'general',
       history: [{ authorId: 'claude', authorKind: 'agent', text: 'hi' }],
       newMessage: { authorId: 'matt', authorKind: 'human', text: 'whats up' },
     });
-    // History should mark agent's own messages with "(you)" so the agent sees its own contributions.
     expect(prompt).toContain('claude (you)');
   });
 

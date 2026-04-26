@@ -2318,6 +2318,8 @@ git commit -m "feat(repos): add sessions repo for (room, agent) -> cli_session_i
 - Create: `fireside/server/src/transcript.ts`
 - Test: `fireside/server/tests/unit/transcript.test.ts`
 
+**Phase 8 update — chat-completion-style prompt with turn cue.** The original transcript template framed history as "Conversation so far:" / "New message just posted:" / "Write your next chat message in response…" During Phase 8 real-CLI smoke tests, Codex (and to a lesser extent Gemini) parsed that framing as historical conversation context and replied with role-acknowledgment ("Understood. I'll participate as `codex`.") instead of obeying the embedded instruction. The fix is to (a) hoist the response instructions to the top so the model treats them as system framing, (b) flatten history + new message into one continuous transcript, and (c) end the prompt with a `<agentId>:` turn cue so the model sees a chat-completion seed and writes a line, not a meta reply.
+
 - [ ] **Step 1: Write the failing test**
 
 ```ts
@@ -2326,20 +2328,21 @@ import { describe, it, expect } from 'vitest';
 import { buildTurnPrompt } from '../../src/transcript.js';
 
 describe('buildTurnPrompt', () => {
-  it('formats empty history with just the new message', () => {
+  it('formats empty history with just the new message and ends on a turn cue', () => {
     const prompt = buildTurnPrompt({
       agentId: 'claude',
       roomName: 'general',
       history: [],
       newMessage: { authorId: 'matt', authorKind: 'human', text: 'hi' },
     });
-    expect(prompt).toContain('AI participant');
+    expect(prompt).toContain('multi-user chat room');
     expect(prompt).toContain('claude');
+    expect(prompt).toContain('Reply with the text');
     expect(prompt).toContain('matt: hi');
-    expect(prompt).toContain('response to the new message');
+    expect(prompt.endsWith('claude:')).toBe(true);
   });
 
-  it('includes recent history in chronological order', () => {
+  it('includes recent history in chronological order followed by the new message and turn cue', () => {
     const prompt = buildTurnPrompt({
       agentId: 'claude',
       roomName: 'general',
@@ -2351,16 +2354,17 @@ describe('buildTurnPrompt', () => {
     });
     expect(prompt.indexOf('first')).toBeLessThan(prompt.indexOf('second'));
     expect(prompt.indexOf('second')).toBeLessThan(prompt.indexOf('third'));
+    expect(prompt.indexOf('third')).toBeLessThan(prompt.lastIndexOf('claude:'));
+    expect(prompt.endsWith('claude:')).toBe(true);
   });
 
-  it('does not echo the agent\'s own previous messages with a special prefix that would confuse it', () => {
+  it('marks the agent\'s own previous messages with "(you)"', () => {
     const prompt = buildTurnPrompt({
       agentId: 'claude',
       roomName: 'general',
       history: [{ authorId: 'claude', authorKind: 'agent', text: 'hi' }],
       newMessage: { authorId: 'matt', authorKind: 'human', text: 'whats up' },
     });
-    // History should mark agent's own messages with "(you)" so the agent sees its own contributions.
     expect(prompt).toContain('claude (you)');
   });
 
@@ -2426,18 +2430,16 @@ export function buildTurnPrompt(opts: BuildTurnOptions): string {
   const recent = opts.history.slice(-max);
   const transcript = recent.map((e) => formatLine(opts.agentId, e)).join('\n');
   const newLine = formatLine(opts.agentId, opts.newMessage);
+  const fullTranscript = transcript ? `${transcript}\n${newLine}` : newLine;
 
   return [
-    `You are an AI participant named "${opts.agentId}" in a multi-user chat room.`,
-    `Other participants are humans and other AI agents.`,
+    `You are "${opts.agentId}" in a multi-user chat room. Other participants are humans and other AI agents.`,
     ``,
-    `Conversation so far:`,
-    transcript || '(no prior messages)',
+    `Reply with the text of your next chat message only. No preface, no JSON, no role labels, no markdown headers, no explanation. If you have nothing useful to add, reply with an empty string.`,
     ``,
-    `New message just posted:`,
-    newLine,
-    ``,
-    `Write your next chat message as "${opts.agentId}", in response to the new message above. Output ONLY the text of your message — no quotes, no JSON, no preface, no role labels, no markdown headers, no explanation. If you have nothing to add, output an empty string.`,
+    `--- conversation ---`,
+    fullTranscript || '(no prior messages)',
+    `${opts.agentId}:`,
   ].join('\n');
 }
 ```
