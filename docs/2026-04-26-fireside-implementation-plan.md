@@ -2442,7 +2442,7 @@ export function buildTurnPrompt(opts: BuildTurnOptions): string {
   return [
     `You are "${opts.agentId}" in a multi-user chat room. Other participants are humans and other AI agents.`,
     ``,
-    `Reply with the text of your next chat message only. No preface, no JSON, no role labels, no markdown headers, no explanation. If you have nothing useful to add, reply with an empty string.`,
+    `Reply with the text of your next chat message only — no preface, no role labels, no markdown headers, no explanation. If you have nothing useful to add, reply with an empty string.`,
     ``,
     `--- conversation ---`,
     fullTranscript || '(no prior messages)',

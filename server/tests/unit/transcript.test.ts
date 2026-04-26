@@ -46,6 +46,18 @@ describe('buildTurnPrompt', () => {
     expect(prompt).toContain('claude (you)');
   });
 
+  it('does not tell the model to avoid JSON (CLI handles JSON wrapping)', () => {
+    const prompt = buildTurnPrompt({
+      agentId: 'claude',
+      roomName: 'general',
+      history: [],
+      newMessage: { authorId: 'matt', authorKind: 'human', text: 'hi' },
+    });
+    expect(prompt.toLowerCase()).not.toContain('no json');
+    expect(prompt.toLowerCase()).not.toContain("don't use json");
+    expect(prompt.toLowerCase()).not.toContain('avoid json');
+  });
+
   it('truncates history beyond the configured cap', () => {
     const history = Array.from({ length: 200 }, (_, i) => ({
       authorId: 'matt',
