@@ -17,6 +17,9 @@ const modal = $('#modal');
 const newRoomForm = $('#new-room-form');
 const newRoomName = $('#new-room-name');
 const membersBody = $('#members-body');
+const deleteModal = $('#delete-modal');
+const deleteRoomNameEl = $('#delete-room-name');
+const deleteConfirmBtn = $('#delete-confirm-btn');
 
 const KNOWN_AGENTS = ['claude', 'codex', 'gemini'];
 const AVATAR_LETTER = { claude: 'C', codex: 'X', gemini: 'G' };
@@ -134,6 +137,19 @@ function renderRoomList() {
     btn.querySelector('.room-pill__name').textContent = room.name;
     btn.querySelector('.room-pill__count').textContent = String(room.agents.length || 0);
     btn.addEventListener('click', () => selectRoom(room.id));
+
+    const delBtn = document.createElement('button');
+    delBtn.type = 'button';
+    delBtn.className = 'room-pill__delete';
+    delBtn.setAttribute('aria-label', `delete ${room.name}`);
+    delBtn.title = 'delete room';
+    delBtn.innerHTML = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>';
+    delBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      promptDeleteRoom(room.id);
+    });
+    btn.appendChild(delBtn);
+
     li.appendChild(btn);
     roomList.appendChild(li);
   }
@@ -497,8 +513,78 @@ modal.addEventListener('click', (e) => {
   if (e.target instanceof Element && e.target.matches('[data-close]')) closeModal();
 });
 document.addEventListener('keydown', (e) => {
-  if (e.key === 'Escape' && !modal.hidden) closeModal();
+  if (e.key === 'Escape') {
+    if (!modal.hidden) closeModal();
+    if (!deleteModal.hidden) closeDeleteModal();
+  }
 });
+
+/* ---------- modal: delete room ---------- */
+
+let pendingDeleteRoomId = null;
+
+function promptDeleteRoom(roomId) {
+  const room = rooms.find((r) => r.id === roomId);
+  if (!room) return;
+  pendingDeleteRoomId = roomId;
+  deleteRoomNameEl.textContent = '#' + room.name;
+  deleteModal.hidden = false;
+  // Focus the cancel button so Enter doesn't accidentally fire the danger action.
+  const cancel = deleteModal.querySelector('[data-close]');
+  if (cancel instanceof HTMLElement) cancel.focus();
+}
+
+function closeDeleteModal() {
+  deleteModal.hidden = true;
+  pendingDeleteRoomId = null;
+}
+
+deleteModal.addEventListener('click', (e) => {
+  if (e.target instanceof Element && e.target.matches('[data-close]')) closeDeleteModal();
+});
+
+deleteConfirmBtn.addEventListener('click', async () => {
+  if (!pendingDeleteRoomId) return;
+  const roomId = pendingDeleteRoomId;
+  deleteConfirmBtn.disabled = true;
+  deleteConfirmBtn.textContent = 'erasing…';
+  try {
+    const r = await fetch(`/api/rooms/${roomId}`, { method: 'DELETE' });
+    if (!r.ok && r.status !== 404) throw new Error(`delete failed: ${r.status}`);
+    // The WS roomDeleted event will reconcile state. Close the modal now.
+    closeDeleteModal();
+  } catch (err) {
+    deleteConfirmBtn.textContent = 'try again';
+    deleteConfirmBtn.disabled = false;
+    return;
+  }
+  deleteConfirmBtn.disabled = false;
+  deleteConfirmBtn.textContent = 'erase it';
+});
+
+function handleRoomDeleted(roomId) {
+  rooms = rooms.filter((r) => r.id !== roomId);
+  roomHumans.delete(roomId);
+  if (currentRoomId === roomId) {
+    currentRoomId = null;
+    if (rooms.length > 0) {
+      selectRoom(rooms[0].id);
+    } else {
+      messageList.innerHTML = '';
+      lastMessageAuthor = null;
+      renderChannelHeader(null);
+      renderMembers();
+      const empty = document.createElement('li');
+      empty.className = 'empty-state';
+      empty.innerHTML = `
+        <p class="empty-state__title">no rooms left</p>
+        <p class="empty-state__sub">create a new one to start a conversation.</p>
+      `;
+      messageList.appendChild(empty);
+    }
+  }
+  renderRoomList();
+}
 
 newRoomForm.addEventListener('submit', async (e) => {
   e.preventDefault();
@@ -542,6 +628,8 @@ function connectWs() {
     }
     if (evt.type === 'messageAppended' && evt.message.roomId === currentRoomId) {
       appendMessage(evt.message);
+    } else if (evt.type === 'roomDeleted') {
+      handleRoomDeleted(evt.roomId);
     }
   });
   ws.addEventListener('close', () => setTimeout(connectWs, 1000));

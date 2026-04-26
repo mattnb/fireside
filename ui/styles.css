@@ -205,6 +205,35 @@ body::after {
 }
 .room-pill.is-active .room-pill__hash { color: var(--ember); }
 
+.room-pill { position: relative; }
+.room-pill__delete {
+  display: none;
+  position: absolute;
+  right: 6px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 18px;
+  height: 18px;
+  border: none;
+  background: transparent;
+  color: var(--text-faint);
+  cursor: pointer;
+  border-radius: 4px;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  transition: color 120ms ease, background 120ms ease;
+}
+.room-pill:hover .room-pill__delete,
+.room-pill.is-active .room-pill__delete { display: flex; }
+.room-pill__delete:hover {
+  color: #f87171;
+  background: rgba(248, 113, 113, 0.12);
+}
+.room-pill__delete svg { width: 12px; height: 12px; }
+.room-pill:hover .room-pill__count,
+.room-pill.is-active .room-pill__count { display: none; }
+
 .rooms__new {
   margin-top: 8px;
   display: flex;
@@ -704,6 +733,15 @@ body::after {
 .btn--primary:hover {
   background: var(--ember-soft);
   box-shadow: 0 0 18px var(--ember-glow);
+}
+.btn--danger {
+  background: #dc2626;
+  color: #fff;
+  font-weight: 600;
+}
+.btn--danger:hover {
+  background: #ef4444;
+  box-shadow: 0 0 18px rgba(220, 38, 38, 0.4);
 }
 
 /* ============== members panel ============== */

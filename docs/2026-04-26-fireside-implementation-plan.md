@@ -3645,6 +3645,8 @@ git add ui/
 git commit -m "feat(ui): add minimal vanilla chat UI"
 ```
 
+**Followup (room deletion UI):** A hover-revealed × button was added to each room pill in the sidebar (also always-visible on the active room). Clicking it opens a `#delete-modal` (a second modal alongside the new-room one) that confirms the action with a red `.btn--danger` button. The confirm handler issues `DELETE /api/rooms/:id`; reconciliation is driven by the broker's `roomDeleted` WS broadcast — when the event arrives, all clients drop the room from their local list and tabs viewing the deleted room switch to another room (or render a `no rooms left` empty state).
+
 ---
 
 ## Phase 8 — Real Agent End-to-End Verification
