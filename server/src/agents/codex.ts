@@ -92,6 +92,7 @@ const CODEX_REPLY_SCHEMA = {
     },
   },
   required: ['message'],
+  additionalProperties: false,
 };
 
 // codex's `--output-schema` takes a file path, not inline JSON. We write the
