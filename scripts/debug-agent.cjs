@@ -51,7 +51,7 @@
       command: spec.command,
       args,
       stdin,
-      timeoutMs: 90_000,
+      timeoutMs: 240_000,
     });
   } catch (err) {
     const elapsed = Date.now() - t0;

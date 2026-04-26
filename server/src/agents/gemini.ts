@@ -23,7 +23,7 @@ export const geminiSpec: AgentSpec = {
   id: 'gemini',
   displayName: 'Gemini',
   command: 'gemini',
-  defaultTimeoutMs: 120_000,
+  defaultTimeoutMs: 240_000,
   buildArgs(prompt, sessionId) {
     const args = ['-p', prompt, '--output-format', 'json'];
     if (sessionId) args.push('--resume');

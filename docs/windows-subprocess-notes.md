@@ -8,3 +8,7 @@ Codex emits structured events as JSONL on stdout when invoked with `codex exec -
 
 ### Known stderr noise
 Codex on Windows occasionally emits `ERROR codex_core::session: failed to record rollout items: thread <id> not found` to stderr. This is benign — the stdout JSONL is captured correctly and resume continues to work. The broker's runSubprocess captures stderr separately, so this won't pollute parsed output.
+
+## Gemini CLI
+
+- Empirical per-turn latency on this Windows install: 60–180s with web-search disabled; 240s default timeout in the gemini adapter.
