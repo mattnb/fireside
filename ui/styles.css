@@ -786,6 +786,28 @@ body::after {
   align-items: baseline;
 }
 .members__group-head__count { color: var(--text-faint); }
+.members__group-head--clickable {
+  cursor: pointer;
+  transition: color 120ms ease;
+  user-select: none;
+}
+.members__group-head--clickable:hover {
+  color: var(--text-secondary);
+}
+.members__group-head__edit {
+  font-family: var(--font-sans);
+  font-size: 11px;
+  text-transform: none;
+  letter-spacing: 0.02em;
+  color: var(--text-faint);
+  font-weight: 500;
+  opacity: 0;
+  transition: opacity 120ms ease, color 120ms ease;
+}
+.members__group-head--clickable:hover .members__group-head__edit {
+  opacity: 1;
+  color: var(--ember-soft);
+}
 
 .member {
   display: grid;

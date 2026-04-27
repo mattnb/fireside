@@ -119,6 +119,46 @@
     </div>
   </div>
 
+  <div id="edit-agents-modal" class="modal" hidden>
+    <div class="modal__scrim" data-close></div>
+    <div class="modal__panel" role="dialog" aria-modal="true" aria-labelledby="edit-agents-title">
+      <header class="modal__head">
+        <h2 id="edit-agents-title" class="modal__title">agents in <span id="edit-agents-room"></span></h2>
+        <p class="modal__sub">toggle which agents listen in. removing an agent ends its current thread — re-adding starts a fresh one.</p>
+      </header>
+      <form id="edit-agents-form" class="modal__form">
+        <fieldset class="agents">
+          <legend class="field__label">agents</legend>
+          <label class="agent-toggle" data-id="claude">
+            <input type="checkbox" name="edit-agent" value="claude" />
+            <span class="agent-toggle__chip">
+              <span class="avatar avatar--claude">C</span>
+              <span class="agent-toggle__name">claude</span>
+            </span>
+          </label>
+          <label class="agent-toggle" data-id="codex">
+            <input type="checkbox" name="edit-agent" value="codex" />
+            <span class="agent-toggle__chip">
+              <span class="avatar avatar--codex">X</span>
+              <span class="agent-toggle__name">codex</span>
+            </span>
+          </label>
+          <label class="agent-toggle" data-id="gemini">
+            <input type="checkbox" name="edit-agent" value="gemini" />
+            <span class="agent-toggle__chip">
+              <span class="avatar avatar--gemini">G</span>
+              <span class="agent-toggle__name">gemini</span>
+            </span>
+          </label>
+        </fieldset>
+        <footer class="modal__foot">
+          <button type="button" class="btn btn--ghost" data-close>cancel</button>
+          <button type="submit" class="btn btn--primary">save</button>
+        </footer>
+      </form>
+    </div>
+  </div>
+
   <div id="delete-modal" class="modal" hidden>
     <div class="modal__scrim" data-close></div>
     <div class="modal__panel" role="dialog" aria-modal="true" aria-labelledby="delete-modal-title">

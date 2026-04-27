@@ -20,6 +20,9 @@ const membersBody = $('#members-body');
 const deleteModal = $('#delete-modal');
 const deleteRoomNameEl = $('#delete-room-name');
 const deleteConfirmBtn = $('#delete-confirm-btn');
+const editAgentsModal = $('#edit-agents-modal');
+const editAgentsForm = $('#edit-agents-form');
+const editAgentsRoomEl = $('#edit-agents-room');
 
 const KNOWN_AGENTS = ['claude', 'codex', 'gemini'];
 const AVATAR_LETTER = { claude: 'C', codex: 'X', gemini: 'G' };
@@ -253,8 +256,21 @@ function renderMembers() {
   const agentsGroup = document.createElement('section');
   agentsGroup.className = 'members__group';
   const agentsHead = document.createElement('header');
-  agentsHead.className = 'members__group-head';
-  agentsHead.innerHTML = `<span>agents</span><span class="members__group-head__count">${room.agents.length}</span>`;
+  agentsHead.className = 'members__group-head members__group-head--clickable';
+  agentsHead.setAttribute('role', 'button');
+  agentsHead.setAttribute('tabindex', '0');
+  agentsHead.setAttribute('aria-label', 'edit agents in this room');
+  agentsHead.innerHTML = `
+    <span>agents <span class="members__group-head__edit">edit</span></span>
+    <span class="members__group-head__count">${room.agents.length}</span>
+  `;
+  agentsHead.addEventListener('click', () => openEditAgentsModal());
+  agentsHead.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault();
+      openEditAgentsModal();
+    }
+  });
   agentsGroup.appendChild(agentsHead);
   if (room.agents.length === 0) {
     const empty = document.createElement('div');
@@ -516,6 +532,7 @@ document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape') {
     if (!modal.hidden) closeModal();
     if (!deleteModal.hidden) closeDeleteModal();
+    if (!editAgentsModal.hidden) closeEditAgentsModal();
   }
 });
 
@@ -561,6 +578,79 @@ deleteConfirmBtn.addEventListener('click', async () => {
   deleteConfirmBtn.disabled = false;
   deleteConfirmBtn.textContent = 'erase it';
 });
+
+/* ---------- modal: edit agents ---------- */
+
+function openEditAgentsModal() {
+  const room = rooms.find((r) => r.id === currentRoomId);
+  if (!room) return;
+  editAgentsRoomEl.textContent = '#' + room.name;
+  // Set checkbox state from current room agents.
+  $$('#edit-agents-form input[name="edit-agent"]').forEach((el) => {
+    el.checked = room.agents.includes(el.value);
+  });
+  editAgentsModal.hidden = false;
+  // Focus first checkbox for keyboard accessibility.
+  const first = editAgentsModal.querySelector('input[type="checkbox"]');
+  if (first instanceof HTMLElement) first.focus();
+}
+
+function closeEditAgentsModal() {
+  editAgentsModal.hidden = true;
+}
+
+editAgentsModal.addEventListener('click', (e) => {
+  if (e.target instanceof Element && e.target.matches('[data-close]')) closeEditAgentsModal();
+});
+
+editAgentsForm.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  if (!currentRoomId) return;
+  const agents = Array.from($$('#edit-agents-form input[name="edit-agent"]:checked')).map(
+    (el) => el.value,
+  );
+  const submitBtn = editAgentsForm.querySelector('button[type="submit"]');
+  submitBtn.disabled = true;
+  submitBtn.textContent = 'saving…';
+  try {
+    const r = await fetch(`/api/rooms/${currentRoomId}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ agents }),
+    });
+    if (!r.ok) throw new Error(`PATCH failed: ${r.status}`);
+    closeEditAgentsModal();
+    // The roomUpdated WS event will reconcile state — but if the WS round-trip
+    // is sluggish, refresh local rooms now so the panel reflects it immediately.
+    const updatedRoom = await r.json();
+    rooms = rooms.map((rm) => (rm.id === updatedRoom.id ? updatedRoom : rm));
+    renderRoomList();
+    renderChannelHeader(updatedRoom);
+    // Drop any thinking spinners for agents that were just removed.
+    for (const id of [...thinking]) {
+      if (!updatedRoom.agents.includes(id)) thinking.delete(id);
+    }
+    renderMembers();
+  } catch (err) {
+    submitBtn.textContent = 'try again';
+  } finally {
+    submitBtn.disabled = false;
+    if (submitBtn.textContent === 'saving…') submitBtn.textContent = 'save';
+  }
+});
+
+function handleRoomUpdated(room) {
+  rooms = rooms.map((rm) => (rm.id === room.id ? room : rm));
+  renderRoomList();
+  if (currentRoomId === room.id) {
+    renderChannelHeader(room);
+    // If an agent was removed mid-thinking, drop them from the spinner set.
+    for (const id of [...thinking]) {
+      if (!room.agents.includes(id)) thinking.delete(id);
+    }
+    renderMembers();
+  }
+}
 
 function handleRoomDeleted(roomId) {
   rooms = rooms.filter((r) => r.id !== roomId);
@@ -630,6 +720,8 @@ function connectWs() {
       appendMessage(evt.message);
     } else if (evt.type === 'roomDeleted') {
       handleRoomDeleted(evt.roomId);
+    } else if (evt.type === 'roomUpdated') {
+      handleRoomUpdated(evt.room);
     }
   });
   ws.addEventListener('close', () => setTimeout(connectWs, 1000));
