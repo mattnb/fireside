@@ -50,6 +50,19 @@ export function buildHttpServer(deps: HttpDeps) {
     return reply.code(204).send();
   });
 
+  app.patch<{ Params: { id: string }; Body: { agents: AgentId[] } }>(
+    '/api/rooms/:id',
+    async (req, reply) => {
+      const { agents } = req.body ?? ({} as { agents: AgentId[] });
+      if (!Array.isArray(agents)) {
+        return reply.code(400).send({ error: 'agents must be an array' });
+      }
+      const updated = deps.broker.setAgents(req.params.id, agents);
+      if (!updated) return reply.code(404).send({ error: 'not found' });
+      return updated;
+    },
+  );
+
   app.get<{ Params: { id: string }; Querystring: { limit?: string } }>(
     '/api/rooms/:id/messages',
     async (req, reply) => {

@@ -111,6 +111,51 @@ describe('WebSocket fanout', () => {
     wsA.close();
   });
 
+  it('broadcasts roomUpdated to all clients when agents change', async () => {
+    const room = createRoom(db, { name: 'general', agents: ['claude', 'codex'] });
+
+    const ws = new WebSocket(`ws://127.0.0.1:${port}/ws`);
+    await new Promise<void>((resolve, reject) => {
+      ws.once('open', () => resolve());
+      ws.once('error', reject);
+    });
+
+    // Subscribe and wait for the ack so the recording listener installed below
+    // never sees the `subscribed` envelope.
+    await new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error('subscribe timed out')), 5000);
+      const onSubscribed = (data: import('ws').RawData) => {
+        const msg = JSON.parse(data.toString()) as { type: string; roomId?: string };
+        if (msg.type === 'subscribed' && msg.roomId === room.id) {
+          clearTimeout(timer);
+          ws.off('message', onSubscribed);
+          resolve();
+        }
+      };
+      ws.on('message', onSubscribed);
+      ws.send(JSON.stringify({ type: 'subscribe', roomId: room.id }));
+    });
+
+    const received: Array<{ type: string; room?: { id: string; agents: string[] } }> = [];
+    ws.on('message', (data) => received.push(JSON.parse(data.toString())));
+
+    broker.setAgents(room.id, ['gemini']);
+
+    await new Promise<void>((resolve) => {
+      const timer = setInterval(() => {
+        if (received.some((r) => r.type === 'roomUpdated')) {
+          clearInterval(timer);
+          resolve();
+        }
+      }, 25);
+    });
+
+    const evt = received.find((r) => r.type === 'roomUpdated');
+    expect(evt!.room!.id).toBe(room.id);
+    expect(evt!.room!.agents).toEqual(['gemini']);
+    ws.close();
+  });
+
   it('broadcasts roomDeleted to all clients and clears subscriptions', async () => {
     const room = createRoom(db, { name: 'doomed', agents: [] });
 

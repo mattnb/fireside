@@ -39,6 +39,28 @@ describe('rooms repo', () => {
     expect(getRoom(db, room.id)!.agents).toEqual(['claude', 'codex', 'gemini']);
   });
 
+  it('setRoomAgents removes sessions for agents that are no longer in the room', () => {
+    const room = createRoom(db, { name: 'general', agents: ['claude', 'codex'] });
+    upsertCliSessionId(db, room.id, 'claude', 'session-claude');
+    upsertCliSessionId(db, room.id, 'codex', 'session-codex');
+
+    setRoomAgents(db, room.id, ['claude']); // removed codex
+
+    expect(getRoom(db, room.id)!.agents).toEqual(['claude']);
+    expect(getCliSessionId(db, room.id, 'claude')).toBe('session-claude');
+    expect(getCliSessionId(db, room.id, 'codex')).toBeNull();
+  });
+
+  it('setRoomAgents preserves sessions for agents that remain in the room', () => {
+    const room = createRoom(db, { name: 'general', agents: ['claude', 'codex'] });
+    upsertCliSessionId(db, room.id, 'claude', 'session-claude');
+
+    setRoomAgents(db, room.id, ['claude', 'gemini']); // claude stays, gemini added
+
+    expect(getCliSessionId(db, room.id, 'claude')).toBe('session-claude');
+    expect(getCliSessionId(db, room.id, 'gemini')).toBeNull();
+  });
+
   it('deleteRoom removes the room and cascades messages', () => {
     const room = createRoom(db, { name: 'x', agents: ['claude'] });
     addMessage(db, { roomId: room.id, authorId: 'matt', authorKind: 'human', text: 'hi' });

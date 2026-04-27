@@ -49,7 +49,21 @@ export function listRooms(db: Database): Room[] {
 }
 
 export function setRoomAgents(db: Database, roomId: string, agents: AgentId[]): void {
-  db.prepare(`UPDATE rooms SET agents_json = ? WHERE id = ?`).run(JSON.stringify(agents), roomId);
+  const room = getRoom(db, roomId);
+  if (!room) return;
+  const removed = room.agents.filter((a) => !agents.includes(a));
+  // Run as a transaction so the agent list and session cleanup are atomic.
+  const tx = db.transaction((newAgents: AgentId[]) => {
+    db.prepare(`UPDATE rooms SET agents_json = ? WHERE id = ?`).run(
+      JSON.stringify(newAgents),
+      roomId,
+    );
+    if (removed.length > 0) {
+      const stmt = db.prepare(`DELETE FROM sessions WHERE room_id = ? AND agent_id = ?`);
+      for (const a of removed) stmt.run(roomId, a);
+    }
+  });
+  tx(agents);
 }
 
 export function deleteRoom(db: Database, roomId: string): boolean {

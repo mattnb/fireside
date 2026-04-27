@@ -2,7 +2,12 @@
 import { EventEmitter } from 'node:events';
 import type { Database } from 'better-sqlite3';
 import { addMessage, listMessages, type Message, type AuthorKind } from './repos/messages.js';
-import { getRoom, deleteRoom as deleteRoomRepo } from './repos/rooms.js';
+import {
+  getRoom,
+  deleteRoom as deleteRoomRepo,
+  setRoomAgents as setRoomAgentsRepo,
+  type Room,
+} from './repos/rooms.js';
 import { getCliSessionId, upsertCliSessionId } from './repos/sessions.js';
 import { buildTurnPrompt } from './transcript.js';
 import { parseMentions } from './mentions.js';
@@ -32,6 +37,13 @@ export class Broker extends EventEmitter {
     const ok = deleteRoomRepo(this.deps.db, roomId);
     if (ok) this.emit('roomDeleted', { roomId });
     return ok;
+  }
+
+  setAgents(roomId: string, agents: AgentId[]): Room | null {
+    setRoomAgentsRepo(this.deps.db, roomId, agents);
+    const updated = getRoom(this.deps.db, roomId);
+    if (updated) this.emit('roomUpdated', updated);
+    return updated;
   }
 
   private async append(

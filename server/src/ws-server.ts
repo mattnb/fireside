@@ -3,6 +3,7 @@ import { WebSocketServer, type WebSocket } from 'ws';
 import type { Server as HttpServer } from 'node:http';
 import type { Broker } from './broker.js';
 import type { Message } from './repos/messages.js';
+import type { Room } from './repos/rooms.js';
 import { logger } from './logger.js';
 
 interface ClientState {
@@ -49,6 +50,15 @@ export function attachWebSocketServer(httpServer: HttpServer, broker: Broker): W
       if (client.readyState === client.OPEN) client.send(payload);
       // Also drop the room from any client's subscription set.
       state.rooms.delete(evt.roomId);
+    }
+  });
+
+  broker.on('roomUpdated', (room: Room) => {
+    const payload = JSON.stringify({ type: 'roomUpdated', room });
+    for (const [client] of clients.entries()) {
+      // Broadcast to ALL clients — they need to update their cached room
+      // state (e.g. agents list) regardless of which room they're viewing.
+      if (client.readyState === client.OPEN) client.send(payload);
     }
   });
 

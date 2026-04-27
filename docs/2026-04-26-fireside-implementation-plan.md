@@ -2182,6 +2182,8 @@ git commit -m "feat(repos): add rooms repo with create/get/list/setAgents"
 
 **Followup (room deletion):** A `deleteRoom(db, roomId): boolean` was added later in support of the UI delete flow. It explicitly removes rows from `sessions` (no FK), then deletes the `rooms` row; messages cascade automatically via the `ON DELETE CASCADE` FK on `messages.room_id`. Returns `true` only when a room actually existed and was removed.
 
+**Followup (agent management):** `setRoomAgents(db, roomId, agents)` was extended to also clean up CLI sessions for any agent removed from the room. The agent-list UPDATE and the targeted `DELETE FROM sessions` calls run inside a `db.transaction(...)` so the agent list and session cleanup are atomic — re-adding a removed agent later starts a fresh CLI thread instead of silently resuming a stale one. Two new tests in `rooms-repo.test.ts` cover the cleanup-on-removal and preserve-on-keep cases.
+
 ---
 
 ### Task 4.3: Messages repo (TDD)
@@ -2993,6 +2995,8 @@ git commit -m "test(broker): verify timeout produces system message, not crash"
 
 **Followup (room deletion event):** The broker later gained a `deleteRoom(roomId): boolean` method that delegates to the rooms repo and, when a row is actually removed, emits a `roomDeleted` event with payload `{ roomId }`. The WS server subscribes to this alongside `messageAppended`.
 
+**Followup (agent management event):** The broker also gained a `setAgents(roomId, agents): Room | null` method that delegates to `setRoomAgents` in the rooms repo, refetches the room, and emits a `roomUpdated` event carrying the full updated `Room` object. It returns `null` when the room does not exist (the repo's `getRoom` short-circuit prevents emission in that case). The WS server subscribes to `roomUpdated` alongside the other events.
+
 ---
 
 ## Phase 6 — HTTP + WebSocket Server
@@ -3149,6 +3153,8 @@ git commit -m "feat(server): add Fastify HTTP server with REST routes"
 ```
 
 **Followup (room deletion route):** A `DELETE /api/rooms/:id` route was added later. It calls `broker.deleteRoom(id)` and returns `204 No Content` on success or `404` when no such room existed. The broker's `deleteRoom` is what triggers the `roomDeleted` WS broadcast — the HTTP layer is just the entry point.
+
+**Followup (agent management route):** A `PATCH /api/rooms/:id` route was added that takes `{ agents: AgentId[] }` in the body, validates the array, and calls `broker.setAgents(id, agents)`. It returns the updated room JSON on success, `400` when `agents` is missing or non-array, and `404` when no such room existed. As with delete, the broker's `setAgents` is what fires the `roomUpdated` WS broadcast; the HTTP route just brokers the call and echoes the room back so the originating client can update optimistically without waiting for the WS round trip.
 
 ---
 
@@ -3363,6 +3369,8 @@ git commit -m "feat(server): add WebSocket fanout with per-room subscription"
 ```
 
 **Followup (roomDeleted broadcast):** The WS server later subscribed to the broker's `roomDeleted` event and broadcasts `{ type: 'roomDeleted', roomId }` to **every** connected client (not just subscribers of that room) so all open tabs can drop the room from their list. The broadcast also clears the `roomId` from each client's subscription set.
+
+**Followup (roomUpdated broadcast):** The WS server also subscribes to `roomUpdated` and broadcasts `{ type: 'roomUpdated', room }` to every connected client. Subscriptions are not touched — the room still exists and whoever was subscribed stays subscribed. Clients use the payload to refresh their cached agent list and re-render the channel header / members panel. A new ws-flow integration test covers this path end-to-end.
 
 ---
 
@@ -3646,6 +3654,8 @@ git commit -m "feat(ui): add minimal vanilla chat UI"
 ```
 
 **Followup (room deletion UI):** A hover-revealed × button was added to each room pill in the sidebar (also always-visible on the active room). Clicking it opens a `#delete-modal` (a second modal alongside the new-room one) that confirms the action with a red `.btn--danger` button. The confirm handler issues `DELETE /api/rooms/:id`; reconciliation is driven by the broker's `roomDeleted` WS broadcast — when the event arrives, all clients drop the room from their local list and tabs viewing the deleted room switch to another room (or render a `no rooms left` empty state).
+
+**Followup (edit-agents UI):** A third modal `#edit-agents-modal` was added so humans can add or remove agents from an existing room. The trigger is the "agents — N" header in the right-hand members panel, which became clickable (with `role="button"`, `tabindex="0"`, Enter/Space handlers, and a hover-revealed "edit" affordance styled via `.members__group-head--clickable` / `.members__group-head__edit`). The modal mirrors the new-room agent toggles, but its checkboxes are pre-populated from the current room's agents on open. Submit issues `PATCH /api/rooms/:id` with `{ agents }`, applies the response immediately to local state for snappy feedback, and relies on the `roomUpdated` WS broadcast (handled in `handleRoomUpdated`) to reconcile every other open tab. The handler also drops any in-flight thinking spinners for agents that were just removed so the spinner doesn't get stuck.
 
 ---
 
