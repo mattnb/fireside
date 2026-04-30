@@ -75,6 +75,13 @@ export function listMessages(
   return rows.map(rowToMessage);
 }
 
+export function getMessage(db: Database, id: string): Message | null {
+  const row = db.prepare(`SELECT * FROM messages WHERE id = ?`).get(id) as
+    | MessageRow
+    | undefined;
+  return row ? rowToMessage(row) : null;
+}
+
 export function listMessagesAfter(db: Database, roomId: string, afterMs: number): Message[] {
   const rows = db
     .prepare(

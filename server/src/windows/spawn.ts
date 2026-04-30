@@ -45,13 +45,29 @@ export class SubprocessSpawnError extends Error {
   }
 }
 
+export class SubprocessCanceledError extends Error {
+  constructor(
+    public command: string,
+    public stdout: string = '',
+    public stderr: string = '',
+  ) {
+    super(`subprocess canceled: ${command}`);
+    this.name = 'SubprocessCanceledError';
+  }
+}
+
 export interface RunOptions {
   command: string;
   args?: string[];
   stdin?: string;
   cwd?: string;
   env?: Record<string, string>;
-  timeoutMs?: number;
+  timeoutMs?: number | null;
+  cancelSignal?: AbortSignal;
+  onStdoutLine?: (line: string) => void;
+  onStderrLine?: (line: string) => void;
+  onStdoutChunk?: (chunk: string) => void;
+  onStderrChunk?: (chunk: string) => void;
 }
 
 export interface RunResult {
@@ -62,6 +78,61 @@ export interface RunResult {
 }
 
 const DEFAULT_TIMEOUT = 120_000;
+
+function safeEmitLine(callback: ((line: string) => void) | undefined, line: string): void {
+  if (!callback) return;
+  try {
+    callback(line);
+  } catch {
+    // Streaming observers must never affect the subprocess lifecycle.
+  }
+}
+
+function safeEmitChunk(callback: ((chunk: string) => void) | undefined, chunk: string): void {
+  if (!callback) return;
+  try {
+    callback(chunk);
+  } catch {
+    // Streaming observers must never affect the subprocess lifecycle.
+  }
+}
+
+function attachLineObserver(
+  stream: NodeJS.ReadableStream | null,
+  onLine: ((line: string) => void) | undefined,
+  onChunk: ((chunk: string) => void) | undefined,
+): () => void {
+  if (!stream || (!onLine && !onChunk)) return () => {};
+
+  let buffer = '';
+  let firstChunk = true;
+  const onData = (chunk: Buffer | string): void => {
+    let text = typeof chunk === 'string' ? chunk : chunk.toString('utf8');
+    if (firstChunk) {
+      text = stripBom(text);
+      firstChunk = false;
+    }
+    text = normalizeLineEndings(text);
+    safeEmitChunk(onChunk, text);
+    if (!onLine) return;
+
+    buffer += text;
+    const lines = buffer.split('\n');
+    buffer = lines.pop() ?? '';
+    for (const line of lines) {
+      safeEmitLine(onLine, line);
+    }
+  };
+
+  stream.on('data', onData);
+  return () => {
+    stream.off('data', onData);
+    if (buffer.length > 0) {
+      safeEmitLine(onLine, buffer);
+      buffer = '';
+    }
+  };
+}
 
 /**
  * True if the error from execa indicates the child process never started
@@ -86,7 +157,7 @@ function isSpawnFailure(err: ExecaError): boolean {
 }
 
 export async function runSubprocess(opts: RunOptions): Promise<RunResult> {
-  const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT;
+  const timeoutMs = opts.timeoutMs === null ? null : (opts.timeoutMs ?? DEFAULT_TIMEOUT);
   // PYTHONIOENCODING helps any Python tool that ends up in the chain. We
   // deliberately do NOT set LANG/LC_ALL — those are POSIX locale knobs that
   // Windows ignores. UTF-8 of child stdout is handled by execa's
@@ -136,13 +207,39 @@ export async function runSubprocess(opts: RunOptions): Promise<RunResult> {
     child.stdin.end();
   }
 
+  const flushStdoutObserver = attachLineObserver(
+    child.stdout,
+    opts.onStdoutLine,
+    opts.onStdoutChunk,
+  );
+  const flushStderrObserver = attachLineObserver(
+    child.stderr,
+    opts.onStderrLine,
+    opts.onStderrChunk,
+  );
+
   let completed = false;
   let timedOut = false;
-  const timer = setTimeout(async () => {
-    // Race guard: if the child already finished and we're just waiting on the
-    // event loop to clear the timer, don't flip timedOut and don't kill.
+  let canceled = false;
+  const timer =
+    timeoutMs === null
+      ? null
+      : setTimeout(async () => {
+          // Race guard: if the child already finished and we're just waiting on the
+          // event loop to clear the timer, don't flip timedOut and don't kill.
+          if (completed) return;
+          timedOut = true;
+          if (child.pid) {
+            try {
+              await killTree(child.pid, 'SIGKILL');
+            } catch {
+              // best effort
+            }
+          }
+        }, timeoutMs);
+  const cancelListener = async (): Promise<void> => {
     if (completed) return;
-    timedOut = true;
+    canceled = true;
     if (child.pid) {
       try {
         await killTree(child.pid, 'SIGKILL');
@@ -150,7 +247,14 @@ export async function runSubprocess(opts: RunOptions): Promise<RunResult> {
         // best effort
       }
     }
-  }, timeoutMs);
+  };
+  if (opts.cancelSignal) {
+    if (opts.cancelSignal.aborted) {
+      void cancelListener();
+    } else {
+      opts.cancelSignal.addEventListener('abort', cancelListener, { once: true });
+    }
+  }
 
   let result: ExecaError | Awaited<typeof child> | undefined;
   try {
@@ -159,7 +263,10 @@ export async function runSubprocess(opts: RunOptions): Promise<RunResult> {
     result = err as ExecaError;
   }
   completed = true;
-  clearTimeout(timer);
+  flushStdoutObserver();
+  flushStderrObserver();
+  if (timer !== null) clearTimeout(timer);
+  opts.cancelSignal?.removeEventListener('abort', cancelListener);
 
   // C1: distinguish a real run-with-non-zero-exit from a complete failure to
   // launch the binary (ENOENT etc). The latter must surface as a
@@ -180,7 +287,11 @@ export async function runSubprocess(opts: RunOptions): Promise<RunResult> {
   );
 
   if (timedOut) {
-    throw new SubprocessTimeoutError(opts.command, timeoutMs, stdout, stderr);
+    throw new SubprocessTimeoutError(opts.command, timeoutMs ?? DEFAULT_TIMEOUT, stdout, stderr);
+  }
+
+  if (canceled) {
+    throw new SubprocessCanceledError(opts.command, stdout, stderr);
   }
 
   return {

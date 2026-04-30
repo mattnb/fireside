@@ -13,7 +13,7 @@ describe('messages repo', () => {
   });
 
   it('adds and lists messages in created order', () => {
-    addMessage(db, { roomId, authorId: 'matt', authorKind: 'human', text: 'hi' });
+    addMessage(db, { roomId, authorId: 'human', authorKind: 'human', text: 'hi' });
     addMessage(db, { roomId, authorId: 'claude', authorKind: 'agent', text: 'hello' });
     const messages = listMessages(db, roomId);
     expect(messages).toHaveLength(2);

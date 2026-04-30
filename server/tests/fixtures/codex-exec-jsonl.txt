@@ -1,4 +1,4 @@
-{"type":"thread.started","thread_id":"019dcb27-84a6-7a90-83d3-eff1bfce5beb"}
+{"type":"thread.started","thread_id":"fixture-codex-thread"}
 {"type":"turn.started"}
 {"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"pong"}}
 {"type":"turn.completed","usage":{"input_tokens":13713,"cached_input_tokens":11136,"output_tokens":24,"reasoning_output_tokens":17}}

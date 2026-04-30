@@ -32,7 +32,20 @@ export async function start(config: Config = loadConfig()): Promise<FiresideServ
 
   const broker = new Broker({
     db,
-    runAgent: (spec, prompt, sessionId) => runAgentTurn({ spec, prompt, sessionId }),
+    runAgent: (spec, prompt, sessionId, permission, cancelSignal, onStreamEvent, timeoutMs) =>
+      runAgentTurn({
+        spec,
+        prompt,
+        sessionId,
+        ...(permission !== undefined ? { permission } : {}),
+        ...(cancelSignal !== undefined ? { cancelSignal } : {}),
+        ...(onStreamEvent !== undefined ? { onStreamEvent } : {}),
+        ...(timeoutMs !== undefined ? { timeoutMs } : {}),
+      }),
+    contextDir: `${config.dataDir}/agent-context`,
+    maxPromptChars: config.maxPromptChars,
+    largeMessageThresholdChars: config.largeMessageThresholdChars,
+    resumeCliSessions: config.resumeCliSessions,
     getSpec: (id: AgentId) => {
       try {
         return getAgentSpec(id);

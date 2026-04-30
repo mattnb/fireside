@@ -1,14 +1,30 @@
+# Dependencies
 node_modules/
+
+# Build output and caches
 dist/
-*.log
-*.sqlite
-*.sqlite-journal
-*.sqlite-wal
-*.sqlite-shm
-data/
-.env
-.env.local
-.DS_Store
-Thumbs.db
+.angular/
+.cache/
 coverage/
 .vitest-cache/
+
+# Runtime state
+data/
+logs/
+*.log
+*.sqlite
+*.sqlite-*
+*.db
+*.db-*
+
+# Local environment
+.env
+.env.*
+!.env.example
+
+# OS and editor noise
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/*
+!.vscode/extensions.json

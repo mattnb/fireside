@@ -29,7 +29,7 @@ describe('Broker timeout handling', () => {
       getSpec: (id) => spec(id),
     });
     const room = createRoom(db, { name: 'g', agents: ['claude'] });
-    await broker.postHumanMessage(room.id, 'matt', '@claude');
+    await broker.postHumanMessage(room.id, 'human', '@claude');
     const messages = listMessages(db, room.id);
     expect(messages).toHaveLength(2);
     expect(messages[1]!.authorKind).toBe('system');

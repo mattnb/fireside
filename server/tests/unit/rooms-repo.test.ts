@@ -3,7 +3,13 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { openDatabase } from '../../src/db.js';
 import { createRoom, deleteRoom, getRoom, listRooms, setRoomAgents } from '../../src/repos/rooms.js';
 import { addMessage, listMessages } from '../../src/repos/messages.js';
+import {
+  addPermissionRequest,
+  listPermissionRequests,
+} from '../../src/repos/permission-requests.js';
+import { createAgentRun, listAgentRuns } from '../../src/repos/agent-runs.js';
 import { getCliSessionId, upsertCliSessionId } from '../../src/repos/sessions.js';
+import { createTask, listTasks, updateTask } from '../../src/repos/tasks.js';
 
 describe('rooms repo', () => {
   let db: ReturnType<typeof openDatabase>;
@@ -63,14 +69,69 @@ describe('rooms repo', () => {
 
   it('deleteRoom removes the room and cascades messages', () => {
     const room = createRoom(db, { name: 'x', agents: ['claude'] });
-    addMessage(db, { roomId: room.id, authorId: 'matt', authorKind: 'human', text: 'hi' });
+    addMessage(db, { roomId: room.id, authorId: 'human', authorKind: 'human', text: 'hi' });
+    const task = createTask(db, {
+      roomId: room.id,
+      title: 'test mission',
+      capabilityProfile: 'edit',
+    });
+    createAgentRun(db, {
+      roomId: room.id,
+      taskId: task.id,
+      triggerMessageId: 'msg-1',
+      agentId: 'claude',
+      permissionMode: 'edit',
+      promptChars: 100,
+      estimatedPromptTokens: 25,
+      liveMessages: 1,
+      contextArtifacts: 0,
+    });
+    addPermissionRequest(db, {
+      roomId: room.id,
+      agentId: 'claude',
+      mode: 'edit',
+      target: 'foo.txt',
+      reason: 'test',
+    });
     upsertCliSessionId(db, room.id, 'claude', 'session-abc');
 
     expect(deleteRoom(db, room.id)).toBe(true);
 
     expect(getRoom(db, room.id)).toBeNull();
     expect(listMessages(db, room.id)).toEqual([]);
+    expect(listPermissionRequests(db, room.id)).toEqual([]);
+    expect(listTasks(db, room.id)).toEqual([]);
+    expect(listAgentRuns(db, room.id)).toEqual([]);
     expect(getCliSessionId(db, room.id, 'claude')).toBeNull();
+  });
+
+  it('keeps one active task per room and stores capability profiles', () => {
+    const room = createRoom(db, { name: 'tasks', agents: ['claude'] });
+    const first = createTask(db, {
+      roomId: room.id,
+      title: 'first',
+      capabilityProfile: 'edit',
+    });
+    const second = createTask(db, {
+      roomId: room.id,
+      title: 'second',
+      capabilityProfile: 'full-auto',
+    });
+
+    let tasks = listTasks(db, room.id);
+    expect(tasks.find((task) => task.id === first.id)!.status).toBe('paused');
+    expect(tasks.find((task) => task.id === second.id)!).toMatchObject({
+      status: 'active',
+      capabilityProfile: 'full-auto',
+    });
+
+    updateTask(db, first.id, { status: 'active', capabilityProfile: 'plan' });
+    tasks = listTasks(db, room.id);
+    expect(tasks.find((task) => task.id === first.id)!).toMatchObject({
+      status: 'active',
+      capabilityProfile: 'plan',
+    });
+    expect(tasks.find((task) => task.id === second.id)!.status).toBe('paused');
   });
 
   it('deleteRoom returns false for unknown id', () => {

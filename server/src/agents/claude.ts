@@ -1,7 +1,9 @@
 // server/src/agents/claude.ts
-import type { AgentReply, AgentSpec } from './types.js';
+import type { AgentReply, AgentRunContext, AgentSpec, AgentStreamEvent } from './types.js';
 import { AgentParseError } from './types.js';
 import { extractTopLevelJsonObject } from './json-extract.js';
+import { claudeContextUsage, formatContextUsage } from '../context-usage.js';
+import { permissionTargetDirectory } from '../permissions.js';
 
 // Field names captured from Phase 2 fixture (claude-headless.json):
 //   top-level `result` carries the assistant text
@@ -9,19 +11,285 @@ import { extractTopLevelJsonObject } from './json-extract.js';
 const RESULT_FIELD = 'result';
 const SESSION_FIELD = 'session_id';
 
+function excerpt(text: unknown, maxChars = 320): string {
+  if (typeof text !== 'string') return '';
+  const trimmed = text.replace(/\s+/g, ' ').trim();
+  if (trimmed.length <= maxChars) return trimmed;
+  return `${trimmed.slice(0, maxChars)}...`;
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === 'object' ? (value as Record<string, unknown>) : null;
+}
+
+function parseJsonLine(line: string): Record<string, unknown> | null {
+  const trimmed = line.trim();
+  if (!trimmed || !trimmed.startsWith('{')) return null;
+  try {
+    return JSON.parse(trimmed) as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+}
+
+function textFromContent(value: unknown): string | null {
+  if (typeof value === 'string') return value;
+  if (!Array.isArray(value)) return null;
+  const parts: string[] = [];
+  for (const item of value) {
+    const obj = asRecord(item);
+    if (obj && typeof obj.text === 'string') parts.push(obj.text);
+  }
+  return parts.length > 0 ? parts.join('') : null;
+}
+
+function textFromAssistantEvent(obj: Record<string, unknown>): string | null {
+  const message = asRecord(obj.message);
+  return textFromContent(message?.content) ?? textFromContent(obj.content);
+}
+
+function parseClaudeStreamReply(stdout: string): { text: string; sessionId: string | null } | null {
+  let resultText: string | null = null;
+  let assistantText: string | null = null;
+  let deltaText = '';
+  let sessionId: string | null = null;
+
+  for (const line of stdout.split('\n')) {
+    const obj = parseJsonLine(line);
+    if (!obj) continue;
+    if (typeof obj[SESSION_FIELD] === 'string') sessionId = obj[SESSION_FIELD] as string;
+
+    const type = typeof obj.type === 'string' ? obj.type : '';
+    if (type === 'result' || typeof obj[RESULT_FIELD] === 'string') {
+      if (typeof obj[RESULT_FIELD] === 'string') resultText = obj[RESULT_FIELD] as string;
+      continue;
+    }
+    if (type === 'assistant') {
+      assistantText = textFromAssistantEvent(obj) ?? assistantText;
+      continue;
+    }
+    if (type === 'stream_event') {
+      const event = asRecord(obj.event);
+      const delta = asRecord(event?.delta);
+      if (typeof delta?.text === 'string') deltaText += delta.text;
+    }
+  }
+
+  const text = resultText ?? assistantText ?? (deltaText ? deltaText : null);
+  return text === null ? null : { text, sessionId };
+}
+
+function claudeResultDetail(obj: Record<string, unknown>): string {
+  const parts: string[] = [];
+  for (const key of ['duration_ms', 'num_turns', 'total_cost_usd']) {
+    const value = obj[key];
+    if (typeof value === 'number') parts.push(`${key}: ${value}`);
+  }
+  return parts.join(', ');
+}
+
+function claudeStreamEvents(line: string): AgentStreamEvent[] {
+  const obj = parseJsonLine(line);
+  if (!obj) return [];
+  const type = typeof obj.type === 'string' ? obj.type : 'event';
+
+  if (type === 'system') {
+    const subtype = typeof obj.subtype === 'string' ? obj.subtype : 'system';
+    if (subtype.startsWith('hook')) {
+      return [
+        {
+          kind: 'event',
+          status: 'running',
+          label: 'claude hook event',
+          detail: 'hook context received; details suppressed',
+        },
+      ];
+    }
+    if (subtype === 'init') {
+      const model = typeof obj.model === 'string' ? obj.model : '';
+      const cwd = typeof obj.cwd === 'string' ? obj.cwd : '';
+      return [
+        {
+          kind: 'event',
+          status: 'running',
+          label: 'claude initialized',
+          detail: [model, cwd].filter(Boolean).join(' / '),
+        },
+      ];
+    }
+    if (subtype === 'status') {
+      return [
+        {
+          kind: 'event',
+          status: 'running',
+          label: 'claude status',
+          detail: typeof obj.status === 'string' ? obj.status : '',
+        },
+      ];
+    }
+    return [{ kind: 'event', status: 'running', label: `claude ${subtype}` }];
+  }
+
+  if (type === 'stream_event') {
+    const event = asRecord(obj.event);
+    const eventType = typeof event?.type === 'string' ? event.type : 'stream event';
+    const delta = asRecord(event?.delta);
+    if (eventType === 'content_block_delta' && typeof delta?.text === 'string') {
+      return [
+        {
+          kind: 'message',
+          status: 'running',
+          label: 'claude assistant text streaming',
+          detail: excerpt(delta.text),
+        },
+      ];
+    }
+    const contentBlock = asRecord(event?.content_block);
+    if (contentBlock && typeof contentBlock.type === 'string' && contentBlock.type.includes('tool')) {
+      return [
+        {
+          kind: 'tool',
+          status: 'running',
+          label: `claude ${contentBlock.type}`,
+          detail: excerpt(contentBlock.name),
+        },
+      ];
+    }
+    if (eventType === 'message_delta') {
+      return [{ kind: 'usage', status: 'running', label: 'claude message delta' }];
+    }
+    return [{ kind: 'event', status: 'running', label: `claude ${eventType}` }];
+  }
+
+  if (type === 'assistant') {
+    return [
+      {
+        kind: 'message',
+        status: 'completed',
+        label: 'claude assistant message ready',
+        detail: excerpt(textFromAssistantEvent(obj) ?? ''),
+      },
+    ];
+  }
+
+  if (type === 'result') {
+    const contextUsage = claudeContextUsage(obj);
+    return [
+      {
+        kind: 'usage',
+        status: 'completed',
+        label: 'claude result received',
+        detail: contextUsage ? formatContextUsage(contextUsage) : claudeResultDetail(obj),
+        ...(contextUsage ? { contextUsage } : {}),
+      },
+    ];
+  }
+
+  if (type === 'rate_limit_event') {
+    return [{ kind: 'usage', status: 'info', label: 'claude rate limit update' }];
+  }
+
+  return [{ kind: 'event', status: 'running', label: `claude ${type}` }];
+}
+
+function claudePermissionMode(context?: AgentRunContext): string {
+  if (isScopedCommandGrant(context)) return 'default';
+  switch (context?.permission?.mode ?? 'plan') {
+    case 'edit':
+      return 'acceptEdits';
+    case 'full-auto':
+      return 'bypassPermissions';
+    case 'plan':
+      return 'plan';
+  }
+}
+
+function isScopedCommandGrant(context?: AgentRunContext): boolean {
+  const permission = context?.permission;
+  if (!permission || permission.mode !== 'full-auto') return false;
+  const capabilities = permission.capabilities ?? [];
+  const requestedMode = permission.requestedMode?.toLowerCase() ?? '';
+  return (
+    capabilities.includes('run-command') &&
+    [
+      'bash',
+      'shell',
+      'command',
+      'commands',
+      'run',
+      'run-command',
+      'terminal',
+      'exec',
+      'execute',
+      'git',
+      'commit',
+      'git-commit',
+    ].includes(requestedMode) &&
+    !capabilities.includes('delete-file')
+  );
+}
+
+function claudePermissionToolArgs(context?: AgentRunContext): string[] {
+  if (isScopedCommandGrant(context)) {
+    const capabilities = context?.permission?.capabilities ?? [];
+    const gitOnly = capabilities.includes('git-commit') || capabilities.includes('git-push');
+    const allowed = gitOnly ? 'Bash(git *)' : 'Bash(*)';
+    const args = ['--allowedTools', allowed];
+    if (!capabilities.includes('git-push')) {
+      args.push('--disallowedTools', 'Bash(git push*) Bash(git * push*)');
+    }
+    return args;
+  }
+  switch (context?.permission?.mode ?? 'plan') {
+    case 'edit':
+      // Fireside's normalized "edit" means workspace file mutation, including
+      // creating a new file. Claude Code distinguishes Write from Edit, so
+      // allow all file-mutation tools while keeping shell/tool escalation out
+      // of this profile.
+      return ['--allowedTools', 'Edit,MultiEdit,Write'];
+    case 'full-auto':
+    case 'plan':
+      return [];
+  }
+}
+
 export const claudeSpec: AgentSpec = {
   id: 'claude',
   displayName: 'Claude Code',
   command: 'claude',
-  defaultTimeoutMs: 120_000,
-  buildArgs(prompt, sessionId) {
-    const args = ['-p', prompt, '--output-format', 'json'];
+  defaultTimeoutMs: 600_000,
+  buildArgs(_prompt, sessionId, context) {
+    const args = [
+      '-p',
+      '--verbose',
+      '--output-format',
+      'stream-json',
+      '--include-partial-messages',
+      '--permission-mode',
+      claudePermissionMode(context),
+      ...claudePermissionToolArgs(context),
+    ];
+    const addDir = context?.permission
+      ? permissionTargetDirectory(context.permission.target)
+      : null;
+    if (addDir) args.push('--add-dir', addDir);
     if (sessionId) args.push('--resume', sessionId);
     return args;
+  },
+  buildStdin(prompt) {
+    return prompt;
+  },
+  parseStreamLine(line, stream): AgentStreamEvent[] {
+    if (stream === 'stderr') return [];
+    return claudeStreamEvents(line);
   },
   parseOutput(stdout, stderr): AgentReply {
     if (!stdout.trim()) {
       throw new AgentParseError('claude', 'empty stdout', stdout, stderr);
+    }
+    const streamed = parseClaudeStreamReply(stdout);
+    if (streamed) {
+      return { text: streamed.text, sessionId: streamed.sessionId, raw: { stdout, stderr } };
     }
     // Claude can emit a session-startup greeting (per CLAUDE.md instructions)
     // before the JSON object on stdout. Use a tolerant extractor so the

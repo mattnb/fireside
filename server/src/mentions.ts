@@ -17,3 +17,51 @@ export function parseMentions(text: string): AgentId[] {
   }
   return Array.from(found);
 }
+
+const CODE_BLOCK_RE = /```[\s\S]*?```/g;
+const INLINE_CODE_RE = /`[^`\n]*`/g;
+const AGENT_NAME_RE = /\b(claude|codex|gemini|echo)\b/gi;
+const LEADING_HANDOFF_RE =
+  /(?:^|[.!?\n]\s*)(claude|codex|gemini|echo)\s*(?:(?::|,|;|--|-)(?=\s*\S)|\s+(?:please|can|could|should|take|pick|verify|review|continue|next|your|you\b))/gi;
+const PHRASE_HANDOFF_RE =
+  /\b(?:ask|tell|handoff\s+to|hand\s+off\s+to|over\s+to|waiting\s+on|blocked\s+on|coordinate\s+with|sync\s+with|pass\s+to|defer\s+to)\s+(claude|codex|gemini|echo)\b/gi;
+const AGENT_ACTION_RE =
+  /\b(claude|codex|gemini|echo)\s+(?:should|can|could|needs?|must|will|continues?|verify|review|take|pick|own|owns|handle|fix)\b/gi;
+
+function scrubCode(text: string): string {
+  return text.replace(CODE_BLOCK_RE, ' ').replace(INLINE_CODE_RE, ' ');
+}
+
+function normalizeHandoffMarkup(text: string): string {
+  return text
+    .replace(/[*_~]+(claude|codex|gemini|echo)(\s*[:;,])[*_~]+/gi, '$1$2')
+    .replace(/[*_~]+(claude|codex|gemini|echo)[*_~]+/gi, '$1')
+    .replace(/[*_~]+(claude|codex|gemini|echo)(?=\s*[:;,])/gi, '$1')
+    .replace(/\b(claude|codex|gemini|echo)(\s*[:;,])[*_~]+/gi, '$1$2');
+}
+
+function collectAgentMatches(text: string, re: RegExp, found: Set<AgentId>): void {
+  for (const match of text.matchAll(re)) {
+    const captured = match[1];
+    if (!captured) continue;
+    const name = captured.toLowerCase() as AgentId;
+    if (KNOWN.includes(name)) found.add(name);
+  }
+}
+
+export function parseAgentReferences(text: string): AgentId[] {
+  const clean = normalizeHandoffMarkup(scrubCode(text));
+  if (/^(claude|codex|gemini|echo)\s*[:;,]?\s*$/i.test(clean.trim())) return [];
+  const found = new Set<AgentId>(parseMentions(clean));
+  collectAgentMatches(clean, LEADING_HANDOFF_RE, found);
+  collectAgentMatches(clean, PHRASE_HANDOFF_RE, found);
+  collectAgentMatches(clean, AGENT_ACTION_RE, found);
+  return Array.from(found);
+}
+
+export function parseBareAgentNames(text: string): AgentId[] {
+  const clean = scrubCode(text);
+  const found = new Set<AgentId>();
+  collectAgentMatches(clean, AGENT_NAME_RE, found);
+  return Array.from(found);
+}

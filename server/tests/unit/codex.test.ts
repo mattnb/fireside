@@ -43,15 +43,53 @@ describe('codex adapter', () => {
 
   it('builds argv for resumed session (prompt via stdin)', () => {
     const argv = codexSpec.buildArgs('again', 'abc-123');
-    // codex exec resume --json --output-schema <path> <SESSION_ID> -
-    expect(argv[0]).toBe('exec');
-    expect(argv[1]).toBe('resume');
-    expect(argv).toContain('abc-123');
+    expect(argv).toEqual([
+      'exec',
+      'resume',
+      '-c',
+      'sandbox_mode="read-only"',
+      '-c',
+      'approval_policy="never"',
+      '--json',
+      'abc-123',
+      '-',
+    ]);
     expect(argv).not.toContain('--last');
-    expect(argv).toContain('--json');
-    expect(argv).toContain('--output-schema');
-    expect(argv[argv.length - 1]).toBe('-');
+    expect(argv).not.toContain('--output-schema');
     expect(argv).not.toContain('again');
+  });
+
+  it('builds argv with an edit permission grant', () => {
+    const argv = codexSpec.buildArgs('edit', null, {
+      permission: {
+        mode: 'edit',
+        target: 'C:\\workspaces\\project\\foo.txt',
+        reason: 'write requested file',
+      },
+    });
+    expect(argv).toContain('sandbox_mode="workspace-write"');
+    expect(argv).toContain(
+      'sandbox_workspace_write.writable_roots=["C:\\\\workspaces\\\\project"]',
+    );
+    expect(argv).toContain('approval_policy="never"');
+  });
+
+  it('uses workspace-write instead of full bypass for scoped command grants', () => {
+    const argv = codexSpec.buildArgs('commit', null, {
+      permission: {
+        mode: 'full-auto',
+        requestedMode: 'bash',
+        target: 'C:\\workspaces\\project\\',
+        reason: 'git add and git commit only; no push',
+        capabilities: ['read', 'run-command', 'git-commit'],
+      },
+    });
+    expect(argv).toContain('sandbox_mode="workspace-write"');
+    expect(argv).toContain(
+      'sandbox_workspace_write.writable_roots=["C:\\\\workspaces\\\\project"]',
+    );
+    expect(argv).toContain('approval_policy="never"');
+    expect(argv).not.toContain('--dangerously-bypass-approvals-and-sandbox');
   });
 
   it('passes the prompt via stdin', () => {
@@ -91,6 +129,28 @@ describe('codex adapter', () => {
     const reply = codexSpec.parseOutput(stream, '');
     expect(reply.text).toBe('pong');
     expect(reply.sessionId).toBe('s1');
+  });
+
+  it('emits live stream events from JSONL lines', () => {
+    expect(codexSpec.parseStreamLine?.('{"type":"turn.started"}', 'stdout')).toEqual([
+      { kind: 'event', status: 'running', label: 'codex turn started' },
+    ]);
+    expect(
+      codexSpec.parseStreamLine?.(
+        JSON.stringify({
+          type: 'item.completed',
+          item: { type: 'agent_message', text: '{"message":"pong"}' },
+        }),
+        'stdout',
+      ),
+    ).toEqual([
+      {
+        kind: 'message',
+        status: 'completed',
+        label: 'codex assistant message ready',
+        detail: '{"message":"pong"}',
+      },
+    ]);
   });
 
   it('falls back to raw text when JSON in agent_message.text lacks required message field', () => {

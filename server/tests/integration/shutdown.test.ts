@@ -36,6 +36,9 @@ describe('start() / shutdown()', () => {
         dataDir,
         dbFile: path.join(dataDir, 'fireside.sqlite'),
         uiDir: path.join(dataDir, 'ui-not-real'),
+        maxPromptChars: 24_000,
+        largeMessageThresholdChars: 6_000,
+        resumeCliSessions: false,
       });
 
       // Server is up — REST returns the empty room list.

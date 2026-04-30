@@ -1,9 +1,14 @@
 // server/src/ws-server.ts
 import { WebSocketServer, type WebSocket } from 'ws';
 import type { Server as HttpServer } from 'node:http';
-import type { Broker } from './broker.js';
+import type { Broker, YoloStatus } from './broker.js';
 import type { Message } from './repos/messages.js';
 import type { Room } from './repos/rooms.js';
+import type { PermissionRequest, YoloPermissionProfile } from './permissions.js';
+import type { Task } from './repos/tasks.js';
+import type { AgentRunSummary } from './repos/agent-runs.js';
+import type { CollaborationItem } from './repos/collaboration.js';
+import type { AgentRunAction } from './repos/run-actions.js';
 import { logger } from './logger.js';
 
 interface ClientState {
@@ -27,7 +32,40 @@ interface InboundPostMessage {
   text: string;
 }
 
-type Inbound = InboundSubscribe | InboundUnsubscribe | InboundPostMessage;
+interface InboundStartYolo {
+  type: 'startYolo';
+  roomId: string;
+  authorId: string;
+  profile?: YoloPermissionProfile;
+}
+
+interface InboundCancelYolo {
+  type: 'cancelYolo';
+  roomId: string;
+  authorId: string;
+}
+
+interface InboundStopRuns {
+  type: 'stopRuns';
+  roomId: string;
+  authorId: string;
+}
+
+interface InboundAddYoloTurns {
+  type: 'addYoloTurns';
+  roomId: string;
+  authorId: string;
+  turns: number;
+}
+
+type Inbound =
+  | InboundSubscribe
+  | InboundUnsubscribe
+  | InboundPostMessage
+  | InboundStartYolo
+  | InboundCancelYolo
+  | InboundStopRuns
+  | InboundAddYoloTurns;
 
 export function attachWebSocketServer(httpServer: HttpServer, broker: Broker): WebSocketServer {
   const wss = new WebSocketServer({ server: httpServer, path: '/ws' });
@@ -37,6 +75,81 @@ export function attachWebSocketServer(httpServer: HttpServer, broker: Broker): W
     const payload = JSON.stringify({ type: 'messageAppended', message: msg });
     for (const [client, state] of clients.entries()) {
       if (client.readyState === client.OPEN && state.rooms.has(msg.roomId)) {
+        client.send(payload);
+      }
+    }
+  });
+
+  const broadcastPermissionRequest = (
+    type: 'permissionRequestCreated' | 'permissionRequestUpdated',
+    request: PermissionRequest,
+  ): void => {
+    const payload = JSON.stringify({ type, request });
+    for (const [client, state] of clients.entries()) {
+      if (client.readyState === client.OPEN && state.rooms.has(request.roomId)) {
+        client.send(payload);
+      }
+    }
+  };
+
+  broker.on('permissionRequestCreated', (request: PermissionRequest) => {
+    broadcastPermissionRequest('permissionRequestCreated', request);
+  });
+
+  broker.on('permissionRequestUpdated', (request: PermissionRequest) => {
+    broadcastPermissionRequest('permissionRequestUpdated', request);
+  });
+
+  broker.on('taskUpdated', (task: Task) => {
+    const payload = JSON.stringify({ type: 'taskUpdated', task });
+    for (const [client, state] of clients.entries()) {
+      if (client.readyState === client.OPEN && state.rooms.has(task.roomId)) {
+        client.send(payload);
+      }
+    }
+  });
+
+  broker.on('agentRunUpdated', (run: AgentRunSummary) => {
+    const payload = JSON.stringify({ type: 'agentRunUpdated', run });
+    for (const [client, state] of clients.entries()) {
+      if (client.readyState === client.OPEN && state.rooms.has(run.roomId)) {
+        client.send(payload);
+      }
+    }
+  });
+
+  broker.on('collaborationItemCreated', (item: CollaborationItem) => {
+    const payload = JSON.stringify({ type: 'collaborationItemCreated', item });
+    for (const [client, state] of clients.entries()) {
+      if (client.readyState === client.OPEN && state.rooms.has(item.roomId)) {
+        client.send(payload);
+      }
+    }
+  });
+
+  broker.on('agentRunActionCreated', (action: AgentRunAction) => {
+    const payload = JSON.stringify({ type: 'agentRunActionCreated', action });
+    for (const [client, state] of clients.entries()) {
+      if (client.readyState === client.OPEN && state.rooms.has(action.roomId)) {
+        client.send(payload);
+      }
+    }
+  });
+
+  broker.on('yoloStatusUpdated', (status: YoloStatus) => {
+    const roomId = status.roomId;
+    const payload = JSON.stringify({ type: 'yoloStatusUpdated', status });
+    for (const [client, state] of clients.entries()) {
+      if (client.readyState === client.OPEN && state.rooms.has(roomId)) {
+        client.send(payload);
+      }
+    }
+  });
+
+  broker.on('artifactsUpdated', (evt: { roomId: string }) => {
+    const payload = JSON.stringify({ type: 'artifactsUpdated', roomId: evt.roomId });
+    for (const [client, state] of clients.entries()) {
+      if (client.readyState === client.OPEN && state.rooms.has(evt.roomId)) {
         client.send(payload);
       }
     }
@@ -86,6 +199,34 @@ export function attachWebSocketServer(httpServer: HttpServer, broker: Broker): W
           await broker.postHumanMessage(parsed.roomId, parsed.authorId, parsed.text);
         } catch (err) {
           logger.error({ err }, 'broker.postHumanMessage failed');
+          client.send(JSON.stringify({ type: 'error', error: (err as Error).message }));
+        }
+      } else if (parsed.type === 'startYolo') {
+        try {
+          await broker.startYoloDiscussion(parsed.roomId, parsed.authorId, parsed.profile);
+        } catch (err) {
+          logger.error({ err }, 'broker.startYoloDiscussion failed');
+          client.send(JSON.stringify({ type: 'error', error: (err as Error).message }));
+        }
+      } else if (parsed.type === 'cancelYolo') {
+        try {
+          broker.cancelYoloDiscussion(parsed.roomId, parsed.authorId);
+        } catch (err) {
+          logger.error({ err }, 'broker.cancelYoloDiscussion failed');
+          client.send(JSON.stringify({ type: 'error', error: (err as Error).message }));
+        }
+      } else if (parsed.type === 'stopRuns') {
+        try {
+          broker.stopRoomRuns(parsed.roomId, parsed.authorId);
+        } catch (err) {
+          logger.error({ err }, 'broker.stopRoomRuns failed');
+          client.send(JSON.stringify({ type: 'error', error: (err as Error).message }));
+        }
+      } else if (parsed.type === 'addYoloTurns') {
+        try {
+          broker.addYoloTurns(parsed.roomId, parsed.authorId, parsed.turns);
+        } catch (err) {
+          logger.error({ err }, 'broker.addYoloTurns failed');
           client.send(JSON.stringify({ type: 'error', error: (err as Error).message }));
         }
       }

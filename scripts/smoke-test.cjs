@@ -40,7 +40,7 @@
       agentId: c.id,
       roomName: 'smoke',
       history: [],
-      newMessage: { authorId: 'matt', authorKind: 'human', text: c.prompt },
+      newMessage: { authorId: 'human', authorKind: 'human', text: c.prompt },
     });
     try {
       const reply = await runAgentTurn({ spec: getAgentSpec(c.id), prompt: transcriptPrompt, sessionId: null });

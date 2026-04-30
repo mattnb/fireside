@@ -3,9 +3,9 @@
 //
 // Runs one turn against the real CLI using the broker's exact prompt and
 // prints raw stdout/stderr/exitCode/parse-result for diagnosis. This script
-// invokes the CLI through the same code path as the broker (registry +
-// runSubprocess) so the captured output reflects what the broker would see
-// in production. Intended for use AFTER `npm run build` so the
+// invokes the CLI through the same adapter contract as the broker (registry,
+// buildArgs/buildStdin/buildCwd/defaultCwd + runSubprocess) so the captured
+// output reflects what the broker would see in production. Intended for use AFTER `npm run build` so the
 // `dist/server/src/...` ESM entrypoints exist.
 
 (async () => {
@@ -24,10 +24,10 @@
     agentId,
     roomName: 'debug',
     history: [],
-    newMessage: { authorId: 'matt', authorKind: 'human', text: message },
+    newMessage: { authorId: 'human', authorKind: 'human', text: message },
   });
 
-  console.log('=== PROMPT (sent as argv) ===');
+  console.log('=== PROMPT (broker prompt) ===');
   console.log(prompt);
   console.log('=== ARGS ===');
   const args = spec.buildArgs(prompt, null);
@@ -37,6 +37,11 @@
     console.log('=== STDIN ===');
     console.log(stdin);
   }
+  const cwd = spec.buildCwd ? spec.buildCwd(prompt, null) : spec.defaultCwd;
+  if (cwd) {
+    console.log('=== CWD ===');
+    console.log(cwd);
+  }
   console.log('=== RUNNING ===');
   const t0 = Date.now();
   let result;
@@ -45,7 +50,8 @@
       command: spec.command,
       args,
       stdin,
-      timeoutMs: 240_000,
+      timeoutMs: spec.defaultTimeoutMs,
+      ...(cwd !== undefined ? { cwd } : {}),
     });
   } catch (err) {
     const elapsed = Date.now() - t0;

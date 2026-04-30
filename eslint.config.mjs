@@ -21,6 +21,12 @@ export default [
     },
   },
   {
+    files: ['client/**/*.ts'],
+    languageOptions: {
+      globals: { ...globals.browser, ...globals.es2022 },
+    },
+  },
+  {
     files: ['**/*.cjs'],
     languageOptions: { sourceType: 'commonjs', globals: { ...globals.node } },
     rules: {

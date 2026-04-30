@@ -1,10 +1,31 @@
 // server/tests/integration/broker-echo.test.ts
 import { describe, it, expect, beforeEach } from 'vitest';
+import os from 'node:os';
+import path from 'node:path';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  writeFileSync,
+} from 'node:fs';
 import { openDatabase } from '../../src/db.js';
 import { createRoom } from '../../src/repos/rooms.js';
 import { listMessages } from '../../src/repos/messages.js';
+import { listPermissionRequests } from '../../src/repos/permission-requests.js';
+import { createAgentRun, listAgentRuns } from '../../src/repos/agent-runs.js';
+import { listAgentRunActions } from '../../src/repos/run-actions.js';
+import { listTaskPhases } from '../../src/repos/task-phases.js';
+import {
+  createTaskChecklistItem,
+  listTaskChecklistItems,
+} from '../../src/repos/task-checklist.js';
+import { listTaskPlans } from '../../src/repos/task-plans.js';
+import { listTasks } from '../../src/repos/tasks.js';
 import { Broker } from '../../src/broker.js';
-import type { AgentId, AgentSpec } from '../../src/agents/types.js';
+import type { AgentId, AgentReply, AgentSpec } from '../../src/agents/types.js';
+import type { PermissionGrant } from '../../src/permissions.js';
 
 function fakeSpec(id: AgentId, replyText: string): AgentSpec {
   return {
@@ -20,13 +41,1120 @@ function fakeSpec(id: AgentId, replyText: string): AgentSpec {
 describe('Broker', () => {
   let db: ReturnType<typeof openDatabase>;
   let broker: Broker;
-  let runs: Array<{ agentId: AgentId; prompt: string; sessionId: string | null }>;
+  let runs: Array<{
+    agentId: AgentId;
+    prompt: string;
+    sessionId: string | null;
+    permission?: PermissionGrant;
+  }>;
 
   beforeEach(() => {
     db = openDatabase(':memory:');
     runs = [];
     broker = new Broker({
       db,
+      runAgent: async (spec, prompt, sessionId, permission) => {
+        runs.push({
+          agentId: spec.id,
+          prompt,
+          sessionId,
+          ...(permission !== undefined ? { permission } : {}),
+        });
+        return { text: `${spec.id}-says-hello`, sessionId: `${spec.id}-sess`, raw: { stdout: '', stderr: '' } };
+      },
+      getSpec: (id) => {
+        const map: Record<string, AgentSpec> = {
+          claude: fakeSpec('claude', 'claude reply'),
+          codex: fakeSpec('codex', 'codex reply'),
+          gemini: fakeSpec('gemini', 'gemini reply'),
+          echo: fakeSpec('echo', 'echo reply'),
+        };
+        return map[id];
+      },
+      maxAgentRepliesPerThread: 1,
+    });
+  });
+
+  it('routes a human message with @claude mention to claude only', async () => {
+    const room = createRoom(db, { name: 'g', agents: ['claude', 'codex'] });
+    await broker.postHumanMessage(room.id, 'human', '@claude hey');
+    const messages = listMessages(db, room.id);
+    expect(messages.map((m) => `${m.authorId}:${m.text}`)).toEqual([
+      'human:@claude hey',
+      'claude:claude-says-hello',
+    ]);
+    expect(runs.map((r) => r.agentId)).toEqual(['claude']);
+  });
+
+  it('without mentions, all agents in the room reply', async () => {
+    const room = createRoom(db, { name: 'g', agents: ['claude', 'codex'] });
+    await broker.postHumanMessage(room.id, 'human', 'hi everyone');
+    const messages = listMessages(db, room.id);
+    expect(messages).toHaveLength(3);
+    expect(runs.map((r) => r.agentId).sort()).toEqual(['claude', 'codex']);
+  });
+
+  it('records provider stream events as live run actions', async () => {
+    const streamBroker = new Broker({
+      db,
+      runAgent: async (spec, _prompt, _sessionId, _permission, _cancelSignal, onStreamEvent) => {
+        onStreamEvent?.({
+          kind: 'event',
+          status: 'running',
+          label: `${spec.id} turn started`,
+          detail: 'provider emitted a live signal',
+        });
+        return {
+          text: `${spec.id}-done`,
+          sessionId: `${spec.id}-sess`,
+          raw: { stdout: '', stderr: '' },
+        };
+      },
+      getSpec: (id) => {
+        const map: Record<string, AgentSpec> = {
+          claude: fakeSpec('claude', 'claude reply'),
+          codex: fakeSpec('codex', 'codex reply'),
+          gemini: fakeSpec('gemini', 'gemini reply'),
+          echo: fakeSpec('echo', 'echo reply'),
+        };
+        return map[id];
+      },
+      maxAgentRepliesPerThread: 1,
+    });
+    const room = createRoom(db, { name: 'g', agents: ['codex'] });
+    await streamBroker.postHumanMessage(room.id, 'human', '@codex hi');
+
+    const run = listAgentRuns(db, room.id, { limit: 1 })[0];
+    expect(run).toBeDefined();
+    const actions = listAgentRunActions(db, run!.id);
+    expect(actions.some((action) => action.label === 'codex turn started')).toBe(true);
+    expect(actions.find((action) => action.label === 'codex turn started')?.detail).toBe(
+      'provider emitted a live signal',
+    );
+  });
+
+  it('suppresses low-signal provider stream events before storing run actions', async () => {
+    const streamBroker = new Broker({
+      db,
+      runAgent: async (spec, _prompt, _sessionId, _permission, _cancelSignal, onStreamEvent) => {
+        onStreamEvent?.({
+          kind: 'event',
+          status: 'running',
+          label: 'claude message_start',
+        });
+        onStreamEvent?.({
+          kind: 'event',
+          status: 'running',
+          label: 'claude content_block_start',
+        });
+        onStreamEvent?.({
+          kind: 'tool',
+          status: 'running',
+          label: 'claude tool_use',
+          detail: 'Edit',
+        });
+        onStreamEvent?.({
+          kind: 'message',
+          status: 'completed',
+          label: 'claude assistant message ready',
+          detail: '{"message":"Thanks for flagging this; I am checking the failure path now."}',
+        });
+        return {
+          text: `${spec.id}-done`,
+          sessionId: `${spec.id}-sess`,
+          raw: { stdout: '', stderr: '' },
+        };
+      },
+      getSpec: (id) => {
+        const map: Record<string, AgentSpec> = {
+          claude: fakeSpec('claude', 'claude reply'),
+          codex: fakeSpec('codex', 'codex reply'),
+          gemini: fakeSpec('gemini', 'gemini reply'),
+          echo: fakeSpec('echo', 'echo reply'),
+        };
+        return map[id];
+      },
+      maxAgentRepliesPerThread: 1,
+    });
+    const room = createRoom(db, { name: 'filtered-streams', agents: ['claude'] });
+
+    await streamBroker.postHumanMessage(room.id, 'human', '@claude hi');
+
+    const run = listAgentRuns(db, room.id, { limit: 1 })[0];
+    expect(run).toBeDefined();
+    const actions = listAgentRunActions(db, run!.id);
+    expect(actions.map((action) => action.label)).not.toContain('claude message_start');
+    expect(actions.map((action) => action.label)).not.toContain('claude content_block_start');
+    expect(actions.map((action) => action.label)).not.toContain('claude tool_use');
+    expect(actions.find((action) => action.label === 'claude assistant message ready')).toMatchObject({
+      detail: 'Thanks for flagging this; I am checking the failure path now.',
+    });
+  });
+
+  it('recovers interrupted running agent rows on broker startup', () => {
+    const room = createRoom(db, { name: 'interrupted-runs', agents: ['claude'] });
+    const run = createAgentRun(db, {
+      roomId: room.id,
+      agentId: 'claude',
+      triggerMessageId: 'stale-trigger',
+      permissionMode: 'full-auto',
+      promptChars: 100,
+      estimatedPromptTokens: 25,
+      liveMessages: 1,
+      contextArtifacts: 0,
+      promptText: 'stale prompt',
+      permissionSource: 'yolo',
+      permissionTarget: 'unrestricted filesystem',
+      permissionReason: 'YOLO profile',
+      permissionFilesystemScope: 'unrestricted',
+      permissionWeb: true,
+    });
+
+    new Broker({
+      db,
+      runAgent: async () => ({
+        text: '',
+        sessionId: null,
+        raw: { stdout: '', stderr: '' },
+      }),
+      getSpec: () => fakeSpec('claude', 'claude reply'),
+    });
+
+    expect(listAgentRuns(db, room.id)[0]).toMatchObject({
+      id: run.id,
+      status: 'failed',
+      error: 'Interrupted by Fireside server restart before the provider turn completed.',
+    });
+    expect(listAgentRunActions(db, run.id).map((action) => action.label)).toContain(
+      'run interrupted',
+    );
+  });
+
+  it('single-agent mention remains a single reply', async () => {
+    const room = createRoom(db, { name: 'g', agents: ['claude', 'codex'] });
+    await broker.postHumanMessage(room.id, 'human', '@claude kick it off');
+    expect(runs.map((r) => r.agentId)).toEqual(['claude']);
+  });
+
+  it('routes a human bare-name handoff to that agent', async () => {
+    const room = createRoom(db, { name: 'g', agents: ['claude', 'codex'] });
+    await broker.postHumanMessage(room.id, 'human', 'Codex, can you verify this?');
+    expect(runs.map((r) => r.agentId)).toEqual(['codex']);
+  });
+
+  it('routes markdown-styled bare-name handoffs', async () => {
+    const room = createRoom(db, { name: 'g', agents: ['claude', 'codex'] });
+    await broker.postHumanMessage(room.id, 'human', '**Codex:** can you verify this?');
+    expect(runs.map((r) => r.agentId)).toEqual(['codex']);
+  });
+
+  it('removes a dangling self label from an agent message', async () => {
+    const labelBroker = new Broker({
+      db,
+      maxAgentRepliesPerThread: 1,
+      runAgent: async (spec, prompt, sessionId) => {
+        runs.push({ agentId: spec.id, prompt, sessionId });
+        return {
+          text: 'Finished the work.\n\nClaude:',
+          sessionId: `${spec.id}-sess`,
+          raw: { stdout: '', stderr: '' },
+        };
+      },
+      getSpec: (id) => {
+        const map: Record<string, AgentSpec> = {
+          claude: fakeSpec('claude', 'claude reply'),
+          codex: fakeSpec('codex', 'codex reply'),
+          gemini: fakeSpec('gemini', 'gemini reply'),
+          echo: fakeSpec('echo', 'echo reply'),
+        };
+        return map[id];
+      },
+    });
+    const room = createRoom(db, { name: 'g', agents: ['claude', 'codex'] });
+
+    await labelBroker.postHumanMessage(room.id, 'human', '@claude do the work');
+
+    expect(runs.map((r) => r.agentId)).toEqual(['claude']);
+    expect(listMessages(db, room.id).map((m) => `${m.authorId}:${m.text}`)).toEqual([
+      'human:@claude do the work',
+      'claude:Finished the work.',
+    ]);
+  });
+
+  it('continues a directed handoff when an agent names another agent without @', async () => {
+    let turn = 0;
+    const handoffBroker = new Broker({
+      db,
+      runAgent: async (spec, prompt, sessionId) => {
+        turn += 1;
+        runs.push({ agentId: spec.id, prompt, sessionId });
+        return {
+          text:
+            turn === 1
+              ? 'Codex, please verify this before we continue.'
+              : 'Verified and ready for the next step.',
+          sessionId: `${spec.id}-sess`,
+          raw: { stdout: '', stderr: '' },
+        };
+      },
+      getSpec: (id) => {
+        const map: Record<string, AgentSpec> = {
+          claude: fakeSpec('claude', 'claude reply'),
+          codex: fakeSpec('codex', 'codex reply'),
+          gemini: fakeSpec('gemini', 'gemini reply'),
+          echo: fakeSpec('echo', 'echo reply'),
+        };
+        return map[id];
+      },
+      maxAgentRepliesPerThread: 1,
+    });
+    const room = createRoom(db, { name: 'g', agents: ['claude', 'codex'] });
+
+    await handoffBroker.postHumanMessage(room.id, 'human', '@claude kick it off');
+
+    expect(runs.map((r) => r.agentId)).toEqual(['claude', 'codex']);
+    expect(listMessages(db, room.id).map((m) => `${m.authorId}:${m.text}`)).toEqual([
+      'human:@claude kick it off',
+      'claude:Codex, please verify this before we continue.',
+      'codex:Verified and ready for the next step.',
+    ]);
+  });
+
+  it('allows bounded group discussion up to five replies per agent by default', async () => {
+    const discussionBroker = new Broker({
+      db,
+      runAgent: async (spec, prompt, sessionId) => {
+        runs.push({ agentId: spec.id, prompt, sessionId });
+        return {
+          text: `${spec.id}-round`,
+          sessionId: `${spec.id}-sess`,
+          raw: { stdout: '', stderr: '' },
+        };
+      },
+      getSpec: (id) => {
+        const map: Record<string, AgentSpec> = {
+          claude: fakeSpec('claude', 'claude reply'),
+          codex: fakeSpec('codex', 'codex reply'),
+          gemini: fakeSpec('gemini', 'gemini reply'),
+          echo: fakeSpec('echo', 'echo reply'),
+        };
+        return map[id];
+      },
+    });
+    const room = createRoom(db, { name: 'g', agents: ['claude', 'codex'] });
+
+    await discussionBroker.postHumanMessage(room.id, 'human', 'work together');
+
+    expect(runs).toHaveLength(10);
+    expect(runs.filter((r) => r.agentId === 'claude')).toHaveLength(5);
+    expect(runs.filter((r) => r.agentId === 'codex')).toHaveLength(5);
+    expect(runs[0]!.prompt).toContain('round 1 of 5');
+    expect(runs[runs.length - 1]!.prompt).toContain('round 5 of 5');
+    expect(runs[runs.length - 1]!.prompt).toContain('final allowed discussion round');
+
+    const messages = listMessages(db, room.id);
+    expect(messages).toHaveLength(11);
+  });
+
+  it('starts YOLO collaboration with a 100 total agent-message cap', async () => {
+    const yoloBroker = new Broker({
+      db,
+      runAgent: async (spec, prompt, sessionId) => {
+        runs.push({ agentId: spec.id, prompt, sessionId });
+        return {
+          text: `${spec.id}-yolo`,
+          sessionId: `${spec.id}-sess`,
+          raw: { stdout: '', stderr: '' },
+        };
+      },
+      getSpec: (id) => {
+        const map: Record<string, AgentSpec> = {
+          claude: fakeSpec('claude', 'claude reply'),
+          codex: fakeSpec('codex', 'codex reply'),
+          gemini: fakeSpec('gemini', 'gemini reply'),
+          echo: fakeSpec('echo', 'echo reply'),
+        };
+        return map[id];
+      },
+    });
+    const room = createRoom(db, { name: 'overnight', agents: ['claude', 'codex'] });
+
+    await yoloBroker.startYoloDiscussion(room.id, 'human');
+
+    expect(runs).toHaveLength(100);
+    expect(runs[0]!.prompt).toContain('YOLO collaboration budget');
+    expect(runs[0]!.prompt).toContain('up to 100 total agent messages');
+    expect(runs.filter((r) => r.agentId === 'claude')).toHaveLength(50);
+    expect(runs.filter((r) => r.agentId === 'codex')).toHaveLength(50);
+    expect(listMessages(db, room.id)).toHaveLength(101);
+  });
+
+  it('applies YOLO permission profiles to agent turns for the run', async () => {
+    const yoloBroker = new Broker({
+      db,
+      runAgent: async (spec, prompt, sessionId, permission) => {
+        runs.push({
+          agentId: spec.id,
+          prompt,
+          sessionId,
+          ...(permission !== undefined ? { permission } : {}),
+        });
+        return {
+          text: '',
+          sessionId: `${spec.id}-sess`,
+          raw: { stdout: '', stderr: '' },
+        };
+      },
+      getSpec: (id) => {
+        const map: Record<string, AgentSpec> = {
+          claude: fakeSpec('claude', 'claude reply'),
+          codex: fakeSpec('codex', 'codex reply'),
+          gemini: fakeSpec('gemini', 'gemini reply'),
+          echo: fakeSpec('echo', 'echo reply'),
+        };
+        return map[id];
+      },
+    });
+    const room = createRoom(db, { name: 'overnight-permissions', agents: ['claude', 'codex'] });
+    yoloBroker.createTask(room.id, {
+      title: 'Night shift',
+      repoPath: 'C:/work/project',
+    });
+
+    await yoloBroker.startYoloDiscussion(room.id, 'human', {
+      mode: 'edit',
+      filesystemScope: 'task',
+      web: true,
+    });
+
+    expect(runs).toHaveLength(2);
+    for (const run of runs) {
+      expect(run.permission).toMatchObject({
+        source: 'yolo',
+        mode: 'edit',
+        target: 'C:/work/project',
+        filesystemScope: 'task',
+        web: true,
+      });
+      expect(run.prompt).toContain('Approved YOLO permission profile for this turn: edit');
+      expect(run.prompt).toContain('Web access for this run');
+    }
+    expect(listMessages(db, room.id)[0]!.text).toContain(
+      'YOLO permissions: edit; filesystem scope: active mission path: C:/work/project; web: requested.',
+    );
+    expect(listAgentRuns(db, room.id).map((run) => run.permissionMode)).toEqual(['edit', 'edit']);
+  });
+
+  it('assigns independent checklist lanes to YOLO agents in the same pulse', async () => {
+    let turn = 0;
+    const yoloBroker = new Broker({
+      db,
+      runAgent: async (spec, prompt, sessionId, permission) => {
+        turn += 1;
+        runs.push({
+          agentId: spec.id,
+          prompt,
+          sessionId,
+          ...(permission !== undefined ? { permission } : {}),
+        });
+        return {
+          text:
+            turn <= 2
+              ? [
+                  `${spec.id} taking the assigned lane.`,
+                  '',
+                  '/mission-receipt',
+                  'status: continuing',
+                  'summary: Started the assigned YOLO lane.',
+                  '/end-mission-receipt',
+                ].join('\n')
+              : '',
+          sessionId: `${spec.id}-sess`,
+          raw: { stdout: '', stderr: '' },
+        };
+      },
+      getSpec: (id) => {
+        const map: Record<string, AgentSpec> = {
+          claude: fakeSpec('claude', 'claude reply'),
+          codex: fakeSpec('codex', 'codex reply'),
+          gemini: fakeSpec('gemini', 'gemini reply'),
+          echo: fakeSpec('echo', 'echo reply'),
+        };
+        return map[id];
+      },
+    });
+    const room = createRoom(db, { name: 'parallel-lanes', agents: ['claude', 'codex'] });
+    const task = yoloBroker.createTask(room.id, {
+      title: 'Parallel mission',
+      repoPath: 'C:/work/project',
+    });
+    if (!task) throw new Error('task not created');
+    createTaskChecklistItem(db, {
+      taskId: task.id,
+      title: 'Implement UI lane',
+      detail: 'Touch only the UI files.',
+    });
+    createTaskChecklistItem(db, {
+      taskId: task.id,
+      title: 'Verify broker lane',
+      detail: 'Run broker tests and inspect failures.',
+    });
+
+    await yoloBroker.startYoloDiscussion(room.id, 'human', {
+      mode: 'edit',
+      filesystemScope: 'task',
+    });
+
+    expect(runs.slice(0, 2)).toHaveLength(2);
+    expect(runs[0]!.prompt).toContain('YOLO work lane');
+    expect(runs[1]!.prompt).toContain('YOLO work lane');
+    expect(runs[0]!.prompt).not.toEqual(runs[1]!.prompt);
+    const firstRoundLaneTitles = runs
+      .slice(0, 2)
+      .map((run) => {
+        const assignedLine = run.prompt
+          .split(/\r?\n/)
+          .find((line) => line.startsWith('Assigned item:'));
+        if (assignedLine?.includes('Implement UI lane')) return 'Implement UI lane';
+        if (assignedLine?.includes('Verify broker lane')) return 'Verify broker lane';
+        return 'unknown';
+      });
+    expect(new Set(firstRoundLaneTitles)).toEqual(
+      new Set(['Implement UI lane', 'Verify broker lane']),
+    );
+    const items = listTaskChecklistItems(db, task.id);
+    expect(items.map((item) => item.ownerAgentId).sort()).toEqual(['claude', 'codex']);
+    const actionLabels = listAgentRuns(db, room.id).flatMap((run) =>
+      listAgentRunActions(db, run.id).map((action) => action.label),
+    );
+    expect(actionLabels).toContain('YOLO lane assigned');
+    expect(actionLabels).toContain('mission receipt: continuing');
+  });
+
+  it('auto-approves agent permission requests during YOLO without creating a prompt', async () => {
+    let turn = 0;
+    const yoloBroker = new Broker({
+      db,
+      runAgent: async (spec, prompt, sessionId, permission) => {
+        turn += 1;
+        runs.push({
+          agentId: spec.id,
+          prompt,
+          sessionId,
+          ...(permission !== undefined ? { permission } : {}),
+        });
+        return {
+          text:
+            turn === 1
+              ? [
+                  '/permission-request',
+                  'mode: bash',
+                  'target: git status',
+                  'reason: Run a scoped git status command before editing.',
+                ].join('\n')
+              : turn === 2
+                ? 'ran git status and continued'
+                : '',
+          sessionId: `${spec.id}-sess`,
+          raw: { stdout: '', stderr: '' },
+        };
+      },
+      getSpec: (id) => {
+        const map: Record<string, AgentSpec> = {
+          claude: fakeSpec('claude', 'claude reply'),
+          codex: fakeSpec('codex', 'codex reply'),
+          gemini: fakeSpec('gemini', 'gemini reply'),
+          echo: fakeSpec('echo', 'echo reply'),
+        };
+        return map[id];
+      },
+      resumeCliSessions: true,
+    });
+    const room = createRoom(db, { name: 'overnight-auto-permissions', agents: ['claude'] });
+
+    await yoloBroker.startYoloDiscussion(room.id, 'human', {
+      mode: 'edit',
+      filesystemScope: 'task',
+      web: true,
+    });
+
+    expect(runs).toHaveLength(3);
+    expect(runs[0]!.permission).toMatchObject({
+      source: 'yolo',
+      mode: 'edit',
+      filesystemScope: 'task',
+      web: true,
+    });
+    expect(runs[1]!.permission).toMatchObject({
+      source: 'yolo',
+      mode: 'full-auto',
+      requestedMode: 'bash',
+      target: 'git status',
+      filesystemScope: 'task',
+      web: true,
+    });
+    expect(runs[1]!.prompt).toContain('Approved YOLO permission profile for this turn: full-auto');
+    expect(listPermissionRequests(db, room.id)).toEqual([]);
+    expect(listMessages(db, room.id).map((m) => `${m.authorId}:${m.text}`)).toEqual([
+      expect.stringContaining('human:YOLO collaboration mode:'),
+      'claude:ran git status and continued',
+    ]);
+    const agentRuns = listAgentRuns(db, room.id);
+    expect(agentRuns).toHaveLength(3);
+    expect(agentRuns.map((run) => run.status)).not.toContain('permission-requested');
+    const actionLabels = agentRuns.flatMap((run) =>
+      listAgentRunActions(db, run.id).map((action) => action.label),
+    );
+    expect(actionLabels).toContain(
+      'full-auto permission auto-approved in YOLO',
+    );
+  });
+
+  it('applies room-level YOLO agent flags and budget to normal chat turns', async () => {
+    let turn = 0;
+    const yoloBroker = new Broker({
+      db,
+      maxAgentRepliesPerThread: 1,
+      runAgent: async (spec, prompt, sessionId, permission) => {
+        turn += 1;
+        runs.push({
+          agentId: spec.id,
+          prompt,
+          sessionId,
+          ...(permission !== undefined ? { permission } : {}),
+        });
+        return {
+          text:
+            turn === 1
+              ? [
+                  '/permission-request',
+                  'mode: edit',
+                  'target: C:\\work\\project',
+                  'reason: Continue the assigned implementation lane.',
+                ].join('\n')
+              : turn === 2
+                ? 'continued under room-level YOLO'
+                : '',
+          sessionId: `${spec.id}-sess`,
+          raw: { stdout: '', stderr: '' },
+        };
+      },
+      getSpec: (id) => {
+        const map: Record<string, AgentSpec> = {
+          claude: fakeSpec('claude', 'claude reply'),
+          codex: fakeSpec('codex', 'codex reply'),
+          gemini: fakeSpec('gemini', 'gemini reply'),
+          echo: fakeSpec('echo', 'echo reply'),
+        };
+        return map[id];
+      },
+    });
+    const room = createRoom(db, {
+      name: 'room-yolo-flags',
+      agents: ['claude', 'gemini'],
+      yoloAgents: ['claude'],
+    });
+
+    await yoloBroker.postHumanMessage(room.id, 'human', '@claude keep going');
+
+    expect(runs).toHaveLength(3);
+    expect(runs[0]!.permission).toMatchObject({
+      source: 'yolo',
+      mode: 'full-auto',
+      target: 'unrestricted filesystem',
+      filesystemScope: 'unrestricted',
+      web: true,
+    });
+    expect(runs[0]!.prompt).toContain('Approved YOLO permission profile for this turn: full-auto');
+    expect(runs[0]!.prompt).toContain('YOLO collaboration budget');
+    expect(runs[1]!.permission).toMatchObject({
+      source: 'yolo',
+      mode: 'edit',
+      target: 'C:\\work\\project',
+      filesystemScope: 'unrestricted',
+      web: true,
+    });
+    expect(listPermissionRequests(db, room.id)).toEqual([]);
+    expect(listMessages(db, room.id).map((m) => `${m.authorId}:${m.text}`)).toEqual([
+      'human:@claude keep going',
+      'claude:continued under room-level YOLO',
+    ]);
+  });
+
+  it('applies room-level YOLO budget to agent handoffs', async () => {
+    let turn = 0;
+    const yoloBroker = new Broker({
+      db,
+      maxAgentRepliesPerThread: 1,
+      runAgent: async (spec, prompt, sessionId, permission) => {
+        turn += 1;
+        runs.push({
+          agentId: spec.id,
+          prompt,
+          sessionId,
+          ...(permission !== undefined ? { permission } : {}),
+        });
+        return {
+          text:
+            turn === 1
+              ? 'Codex, please verify this before I continue.'
+              : turn === 2
+                ? 'Verified under room-level YOLO.'
+                : '',
+          sessionId: `${spec.id}-sess`,
+          raw: { stdout: '', stderr: '' },
+        };
+      },
+      getSpec: (id) => {
+        const map: Record<string, AgentSpec> = {
+          claude: fakeSpec('claude', 'claude reply'),
+          codex: fakeSpec('codex', 'codex reply'),
+          gemini: fakeSpec('gemini', 'gemini reply'),
+          echo: fakeSpec('echo', 'echo reply'),
+        };
+        return map[id];
+      },
+    });
+    const room = createRoom(db, {
+      name: 'room-yolo-handoff',
+      agents: ['claude', 'codex'],
+      yoloAgents: ['codex'],
+    });
+
+    await yoloBroker.postHumanMessage(room.id, 'human', '@claude start the handoff');
+
+    expect(runs.map((run) => run.agentId)).toEqual(['claude', 'codex', 'codex']);
+    expect(runs[1]!.prompt).toContain('YOLO collaboration budget');
+    expect(runs[1]!.prompt).toContain('up to 100 total agent messages');
+    expect(runs[1]!.permission).toMatchObject({
+      source: 'yolo',
+      mode: 'full-auto',
+      filesystemScope: 'unrestricted',
+      web: true,
+    });
+    expect(listMessages(db, room.id).map((m) => `${m.authorId}:${m.text}`)).toContain(
+      'codex:Verified under room-level YOLO.',
+    );
+  });
+
+  it('treats explicit unrestricted YOLO chat as a broker-managed YOLO run', async () => {
+    const yoloBroker = new Broker({
+      db,
+      runAgent: async (spec, prompt, sessionId, permission) => {
+        runs.push({
+          agentId: spec.id,
+          prompt,
+          sessionId,
+          ...(permission !== undefined ? { permission } : {}),
+        });
+        return {
+          text: `${spec.id} working`,
+          sessionId: `${spec.id}-sess`,
+      raw: { stdout: '', stderr: '' },
+        };
+      },
+      getSpec: (id) => {
+        const map: Record<string, AgentSpec> = {
+          claude: fakeSpec('claude', 'claude reply'),
+          codex: fakeSpec('codex', 'codex reply'),
+          gemini: fakeSpec('gemini', 'gemini reply'),
+          echo: fakeSpec('echo', 'echo reply'),
+        };
+        return map[id];
+      },
+    });
+    const room = createRoom(db, { name: 'inline-yolo', agents: ['claude'] });
+
+    await yoloBroker.postHumanMessage(
+      room.id,
+      'human',
+      "i need you to understand you're in unrestricted yolo mode. follow the plan.",
+    );
+
+    expect(runs).toHaveLength(100);
+    expect(runs[0]!.permission).toMatchObject({
+      source: 'yolo',
+      mode: 'full-auto',
+      target: 'unrestricted filesystem',
+      filesystemScope: 'unrestricted',
+    });
+    expect(runs[0]!.prompt).toContain('YOLO collaboration budget');
+    expect(runs[0]!.prompt).toContain('Approved YOLO permission profile for this turn: full-auto');
+  });
+
+  it('lets a human stop YOLO before it launches more rounds', async () => {
+    const events: Array<{ active: boolean; reason?: string }> = [];
+    const yoloBroker = new Broker({
+      db,
+      runAgent: async (spec, prompt, sessionId, permission, cancelSignal) => {
+        runs.push({
+          agentId: spec.id,
+          prompt,
+          sessionId,
+          ...(permission !== undefined ? { permission } : {}),
+        });
+        if (runs.length === 2) {
+          yoloBroker.cancelYoloDiscussion(room.id, 'human');
+        }
+        expect(cancelSignal).toBeDefined();
+        return {
+          text: `${spec.id}-yolo`,
+          sessionId: `${spec.id}-sess`,
+          raw: { stdout: '', stderr: '' },
+        };
+      },
+      getSpec: (id) => {
+        const map: Record<string, AgentSpec> = {
+          claude: fakeSpec('claude', 'claude reply'),
+          codex: fakeSpec('codex', 'codex reply'),
+          gemini: fakeSpec('gemini', 'gemini reply'),
+          echo: fakeSpec('echo', 'echo reply'),
+        };
+        return map[id];
+      },
+    });
+    yoloBroker.on('yoloStatusUpdated', (status) => events.push(status));
+    const room = createRoom(db, { name: 'stoppable-yolo', agents: ['claude', 'codex'] });
+
+    await yoloBroker.startYoloDiscussion(room.id, 'human');
+
+    expect(runs).toHaveLength(2);
+    expect(events[0]!.active).toBe(true);
+    expect(events.at(-1)).toMatchObject({ active: false, reason: 'manual' });
+    expect(listMessages(db, room.id).map((message) => message.text)).toContain(
+      'YOLO collaboration stopped: human clicked stop. In-flight agent turns are interrupted where possible; no further YOLO rounds will start.',
+    );
+  });
+
+  it('emits live YOLO turn-bank status and lets a human add turns', async () => {
+    const events: Array<{
+      active: boolean;
+      maxTotalReplies?: number;
+      totalRepliesUsed?: number;
+      remainingReplies?: number;
+      reason?: string;
+    }> = [];
+    const yoloBroker = new Broker({
+      db,
+      runAgent: async (spec, prompt, sessionId, permission) => {
+        runs.push({
+          agentId: spec.id,
+          prompt,
+          sessionId,
+          ...(permission !== undefined ? { permission } : {}),
+        });
+        if (runs.length === 1) {
+          yoloBroker.addYoloTurns(room.id, 'human', 25);
+          yoloBroker.cancelYoloDiscussion(room.id, 'human');
+        }
+        return {
+          text: `${spec.id}-yolo`,
+          sessionId: `${spec.id}-sess`,
+          raw: { stdout: '', stderr: '' },
+        };
+      },
+      getSpec: (id) => {
+        const map: Record<string, AgentSpec> = {
+          claude: fakeSpec('claude', 'claude reply'),
+          codex: fakeSpec('codex', 'codex reply'),
+          gemini: fakeSpec('gemini', 'gemini reply'),
+          echo: fakeSpec('echo', 'echo reply'),
+        };
+        return map[id];
+      },
+    });
+    yoloBroker.on('yoloStatusUpdated', (status) => events.push(status));
+    const room = createRoom(db, { name: 'extend-yolo', agents: ['claude'] });
+
+    await yoloBroker.startYoloDiscussion(room.id, 'human');
+
+    expect(events).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          active: true,
+          maxTotalReplies: 100,
+          totalRepliesUsed: 0,
+          remainingReplies: 100,
+        }),
+        expect.objectContaining({
+          active: true,
+          maxTotalReplies: 125,
+          totalRepliesUsed: 0,
+          remainingReplies: 125,
+          reason: 'turns-added:human:25',
+        }),
+      ]),
+    );
+    expect(events.at(-1)).toMatchObject({
+      active: false,
+      maxTotalReplies: 125,
+      reason: 'manual',
+    });
+  });
+
+  it('aborts an in-flight YOLO agent turn when stopped', async () => {
+    let signalSeen: AbortSignal | undefined;
+    const yoloBroker = new Broker({
+      db,
+      runAgent: async (_spec, _prompt, _sessionId, _permission, cancelSignal) => {
+        signalSeen = cancelSignal;
+        return await new Promise<AgentReply>((resolve) => {
+          cancelSignal?.addEventListener(
+            'abort',
+            () =>
+              resolve({
+                text: '',
+                sessionId: 'claude-sess',
+                raw: { stdout: '', stderr: '' },
+              }),
+            { once: true },
+          );
+        });
+      },
+      getSpec: (id) => {
+        const map: Record<string, AgentSpec> = {
+          claude: fakeSpec('claude', 'claude reply'),
+          codex: fakeSpec('codex', 'codex reply'),
+          gemini: fakeSpec('gemini', 'gemini reply'),
+          echo: fakeSpec('echo', 'echo reply'),
+        };
+        return map[id];
+      },
+    });
+    const room = createRoom(db, { name: 'abort-yolo', agents: ['claude'] });
+
+    const discussion = yoloBroker.startYoloDiscussion(room.id, 'human');
+    while (!signalSeen) {
+      await new Promise((resolve) => setTimeout(resolve, 1));
+    }
+
+    yoloBroker.cancelYoloDiscussion(room.id, 'human');
+    await discussion;
+
+    expect(signalSeen.aborted).toBe(true);
+    expect(listMessages(db, room.id).map((message) => message.text)).toContain(
+      'YOLO collaboration stopped: human clicked stop. In-flight agent turns are interrupted where possible; no further YOLO rounds will start.',
+    );
+  });
+
+  it('queues human messages while an agent run is active instead of dispatching immediately', async () => {
+    const room = createRoom(db, { name: 'queued-context', agents: ['claude'] });
+    createAgentRun(db, {
+      roomId: room.id,
+      agentId: 'claude',
+      triggerMessageId: 'active-trigger',
+      permissionMode: 'plan',
+      promptChars: 10,
+      estimatedPromptTokens: 3,
+      liveMessages: 1,
+      contextArtifacts: 0,
+    });
+
+    await broker.postHumanMessage(room.id, 'human', '@claude additional context');
+
+    expect(runs).toEqual([]);
+    expect(listMessages(db, room.id).map((message) => `${message.authorId}:${message.text}`)).toEqual([
+      'human:@claude additional context',
+    ]);
+  });
+
+  it('drains queued human context after the active turn finishes', async () => {
+    let turn = 0;
+    const queuedBroker = new Broker({
+      db,
+      maxAgentRepliesPerThread: 1,
+      runAgent: async (spec, prompt, sessionId) => {
+        turn += 1;
+        runs.push({ agentId: spec.id, prompt, sessionId });
+        if (turn === 1) {
+          await queuedBroker.postHumanMessage(room.id, 'human', '@claude queued context');
+          return {
+            text: '',
+            sessionId: `${spec.id}-sess`,
+            raw: { stdout: '', stderr: '' },
+          };
+        }
+        return {
+          text: 'saw queued context',
+          sessionId: `${spec.id}-sess`,
+          raw: { stdout: '', stderr: '' },
+        };
+      },
+      getSpec: (id) => {
+        const map: Record<string, AgentSpec> = {
+          claude: fakeSpec('claude', 'claude reply'),
+          codex: fakeSpec('codex', 'codex reply'),
+          gemini: fakeSpec('gemini', 'gemini reply'),
+          echo: fakeSpec('echo', 'echo reply'),
+        };
+        return map[id];
+      },
+    });
+    const room = createRoom(db, { name: 'queued-context-drain', agents: ['claude'] });
+
+    await queuedBroker.postHumanMessage(room.id, 'human', '@claude first');
+
+    expect(runs.map((run) => run.agentId)).toEqual(['claude', 'claude']);
+    expect(runs[1]!.prompt).toContain('@claude queued context');
+    expect(listMessages(db, room.id).map((message) => `${message.authorId}:${message.text}`)).toEqual([
+      'human:@claude first',
+      'human:@claude queued context',
+      'claude:saw queued context',
+    ]);
+  });
+
+  it('uses room-level YOLO budget when draining queued context for a YOLO agent', async () => {
+    let turn = 0;
+    const queuedBroker = new Broker({
+      db,
+      maxAgentRepliesPerThread: 1,
+      runAgent: async (spec, prompt, sessionId, permission) => {
+        turn += 1;
+        runs.push({
+          agentId: spec.id,
+          prompt,
+          sessionId,
+          ...(permission !== undefined ? { permission } : {}),
+        });
+        if (turn === 1) {
+          await queuedBroker.postHumanMessage(room.id, 'human', '@claude queued yolo context');
+          return {
+            text: '',
+            sessionId: `${spec.id}-sess`,
+            raw: { stdout: '', stderr: '' },
+          };
+        }
+        return {
+          text: turn === 2 ? 'saw queued yolo context' : '',
+          sessionId: `${spec.id}-sess`,
+          raw: { stdout: '', stderr: '' },
+        };
+      },
+      getSpec: (id) => {
+        const map: Record<string, AgentSpec> = {
+          claude: fakeSpec('claude', 'claude reply'),
+          codex: fakeSpec('codex', 'codex reply'),
+          gemini: fakeSpec('gemini', 'gemini reply'),
+          echo: fakeSpec('echo', 'echo reply'),
+        };
+        return map[id];
+      },
+    });
+    const room = createRoom(db, {
+      name: 'queued-yolo-context-drain',
+      agents: ['gemini', 'claude'],
+      yoloAgents: ['claude'],
+    });
+
+    await queuedBroker.postHumanMessage(room.id, 'human', '@gemini first');
+
+    expect(runs.map((run) => run.agentId)).toEqual(['gemini', 'claude', 'claude']);
+    expect(runs[1]!.prompt).toContain('YOLO collaboration budget');
+    expect(runs[1]!.prompt).toContain('up to 100 total agent messages');
+    expect(runs[1]!.permission).toMatchObject({
+      source: 'yolo',
+      mode: 'full-auto',
+      filesystemScope: 'unrestricted',
+      web: true,
+    });
+    expect(listMessages(db, room.id).map((message) => `${message.authorId}:${message.text}`)).toEqual([
+      'human:@gemini first',
+      'human:@claude queued yolo context',
+      'claude:saw queued yolo context',
+    ]);
+  });
+
+  it('explicit stop aborts an in-flight non-YOLO agent turn', async () => {
+    let signalSeen: AbortSignal | undefined;
+    const stopBroker = new Broker({
+      db,
+      runAgent: async (_spec, _prompt, _sessionId, _permission, cancelSignal) => {
+        signalSeen = cancelSignal;
+        return await new Promise<AgentReply>((resolve) => {
+          cancelSignal?.addEventListener(
+            'abort',
+            () =>
+              resolve({
+                text: '',
+                sessionId: 'claude-sess',
+                raw: { stdout: '', stderr: '' },
+              }),
+            { once: true },
+          );
+        });
+      },
+      getSpec: (id) => {
+        const map: Record<string, AgentSpec> = {
+          claude: fakeSpec('claude', 'claude reply'),
+          codex: fakeSpec('codex', 'codex reply'),
+          gemini: fakeSpec('gemini', 'gemini reply'),
+          echo: fakeSpec('echo', 'echo reply'),
+        };
+        return map[id];
+      },
+    });
+    const room = createRoom(db, { name: 'stop-normal-run', agents: ['claude'] });
+
+    const discussion = stopBroker.postHumanMessage(room.id, 'human', '@claude start');
+    while (!signalSeen) {
+      await new Promise((resolve) => setTimeout(resolve, 1));
+    }
+
+    const result = stopBroker.stopRoomRuns(room.id, 'human');
+    await discussion;
+
+    expect(result.stopped).toBe(1);
+    expect(signalSeen.aborted).toBe(true);
+    expect(listMessages(db, room.id).map((message) => message.text)).toContain(
+      'Agent work stopped: human clicked stop. In-flight provider turns are interrupted where possible.',
+    );
+  });
+
+  it('does not let one responding agent monologue when peers pass', async () => {
+    const discussionBroker = new Broker({
+      db,
+      runAgent: async (spec, prompt, sessionId) => {
+        runs.push({ agentId: spec.id, prompt, sessionId });
+        return {
+          text: spec.id === 'claude' ? 'claude-only-reply' : '',
+          sessionId: `${spec.id}-sess`,
+          raw: { stdout: '', stderr: '' },
+        };
+      },
+      getSpec: (id) => {
+        const map: Record<string, AgentSpec> = {
+          claude: fakeSpec('claude', 'claude reply'),
+          codex: fakeSpec('codex', 'codex reply'),
+          gemini: fakeSpec('gemini', 'gemini reply'),
+          echo: fakeSpec('echo', 'echo reply'),
+        };
+        return map[id];
+      },
+    });
+    const room = createRoom(db, { name: 'g', agents: ['claude', 'codex'] });
+
+    await discussionBroker.postHumanMessage(room.id, 'human', 'work together');
+
+    expect(runs.map((r) => r.agentId)).toEqual(['claude', 'codex', 'codex']);
+    expect(listMessages(db, room.id).map((m) => `${m.authorId}:${m.text}`)).toEqual([
+      'human:work together',
+      'claude:claude-only-reply',
+    ]);
+  });
+
+  it('does not resume CLI session ids by default', async () => {
+    const room = createRoom(db, { name: 'g', agents: ['claude'] });
+    await broker.postHumanMessage(room.id, 'human', '@claude hi');
+    await broker.postHumanMessage(room.id, 'human', '@claude again');
+    expect(runs[0]!.sessionId).toBeNull();
+    expect(runs[1]!.sessionId).toBeNull();
+  });
+
+  it('can opt into resuming CLI session ids', async () => {
+    const resumeBroker = new Broker({
+      db,
+      maxAgentRepliesPerThread: 1,
+      resumeCliSessions: true,
       runAgent: async (spec, prompt, sessionId) => {
         runs.push({ agentId: spec.id, prompt, sessionId });
         return { text: `${spec.id}-says-hello`, sessionId: `${spec.id}-sess`, raw: { stdout: '', stderr: '' } };
@@ -41,41 +1169,11 @@ describe('Broker', () => {
         return map[id];
       },
     });
-  });
-
-  it('routes a human message with @claude mention to claude only', async () => {
-    const room = createRoom(db, { name: 'g', agents: ['claude', 'codex'] });
-    await broker.postHumanMessage(room.id, 'matt', '@claude hey');
-    const messages = listMessages(db, room.id);
-    expect(messages.map((m) => `${m.authorId}:${m.text}`)).toEqual([
-      'matt:@claude hey',
-      'claude:claude-says-hello',
-    ]);
-    expect(runs.map((r) => r.agentId)).toEqual(['claude']);
-  });
-
-  it('without mentions, all agents in the room reply', async () => {
-    const room = createRoom(db, { name: 'g', agents: ['claude', 'codex'] });
-    await broker.postHumanMessage(room.id, 'matt', 'hi everyone');
-    const messages = listMessages(db, room.id);
-    expect(messages).toHaveLength(3);
-    expect(runs.map((r) => r.agentId).sort()).toEqual(['claude', 'codex']);
-  });
-
-  it('agents do not reply to their own messages (no recursion)', async () => {
-    const room = createRoom(db, { name: 'g', agents: ['claude', 'codex'] });
-    await broker.postHumanMessage(room.id, 'matt', 'kick it off');
-    const before = runs.length;
-    // Even though codex's reply lands in the room, it must not trigger another round.
-    expect(runs.length).toBe(before);
-    expect(runs.length).toBe(2);
-  });
-
-  it('persists session id from agent reply', async () => {
     const room = createRoom(db, { name: 'g', agents: ['claude'] });
-    await broker.postHumanMessage(room.id, 'matt', '@claude hi');
-    // Second message should be invoked with the prior session id.
-    await broker.postHumanMessage(room.id, 'matt', '@claude again');
+
+    await resumeBroker.postHumanMessage(room.id, 'human', '@claude hi');
+    await resumeBroker.postHumanMessage(room.id, 'human', '@claude again');
+
     expect(runs[0]!.sessionId).toBeNull();
     expect(runs[1]!.sessionId).toBe('claude-sess');
   });
@@ -84,9 +1182,1296 @@ describe('Broker', () => {
     const room = createRoom(db, { name: 'g', agents: ['claude'] });
     const events: Array<{ author: string; text: string }> = [];
     broker.on('messageAppended', (msg) => events.push({ author: msg.authorId, text: msg.text }));
-    await broker.postHumanMessage(room.id, 'matt', '@claude hi');
+    await broker.postHumanMessage(room.id, 'human', '@claude hi');
     expect(events).toHaveLength(2);
-    expect(events[0]).toMatchObject({ author: 'matt' });
+    expect(events[0]).toMatchObject({ author: 'human' });
     expect(events[1]).toMatchObject({ author: 'claude' });
+  });
+
+  it('injects active mission context and records agent run visibility', async () => {
+    const room = createRoom(db, { name: 'mission-room', agents: ['claude'] });
+    const task = broker.createTask(room.id, {
+      title: 'Ship command center',
+      goal: 'Add task execution controls',
+      acceptanceCriteria: 'Runs and artifacts are visible',
+      summary: 'Task shell is ready for implementation.',
+    });
+    expect(task).toBeDefined();
+
+    await broker.postHumanMessage(room.id, 'human', '@claude next step');
+
+    expect(runs[0]!.prompt).toContain('Active mission: Ship command center (active)');
+    expect(runs[0]!.prompt).toContain('Mission goal: Add task execution controls');
+    expect(runs[0]!.prompt).toContain('Mission summary: Task shell is ready for implementation.');
+
+    const agentRuns = listAgentRuns(db, room.id);
+    expect(agentRuns).toHaveLength(1);
+    expect(agentRuns[0]).toMatchObject({
+      agentId: 'claude',
+      status: 'completed',
+      taskId: task!.id,
+      permissionMode: 'plan',
+    });
+    expect(agentRuns[0]!.promptChars).toBeGreaterThan(0);
+    expect(agentRuns[0]!.estimatedPromptTokens).toBeGreaterThan(0);
+  });
+
+  it('stores hidden mission plan, phase, and checklist updates from agent replies', async () => {
+    const missionBroker = new Broker({
+      db,
+      maxAgentRepliesPerThread: 1,
+      runAgent: async (spec, prompt, sessionId) => {
+        runs.push({ agentId: spec.id, prompt, sessionId });
+        return {
+          text: [
+            'Plan recorded.',
+            '',
+            '/mission-plan',
+            'action: publish',
+            'title: Agreement for mission updates',
+            'status: active',
+            'body:',
+            '## Direction',
+            'Use Mission Control as the source of truth for planning and execution.',
+            '',
+            '## Execution Shape',
+            'Create phase gates first, then attach dependency-aware checklist items.',
+            '/end-mission-plan',
+            '',
+            '/mission-phase',
+            'action: create',
+            'title: Planning',
+            'status: active',
+            'gate: Direction is agreed and dependencies are known',
+            '/end-mission-phase',
+            '',
+            '/mission-task',
+            'action: create',
+            'title: Identify constraints',
+            'status: open',
+            'phase: Planning',
+            'detail: Collect known task constraints before implementation.',
+            '/end-mission-task',
+          ].join('\n'),
+          sessionId: `${spec.id}-sess`,
+          raw: { stdout: '', stderr: '' },
+        };
+      },
+      getSpec: (id) => {
+        const map: Record<string, AgentSpec> = {
+          claude: fakeSpec('claude', 'claude reply'),
+          codex: fakeSpec('codex', 'codex reply'),
+          gemini: fakeSpec('gemini', 'gemini reply'),
+          echo: fakeSpec('echo', 'echo reply'),
+        };
+        return map[id];
+      },
+    });
+    const room = createRoom(db, { name: 'mission-updates', agents: ['claude'] });
+    const task = missionBroker.createTask(room.id, { title: 'Plan mission updates' });
+
+    await missionBroker.postHumanMessage(room.id, 'human', '@claude plan this');
+
+    const plans = listTaskPlans(db, task!.id);
+    const phases = listTaskPhases(db, task!.id);
+    const items = listTaskChecklistItems(db, task!.id);
+    expect(plans).toMatchObject([
+      {
+        title: 'Agreement for mission updates',
+        status: 'active',
+        body: expect.stringContaining('## Direction'),
+      },
+    ]);
+    expect(phases).toMatchObject([
+      {
+        planId: plans[0]!.id,
+        title: 'Planning',
+        status: 'active',
+        gate: 'Direction is agreed and dependencies are known',
+      },
+    ]);
+    expect(items).toMatchObject([
+      {
+        planId: plans[0]!.id,
+        title: 'Identify constraints',
+        phaseId: phases[0]!.id,
+        status: 'open',
+      },
+    ]);
+    expect(listMessages(db, room.id).map((message) => message.text)).toEqual([
+      '@claude plan this',
+      'Plan recorded.',
+    ]);
+    const [run] = listAgentRuns(db, room.id);
+    expect(listAgentRunActions(db, run!.id).map((action) => action.label)).toEqual(
+      expect.arrayContaining([
+        'mission plan create',
+        'mission phase create',
+        'mission task create',
+      ]),
+    );
+  });
+
+  it('lets an agent create a mission and populate control state in one reply', async () => {
+    const missionBroker = new Broker({
+      db,
+      maxAgentRepliesPerThread: 1,
+      runAgent: async (spec, prompt, sessionId) => {
+        runs.push({ agentId: spec.id, prompt, sessionId });
+        return {
+          text: [
+            'Mission scaffolded from the document.',
+            '',
+            '/mission-create',
+            'title: Document implementation mission',
+            'goal: Turn the shared document into executable team work.',
+            'repo_path: C:/work/project',
+            'acceptance: Plan, gates, checklist, dependencies, and owners are recorded.',
+            'agents: claude, codex',
+            'capability_profile: edit',
+            'summary: Agent-created mission scaffold.',
+            '/end-mission-create',
+            '',
+            '/mission-plan',
+            'action: create',
+            'title: Document execution plan',
+            'status: active',
+            'body:',
+            '## Direction',
+            'Decompose the document into phase-gated work.',
+            '/end-mission-plan',
+            '',
+            '/mission-phase',
+            'action: create',
+            'title: Phase 1',
+            'status: active',
+            'gate: Checklist is actionable',
+            '/end-mission-phase',
+            '',
+            '/mission-task',
+            'action: create',
+            'title: Build task graph',
+            'status: open',
+            'phase: Phase 1',
+            'owner: claude',
+            'detail: Create independent and dependent work items.',
+            '/end-mission-task',
+          ].join('\n'),
+          sessionId: `${spec.id}-sess`,
+          raw: { stdout: '', stderr: '' },
+        };
+      },
+      getSpec: (id) => {
+        const map: Record<string, AgentSpec> = {
+          claude: fakeSpec('claude', 'claude reply'),
+          codex: fakeSpec('codex', 'codex reply'),
+          gemini: fakeSpec('gemini', 'gemini reply'),
+          echo: fakeSpec('echo', 'echo reply'),
+        };
+        return map[id];
+      },
+    });
+    const room = createRoom(db, { name: 'agent-created-mission', agents: ['claude', 'codex'] });
+
+    await missionBroker.postHumanMessage(room.id, 'human', '@claude draft the mission');
+
+    const [task] = listTasks(db, room.id);
+    expect(task).toMatchObject({
+      title: 'Document implementation mission',
+      goal: 'Turn the shared document into executable team work.',
+      repoPath: 'C:/work/project',
+      acceptanceCriteria: 'Plan, gates, checklist, dependencies, and owners are recorded.',
+      agents: ['claude', 'codex'],
+      capabilityProfile: 'edit',
+      summary: 'Agent-created mission scaffold.',
+      status: 'active',
+    });
+    const plans = listTaskPlans(db, task!.id);
+    const phases = listTaskPhases(db, task!.id);
+    const items = listTaskChecklistItems(db, task!.id);
+    expect(plans[0]).toMatchObject({ title: 'Document execution plan', status: 'active' });
+    expect(phases[0]).toMatchObject({
+      planId: plans[0]!.id,
+      title: 'Phase 1',
+      status: 'active',
+    });
+    expect(items[0]).toMatchObject({
+      planId: plans[0]!.id,
+      phaseId: phases[0]!.id,
+      title: 'Build task graph',
+      ownerAgentId: 'claude',
+      status: 'open',
+    });
+    expect(listMessages(db, room.id).map((message) => message.text)).toEqual([
+      '@claude draft the mission',
+      'Mission scaffolded from the document.',
+    ]);
+    const [run] = listAgentRuns(db, room.id);
+    expect(run).toMatchObject({ status: 'completed', taskId: null });
+    expect(listAgentRunActions(db, run!.id).map((action) => action.label)).toEqual(
+      expect.arrayContaining([
+        'mission created',
+        'mission plan create',
+        'mission phase create',
+        'mission task create',
+      ]),
+    );
+  });
+
+  it('records mission receipts, strips them from chat, and feeds the protocol into prompts', async () => {
+    const receiptBroker = new Broker({
+      db,
+      maxAgentRepliesPerThread: 1,
+      runAgent: async (spec, prompt, sessionId) => {
+        runs.push({ agentId: spec.id, prompt, sessionId });
+        return {
+          text: [
+            'The current gate is satisfied.',
+            '',
+            '/mission-receipt',
+            'status: completed',
+            'phase: Phase 1',
+            'summary: Verified the acceptance evidence and handed off the next phase.',
+            'evidence: test:npm test',
+            '/end-mission-receipt',
+          ].join('\n'),
+          sessionId: `${spec.id}-sess`,
+          raw: { stdout: '', stderr: '' },
+        };
+      },
+      getSpec: (id) => {
+        const map: Record<string, AgentSpec> = {
+          claude: fakeSpec('claude', 'claude reply'),
+          codex: fakeSpec('codex', 'codex reply'),
+          gemini: fakeSpec('gemini', 'gemini reply'),
+          echo: fakeSpec('echo', 'echo reply'),
+        };
+        return map[id];
+      },
+    });
+    const room = createRoom(db, { name: 'mission-receipt', agents: ['claude'] });
+    const task = receiptBroker.createTask(room.id, { title: 'Receipt mission' });
+
+    await receiptBroker.postHumanMessage(room.id, 'human', '@claude verify the gate');
+
+    expect(runs[0]!.prompt).toContain('Mission receipt protocol');
+    expect(listMessages(db, room.id).map((message) => message.text)).toEqual([
+      '@claude verify the gate',
+      'The current gate is satisfied.',
+    ]);
+    const [run] = listAgentRuns(db, room.id);
+    const actions = listAgentRunActions(db, run!.id);
+    expect(actions.map((action) => action.label)).toContain('mission receipt: completed');
+    expect(actions.map((action) => action.label)).not.toContain('mission receipt missing');
+    expect(actions.find((action) => action.label === 'mission receipt: completed')).toMatchObject({
+      taskId: task!.id,
+      status: 'completed',
+    });
+  });
+
+  it('flags active-mission replies that do not reconcile mission state', async () => {
+    const missingReceiptBroker = new Broker({
+      db,
+      maxAgentRepliesPerThread: 1,
+      runAgent: async (spec, prompt, sessionId) => {
+        runs.push({ agentId: spec.id, prompt, sessionId });
+        return {
+          text: 'I finished the work described above.',
+          sessionId: `${spec.id}-sess`,
+          raw: { stdout: '', stderr: '' },
+        };
+      },
+      getSpec: (id) => {
+        const map: Record<string, AgentSpec> = {
+          claude: fakeSpec('claude', 'claude reply'),
+          codex: fakeSpec('codex', 'codex reply'),
+          gemini: fakeSpec('gemini', 'gemini reply'),
+          echo: fakeSpec('echo', 'echo reply'),
+        };
+        return map[id];
+      },
+    });
+    const room = createRoom(db, { name: 'missing-receipt', agents: ['claude'] });
+    const task = missingReceiptBroker.createTask(room.id, { title: 'Missing receipt mission' });
+
+    await missingReceiptBroker.postHumanMessage(room.id, 'human', '@claude execute the next item');
+
+    const [run] = listAgentRuns(db, room.id);
+    const missing = listAgentRunActions(db, run!.id).find(
+      (action) => action.label === 'mission receipt missing',
+    );
+    expect(missing).toMatchObject({
+      taskId: task!.id,
+      status: 'failed',
+    });
+    expect(missing!.detail).toContain('without a /mission-receipt');
+  });
+
+  it('retroactively associates existing checklist items with a new plan and phase', async () => {
+    const retroBroker = new Broker({
+      db,
+      maxAgentRepliesPerThread: 1,
+      runAgent: async (spec, prompt, sessionId) => {
+        runs.push({ agentId: spec.id, prompt, sessionId });
+        return {
+          text: [
+            'Retrofit recorded.',
+            '',
+            '/mission-plan',
+            'action: create',
+            'title: Retrofit agreement',
+            'status: active',
+            'body:',
+            '## Direction',
+            'Organize existing work under explicit phase gates.',
+            '/end-mission-plan',
+            '',
+            '/mission-phase',
+            'action: create',
+            'title: Discovery',
+            'status: active',
+            'gate: Existing work is classified under the agreed plan',
+            '/end-mission-phase',
+            '',
+            '/mission-task',
+            'action: update',
+            'title: Classify legacy task',
+            'phase: Discovery',
+            'note: Attached legacy work to the new hierarchy.',
+            '/end-mission-task',
+          ].join('\n'),
+          sessionId: `${spec.id}-sess`,
+          raw: { stdout: '', stderr: '' },
+        };
+      },
+      getSpec: (id) => {
+        const map: Record<string, AgentSpec> = {
+          claude: fakeSpec('claude', 'claude reply'),
+          codex: fakeSpec('codex', 'codex reply'),
+          gemini: fakeSpec('gemini', 'gemini reply'),
+          echo: fakeSpec('echo', 'echo reply'),
+        };
+        return map[id];
+      },
+    });
+    const room = createRoom(db, { name: 'retro-mission-updates', agents: ['claude'] });
+    const task = retroBroker.createTask(room.id, { title: 'Retrofit mission updates' });
+    retroBroker.createTaskChecklistItem(room.id, task!.id, {
+      title: 'Classify legacy task',
+      status: 'open',
+      sortOrder: 1,
+    });
+
+    await retroBroker.postHumanMessage(room.id, 'human', '@claude retrofit this');
+
+    const [plan] = listTaskPlans(db, task!.id);
+    const [phase] = listTaskPhases(db, task!.id);
+    const [item] = listTaskChecklistItems(db, task!.id);
+    expect(plan).toMatchObject({ title: 'Retrofit agreement', status: 'active' });
+    expect(phase).toMatchObject({ title: 'Discovery', planId: plan!.id });
+    expect(item).toMatchObject({
+      title: 'Classify legacy task',
+      planId: plan!.id,
+      phaseId: phase!.id,
+    });
+  });
+
+  it('auto-activates the next planned phase when an agent completes the current gate', async () => {
+    const phaseBroker = new Broker({
+      db,
+      maxAgentRepliesPerThread: 1,
+      runAgent: async (spec, prompt, sessionId) => {
+        runs.push({ agentId: spec.id, prompt, sessionId });
+        return {
+          text: [
+            'Audit gate is complete; moving on.',
+            '',
+            '/mission-phase',
+            'action: update',
+            'title: Audit',
+            'status: done',
+            '/end-mission-phase',
+          ].join('\n'),
+          sessionId: `${spec.id}-sess`,
+          raw: { stdout: '', stderr: '' },
+        };
+      },
+      getSpec: (id) => {
+        const map: Record<string, AgentSpec> = {
+          claude: fakeSpec('claude', 'claude reply'),
+          codex: fakeSpec('codex', 'codex reply'),
+          gemini: fakeSpec('gemini', 'gemini reply'),
+          echo: fakeSpec('echo', 'echo reply'),
+        };
+        return map[id];
+      },
+    });
+    const room = createRoom(db, { name: 'phase-auto-advance', agents: ['codex'] });
+    const task = phaseBroker.createTask(room.id, { title: 'Advance phases' });
+    phaseBroker.createTaskPhase(room.id, task!.id, {
+      title: 'Audit',
+      status: 'active',
+      sortOrder: 1,
+      gate: 'Audit merge is accepted',
+    });
+    phaseBroker.createTaskPhase(room.id, task!.id, {
+      title: 'Implementation',
+      status: 'planned',
+      sortOrder: 2,
+      gate: 'Implementation tasks are complete',
+    });
+
+    await phaseBroker.postHumanMessage(room.id, 'human', '@codex verify the audit gate');
+
+    expect(listTaskPhases(db, task!.id)).toMatchObject([
+      { title: 'Audit', status: 'done' },
+      { title: 'Implementation', status: 'active' },
+    ]);
+    const [run] = listAgentRuns(db, room.id);
+    expect(listAgentRunActions(db, run!.id).map((action) => action.label)).toEqual(
+      expect.arrayContaining(['mission phase update', 'mission phase auto-advance']),
+    );
+  });
+
+  it('marks a checklist item done when an agent reports accepted completion evidence', async () => {
+    const completionBroker = new Broker({
+      db,
+      maxAgentRepliesPerThread: 1,
+      runAgent: async (spec, prompt, sessionId) => {
+        runs.push({ agentId: spec.id, prompt, sessionId });
+        return {
+          text: [
+            'Audit merge accepted.',
+            '',
+            '/mission-task',
+            'action: update',
+            'title: Merge full strategy-doc audit',
+            'note: Audit merge accepted by both agents; Phase 2 ownership and dependencies are settled.',
+            '/end-mission-task',
+          ].join('\n'),
+          sessionId: `${spec.id}-sess`,
+          raw: { stdout: '', stderr: '' },
+        };
+      },
+      getSpec: (id) => {
+        const map: Record<string, AgentSpec> = {
+          claude: fakeSpec('claude', 'claude reply'),
+          codex: fakeSpec('codex', 'codex reply'),
+          gemini: fakeSpec('gemini', 'gemini reply'),
+          echo: fakeSpec('echo', 'echo reply'),
+        };
+        return map[id];
+      },
+    });
+    const room = createRoom(db, { name: 'completion-mission-updates', agents: ['codex'] });
+    const task = completionBroker.createTask(room.id, { title: 'Complete audit merge' });
+    completionBroker.createTaskChecklistItem(room.id, task!.id, {
+      title: 'Merge full strategy-doc audit',
+      status: 'open',
+      ownerAgentId: 'codex',
+      sortOrder: 1,
+    });
+
+    await completionBroker.postHumanMessage(room.id, 'human', '@codex update status');
+
+    const [item] = listTaskChecklistItems(db, task!.id);
+    expect(item).toMatchObject({
+      title: 'Merge full strategy-doc audit',
+      status: 'done',
+      ownerAgentId: 'codex',
+      statusNote: 'Audit merge accepted by both agents; Phase 2 ownership and dependencies are settled.',
+      updatedBy: 'codex',
+    });
+    expect(item!.completedAt).toEqual(expect.any(Number));
+  });
+
+  it('stores advanced run detail without bloating run summaries', async () => {
+    const detailBroker = new Broker({
+      db,
+      maxAgentRepliesPerThread: 1,
+      runAgent: async (spec, prompt, sessionId) => {
+        runs.push({ agentId: spec.id, prompt, sessionId });
+        return {
+          text: 'diagnostic reply',
+          sessionId: 'claude-session',
+          raw: {
+            stdout: JSON.stringify({
+              result: 'diagnostic reply',
+              session_id: 'claude-session',
+              duration_ms: 123,
+              usage: { server_tool_use: { web_fetch_requests: 1 } },
+            }),
+            stderr: 'minor warning',
+          },
+        };
+      },
+      getSpec: (id) => {
+        const map: Record<string, AgentSpec> = {
+          claude: fakeSpec('claude', 'claude reply'),
+          codex: fakeSpec('codex', 'codex reply'),
+          gemini: fakeSpec('gemini', 'gemini reply'),
+          echo: fakeSpec('echo', 'echo reply'),
+        };
+        return map[id];
+      },
+    });
+    const room = createRoom(db, { name: 'details', agents: ['claude'] });
+
+    await detailBroker.postHumanMessage(room.id, 'human', '@claude inspect this');
+
+    const [summary] = detailBroker.listAgentRuns(room.id);
+    expect(summary).toBeDefined();
+    expect(summary as Record<string, unknown>).not.toHaveProperty('stdout');
+    const detail = detailBroker.getAgentRunDetail(room.id, summary!.id);
+    expect(detail).toBeDefined();
+    expect(detail!.run).toMatchObject({
+      replyText: 'diagnostic reply',
+      stdout: expect.stringContaining('web_fetch_requests'),
+      stderr: 'minor warning',
+      cliSessionId: 'claude-session',
+    });
+    expect(detail!.run.promptText).toContain('@claude inspect this');
+    expect(detail!.triggerMessage?.text).toBe('@claude inspect this');
+    expect(detail!.replyMessage?.text).toBe('diagnostic reply');
+    expect(detail!.diagnostics.signals.map((signal) => signal.label)).toContain(
+      'web_fetch_requests',
+    );
+  });
+
+  it('records collaboration ledger notes, strips them from chat, and exposes action timelines', async () => {
+    const collaborationBroker = new Broker({
+      db,
+      maxAgentRepliesPerThread: 1,
+      runAgent: async (spec, prompt, sessionId) => {
+        runs.push({ agentId: spec.id, prompt, sessionId });
+        return {
+          text: [
+            'I would challenge the current plan until we verify the broker path.',
+            '',
+            '/collab-note',
+            'kind: challenge',
+            'title: Broker follow-up path may be the real blocker',
+            'target: approved permission execution',
+            'status: open',
+            'confidence: medium',
+            'evidence: file:server/src/broker.ts:292; test:npm test',
+            'body: Approval only helps if the broker immediately starts the approved agent turn.',
+            '/end-collab-note',
+          ].join('\n'),
+          sessionId: 'claude-session',
+          raw: { stdout: '', stderr: '' },
+        };
+      },
+      getSpec: (id) => {
+        const map: Record<string, AgentSpec> = {
+          claude: fakeSpec('claude', 'claude reply'),
+          codex: fakeSpec('codex', 'codex reply'),
+          gemini: fakeSpec('gemini', 'gemini reply'),
+          echo: fakeSpec('echo', 'echo reply'),
+        };
+        return map[id];
+      },
+    });
+    const room = createRoom(db, { name: 'alignment', agents: ['claude'] });
+
+    await collaborationBroker.postHumanMessage(room.id, 'human', '@claude review direction');
+
+    const messages = listMessages(db, room.id);
+    expect(messages[1]!.text).toBe(
+      'I would challenge the current plan until we verify the broker path.',
+    );
+    expect(messages[1]!.text).not.toContain('/collab-note');
+
+    const items = collaborationBroker.listCollaborationItems(room.id);
+    expect(items).toHaveLength(1);
+    expect(items[0]).toMatchObject({
+      kind: 'challenge',
+      status: 'open',
+      title: 'Broker follow-up path may be the real blocker',
+      target: 'approved permission execution',
+      evidence: ['file:server/src/broker.ts:292', 'test:npm test'],
+    });
+
+    expect(runs[0]!.prompt).toContain('Collaboration protocol');
+    expect(runs[0]!.prompt).toContain('Do not agree merely to be agreeable');
+    expect(runs[0]!.prompt).toContain('/collab-note');
+
+    const actions = collaborationBroker.listAgentRunActions(room.id);
+    expect(actions.map((action) => action.label)).toEqual(
+      expect.arrayContaining([
+        'prompt prepared',
+        'agent process started',
+        'agent process completed',
+        'recorded challenge',
+        'message emitted',
+      ]),
+    );
+
+    const [summary] = collaborationBroker.listAgentRuns(room.id);
+    const detail = collaborationBroker.getAgentRunDetail(room.id, summary!.id);
+    expect(detail!.actions.map((action) => action.label)).toContain('recorded challenge');
+  });
+
+  it('feeds recent collaboration ledger items into later agent prompts', async () => {
+    const replies = [
+      [
+        'Proposal: inspect the broker before changing adapters.',
+        '',
+        '/collab-note',
+        'kind: proposal',
+        'title: Inspect broker dispatch before adapter changes',
+        'status: open',
+        'confidence: high',
+        'body: The symptom is cross-agent and likely lives above any single provider.',
+        '/end-collab-note',
+      ].join('\n'),
+      'I agree with inspecting the broker first.',
+    ];
+    const ledgerBroker = new Broker({
+      db,
+      maxAgentRepliesPerThread: 1,
+      runAgent: async (spec, prompt, sessionId) => {
+        runs.push({ agentId: spec.id, prompt, sessionId });
+        return {
+          text: replies.shift() ?? '',
+          sessionId: `${spec.id}-sess`,
+          raw: { stdout: '', stderr: '' },
+        };
+      },
+      getSpec: (id) => {
+        const map: Record<string, AgentSpec> = {
+          claude: fakeSpec('claude', 'claude reply'),
+          codex: fakeSpec('codex', 'codex reply'),
+          gemini: fakeSpec('gemini', 'gemini reply'),
+          echo: fakeSpec('echo', 'echo reply'),
+        };
+        return map[id];
+      },
+    });
+    const room = createRoom(db, { name: 'ledger-context', agents: ['claude'] });
+
+    await ledgerBroker.postHumanMessage(room.id, 'human', '@claude propose direction');
+    await ledgerBroker.postHumanMessage(room.id, 'human', '@claude continue');
+
+    expect(runs[1]!.prompt).toContain('Current collaboration ledger');
+    expect(runs[1]!.prompt).toContain('Inspect broker dispatch before adapter changes');
+  });
+
+  it('uses task capability profiles as scoped per-turn permissions', async () => {
+    const room = createRoom(db, { name: 'capability-room', agents: ['claude'] });
+    broker.createTask(room.id, {
+      title: 'Editable mission',
+      repoPath: 'C:/work/project',
+      capabilityProfile: 'edit',
+    });
+
+    await broker.postHumanMessage(room.id, 'human', '@claude make the change');
+
+    expect(runs[0]!.permission).toMatchObject({
+      mode: 'edit',
+      target: 'C:/work/project',
+    });
+    expect(runs[0]!.prompt).toContain('Task capability profile: edit');
+    expect(listAgentRuns(db, room.id)[0]).toMatchObject({
+      permissionMode: 'edit',
+      status: 'completed',
+    });
+  });
+
+  it('writes context files and sends only a bounded recent window in prompts', async () => {
+    const contextDir = mkdtempSync(path.join(os.tmpdir(), 'fireside-context-test-'));
+    const contextBroker = new Broker({
+      db,
+      maxHistory: 2,
+      maxAgentRepliesPerThread: 1,
+      contextDir,
+      runAgent: async (spec, prompt, sessionId) => {
+        runs.push({ agentId: spec.id, prompt, sessionId });
+        return {
+          text: `${spec.id}-reply`,
+          sessionId: `${spec.id}-sess`,
+          raw: { stdout: '', stderr: '' },
+        };
+      },
+      getSpec: (id) => {
+        const map: Record<string, AgentSpec> = {
+          claude: fakeSpec('claude', 'claude reply'),
+          codex: fakeSpec('codex', 'codex reply'),
+          gemini: fakeSpec('gemini', 'gemini reply'),
+          echo: fakeSpec('echo', 'echo reply'),
+        };
+        return map[id];
+      },
+    });
+    const room = createRoom(db, { name: 'ctx', agents: ['claude'] });
+
+    await contextBroker.postHumanMessage(room.id, 'human', '@claude first');
+    await contextBroker.postHumanMessage(room.id, 'human', 'second');
+    await contextBroker.postHumanMessage(room.id, 'human', 'third');
+
+    const prompt = runs[runs.length - 1]!.prompt;
+    expect(prompt).not.toContain('@claude first');
+    expect(prompt).toContain('second');
+    expect(prompt).toContain('third');
+    expect(prompt).toContain('earlier message(s) are omitted');
+    expect(prompt).toContain('Recap file:');
+    expect(prompt).toContain('Bounded transcript file:');
+
+    const recapPath = prompt.match(/Recap file: (.+)/)?.[1];
+    const transcriptPath = prompt.match(/Bounded transcript file: (.+)/)?.[1];
+    expect(recapPath).toBeDefined();
+    expect(transcriptPath).toBeDefined();
+    expect(readFileSync(recapPath as string, 'utf8')).toContain('@claude first');
+    expect(readFileSync(transcriptPath as string, 'utf8')).toContain('third');
+  });
+
+  it('stores oversized messages as artifacts and sends excerpts in the live prompt', async () => {
+    const contextDir = mkdtempSync(path.join(os.tmpdir(), 'fireside-artifact-test-'));
+    const artifactBroker = new Broker({
+      db,
+      maxHistory: 2,
+      maxPromptChars: 5_000,
+      largeMessageThresholdChars: 1_000,
+      maxAgentRepliesPerThread: 1,
+      contextDir,
+      runAgent: async (spec, prompt, sessionId) => {
+        runs.push({ agentId: spec.id, prompt, sessionId });
+        return {
+          text: `${spec.id}-reply`,
+          sessionId: `${spec.id}-sess`,
+          raw: { stdout: '', stderr: '' },
+        };
+      },
+      getSpec: (id) => {
+        const map: Record<string, AgentSpec> = {
+          claude: fakeSpec('claude', 'claude reply'),
+          codex: fakeSpec('codex', 'codex reply'),
+          gemini: fakeSpec('gemini', 'gemini reply'),
+          echo: fakeSpec('echo', 'echo reply'),
+        };
+        return map[id];
+      },
+    });
+    const room = createRoom(db, { name: 'artifacts', agents: ['claude'] });
+    const largeText = `@claude ${Array.from({ length: 900 }, (_, i) => `chunk-${i}`).join(' ')}`;
+
+    await artifactBroker.postHumanMessage(room.id, 'human', largeText);
+
+    const prompt = runs[0]!.prompt;
+    expect(prompt.length).toBeLessThanOrEqual(5_000);
+    expect(prompt).toContain('Large message stored outside the live prompt');
+    expect(prompt).toContain('Artifact file:');
+    expect(prompt).not.toContain(largeText);
+
+    const artifactPath = prompt.match(/Artifact file: (.+)/)?.[1];
+    expect(artifactPath).toBeDefined();
+    expect(readFileSync(artifactPath as string, 'utf8')).toContain(largeText);
+  });
+
+  it('copies shared files into durable conversation fixtures and advertises them in prompts', async () => {
+    const contextDir = mkdtempSync(path.join(os.tmpdir(), 'fireside-fixture-test-'));
+    const sourceDir = mkdtempSync(path.join(os.tmpdir(), 'fireside-fixture-source-'));
+    const sourcePath = path.join(sourceDir, 'notes.md');
+    writeFileSync(sourcePath, '# Notes\n\nImportant fixture text.', 'utf8');
+    const fixtureBroker = new Broker({
+      db,
+      maxAgentRepliesPerThread: 1,
+      contextDir,
+      runAgent: async (spec, prompt, sessionId) => {
+        runs.push({ agentId: spec.id, prompt, sessionId });
+        return {
+          text: `${spec.id}-reply`,
+          sessionId: `${spec.id}-sess`,
+          raw: { stdout: '', stderr: '' },
+        };
+      },
+      getSpec: (id) => {
+        const map: Record<string, AgentSpec> = {
+          claude: fakeSpec('claude', 'claude reply'),
+          codex: fakeSpec('codex', 'codex reply'),
+          gemini: fakeSpec('gemini', 'gemini reply'),
+          echo: fakeSpec('echo', 'echo reply'),
+        };
+        return map[id];
+      },
+    });
+    const room = createRoom(db, { name: 'fixtures', agents: ['claude'] });
+
+    const fixture = fixtureBroker.attachFixture(room.id, sourcePath);
+    expect(fixture?.sourcePath).toBe(sourcePath);
+    expect(fixture?.storedPath).not.toBe(sourcePath);
+    expect(readFileSync(fixture!.storedPath, 'utf8')).toContain('Important fixture text.');
+
+    await fixtureBroker.postHumanMessage(room.id, 'human', `@claude read ${fixture!.storedPath}`);
+
+    const prompt = runs[0]!.prompt;
+    expect(prompt).toContain('Conversation fixtures: 1');
+    expect(prompt).toContain('fixture manifest:');
+    expect(prompt).toContain(fixture!.storedPath);
+    expect(prompt).toContain('Important fixture text.');
+    const artifacts = fixtureBroker.listArtifacts(room.id);
+    expect(artifacts?.files.some((file) => file.kind === 'fixture')).toBe(true);
+    expect(artifacts?.files.some((file) => file.kind === 'fixture-manifest')).toBe(true);
+  });
+
+  it('removes only removable context artifacts', () => {
+    const contextDir = mkdtempSync(path.join(os.tmpdir(), 'fireside-remove-artifact-test-'));
+    const sourceDir = mkdtempSync(path.join(os.tmpdir(), 'fireside-remove-artifact-source-'));
+    const sourcePath = path.join(sourceDir, 'brief.md');
+    writeFileSync(sourcePath, 'Temporary fixture text.', 'utf8');
+    const artifactBroker = new Broker({
+      db,
+      maxAgentRepliesPerThread: 1,
+      contextDir,
+      runAgent: async (spec, prompt, sessionId) => {
+        runs.push({ agentId: spec.id, prompt, sessionId });
+        return {
+          text: `${spec.id}-reply`,
+          sessionId: `${spec.id}-sess`,
+          raw: { stdout: '', stderr: '' },
+        };
+      },
+      getSpec: (id) => {
+        const map: Record<string, AgentSpec> = {
+          claude: fakeSpec('claude', 'claude reply'),
+          codex: fakeSpec('codex', 'codex reply'),
+          gemini: fakeSpec('gemini', 'gemini reply'),
+          echo: fakeSpec('echo', 'echo reply'),
+        };
+        return map[id];
+      },
+    });
+    const room = createRoom(db, { name: 'remove-artifacts', agents: ['claude'] });
+
+    const fixture = artifactBroker.attachFixture(room.id, sourcePath);
+    expect(fixture).not.toBeNull();
+    expect(existsSync(fixture!.storedPath)).toBe(true);
+    expect(artifactBroker.removeArtifact(room.id, 'fixture', fixture!.storedPath)).toBe(true);
+    expect(existsSync(sourcePath)).toBe(true);
+    expect(existsSync(fixture!.storedPath)).toBe(false);
+    expect(artifactBroker.listArtifacts(room.id)?.files.some((file) => file.kind === 'fixture')).toBe(
+      false,
+    );
+
+    const draftPath = path.join(contextDir, room.id, 'drafts', 'candidate.md');
+    mkdirSync(path.dirname(draftPath), { recursive: true });
+    writeFileSync(draftPath, '# Candidate draft\n', 'utf8');
+    expect(artifactBroker.removeArtifact(room.id, 'draft-artifact', draftPath)).toBe(true);
+    expect(existsSync(draftPath)).toBe(false);
+    expect(() =>
+      artifactBroker.removeArtifact(
+        room.id,
+        'message-artifact',
+        path.join(contextDir, room.id, 'artifacts.md'),
+      ),
+    ).toThrow(/cannot be removed/);
+  });
+
+  it('turns an agent permission request into a one-turn approved permission grant', async () => {
+    const permissionBroker = new Broker({
+      db,
+      maxAgentRepliesPerThread: 1,
+      runAgent: async (spec, prompt, sessionId, permission) => {
+        runs.push({
+          agentId: spec.id,
+          prompt,
+          sessionId,
+          ...(permission !== undefined ? { permission } : {}),
+        });
+        return {
+          text: permission
+            ? 'edited foobar.txt'
+            : [
+                '/permission-request',
+                'mode: edit',
+                'target: foobar.txt',
+                'reason: I need to write the file we discussed.',
+              ].join('\n'),
+          sessionId: `${spec.id}-sess`,
+          raw: { stdout: '', stderr: '' },
+        };
+      },
+      getSpec: (id) => {
+        const map: Record<string, AgentSpec> = {
+          claude: fakeSpec('claude', 'claude reply'),
+          codex: fakeSpec('codex', 'codex reply'),
+          gemini: fakeSpec('gemini', 'gemini reply'),
+          echo: fakeSpec('echo', 'echo reply'),
+        };
+        return map[id];
+      },
+    });
+    const room = createRoom(db, { name: 'permissions', agents: ['claude'] });
+
+    await permissionBroker.postHumanMessage(room.id, 'human', '@claude edit foobar.txt');
+
+    let requests = listPermissionRequests(db, room.id);
+    expect(requests).toHaveLength(1);
+    expect(requests[0]).toMatchObject({
+      agentId: 'claude',
+      mode: 'edit',
+      target: 'foobar.txt',
+      status: 'pending',
+    });
+    expect(listMessages(db, room.id).map((m) => m.authorId)).toEqual(['human']);
+
+    const resolved = permissionBroker.resolvePermissionRequest(requests[0]!.id, 'approved', 'human');
+    expect(resolved).toMatchObject({ status: 'approved', decidedBy: 'human' });
+    await new Promise((resolve) => setTimeout(resolve, 25));
+
+    requests = listPermissionRequests(db, room.id);
+    expect(requests[0]).toMatchObject({ status: 'approved', decidedBy: 'human' });
+    expect(runs[1]!.permission).toMatchObject({
+      mode: 'edit',
+      target: 'foobar.txt',
+      reason: 'I need to write the file we discussed.',
+    });
+    expect(runs[1]!.prompt).toContain('Approved tool permission for this turn: edit');
+    expect(runs[1]!.prompt.match(/Permission approved for claude/g) ?? []).toHaveLength(1);
+    const messageLines = listMessages(db, room.id).map((m) => `${m.authorId}:${m.text}`);
+    expect(messageLines).toHaveLength(4);
+    expect(messageLines[0]).toBe('human:@claude edit foobar.txt');
+    expect(messageLines[1]).toContain('system:Permission approved for claude: edit access to foobar.txt.');
+    expect(messageLines[1]).toContain('Effective capabilities:');
+    expect(messageLines.slice(2)).toEqual([
+      'system:(claude started approved edit turn for foobar.txt.)',
+      'claude:edited foobar.txt',
+    ]);
+  });
+
+  it('routes a visible handoff after an approved permission follow-up', async () => {
+    let turn = 0;
+    const permissionBroker = new Broker({
+      db,
+      maxAgentRepliesPerThread: 1,
+      runAgent: async (spec, prompt, sessionId, permission) => {
+        turn += 1;
+        runs.push({
+          agentId: spec.id,
+          prompt,
+          sessionId,
+          ...(permission !== undefined ? { permission } : {}),
+        });
+        return {
+          text:
+            turn === 1
+              ? [
+                  '/permission-request',
+                  'mode: edit',
+                  'target: foobar.txt',
+                  'reason: I need to write the file we discussed.',
+                ].join('\n')
+              : turn === 2
+                ? 'Edited foobar.txt. Codex, please verify the result.'
+                : 'Verified the result.',
+          sessionId: `${spec.id}-sess`,
+          raw: { stdout: '', stderr: '' },
+        };
+      },
+      getSpec: (id) => {
+        const map: Record<string, AgentSpec> = {
+          claude: fakeSpec('claude', 'claude reply'),
+          codex: fakeSpec('codex', 'codex reply'),
+          gemini: fakeSpec('gemini', 'gemini reply'),
+          echo: fakeSpec('echo', 'echo reply'),
+        };
+        return map[id];
+      },
+    });
+    const room = createRoom(db, { name: 'permission-handoff', agents: ['claude', 'codex'] });
+
+    await permissionBroker.postHumanMessage(room.id, 'human', '@claude edit foobar.txt');
+    const request = listPermissionRequests(db, room.id)[0];
+    expect(request).toBeDefined();
+
+    permissionBroker.resolvePermissionRequest(request!.id, 'approved', 'human');
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    expect(runs.map((r) => r.agentId)).toEqual(['claude', 'claude', 'codex']);
+    expect(listMessages(db, room.id).map((m) => `${m.authorId}:${m.text}`)).toContain(
+      'codex:Verified the result.',
+    );
+  });
+
+  it('creates a permission card from an embedded permission request and keeps surrounding text visible', async () => {
+    const permissionBroker = new Broker({
+      db,
+      maxAgentRepliesPerThread: 1,
+      runAgent: async (spec, prompt, sessionId, permission) => {
+        runs.push({
+          agentId: spec.id,
+          prompt,
+          sessionId,
+          ...(permission !== undefined ? { permission } : {}),
+        });
+        return {
+          text: [
+            'Understood - one at a time. Here is the first:',
+            '',
+            '/permission-request',
+            'mode: edit',
+            'target: docs/admin-deploy.md',
+            'reason: Write the canonical admin deploy runbook.',
+          ].join('\n'),
+          sessionId: `${spec.id}-sess`,
+          raw: { stdout: '', stderr: '' },
+        };
+      },
+      getSpec: (id) => {
+        const map: Record<string, AgentSpec> = {
+          claude: fakeSpec('claude', 'claude reply'),
+          codex: fakeSpec('codex', 'codex reply'),
+          gemini: fakeSpec('gemini', 'gemini reply'),
+          echo: fakeSpec('echo', 'echo reply'),
+        };
+        return map[id];
+      },
+    });
+    const room = createRoom(db, { name: 'embedded-permission', agents: ['claude'] });
+
+    await permissionBroker.postHumanMessage(room.id, 'human', '@claude request one permission');
+
+    const requests = listPermissionRequests(db, room.id);
+    expect(requests).toHaveLength(1);
+    expect(requests[0]).toMatchObject({
+      mode: 'edit',
+      target: 'docs/admin-deploy.md',
+      reason: 'Write the canonical admin deploy runbook.',
+    });
+    expect(listMessages(db, room.id).map((m) => `${m.authorId}:${m.text}`)).toEqual([
+      'human:@claude request one permission',
+      'claude:Understood - one at a time. Here is the first:',
+    ]);
+    expect(permissionBroker.listAgentRuns(room.id)[0]).toMatchObject({
+      status: 'permission-requested',
+      replyMessageId: expect.any(String),
+    });
+  });
+
+  it('normalizes embedded write permission requests into edit permission cards', async () => {
+    const permissionBroker = new Broker({
+      db,
+      maxAgentRepliesPerThread: 1,
+      runAgent: async (spec, prompt, sessionId, permission) => {
+        runs.push({
+          agentId: spec.id,
+          prompt,
+          sessionId,
+          ...(permission !== undefined ? { permission } : {}),
+        });
+        return {
+          text: [
+            'Blocked. The approved permission was edit, but this is a new file.',
+            '',
+            'Re-requesting with the right mode:',
+            '',
+            '/permission-request',
+            'mode: write',
+            'target: docs/runbooks/admin-deploy.md',
+            'reason: Create the canonical source-of-truth runbook.',
+          ].join('\n'),
+          sessionId: `${spec.id}-sess`,
+          raw: { stdout: '', stderr: '' },
+        };
+      },
+      getSpec: (id) => {
+        const map: Record<string, AgentSpec> = {
+          claude: fakeSpec('claude', 'claude reply'),
+          codex: fakeSpec('codex', 'codex reply'),
+          gemini: fakeSpec('gemini', 'gemini reply'),
+          echo: fakeSpec('echo', 'echo reply'),
+        };
+        return map[id];
+      },
+    });
+    const room = createRoom(db, { name: 'write-permission', agents: ['claude'] });
+
+    await permissionBroker.postHumanMessage(room.id, 'human', '@claude create the runbook');
+
+    const requests = listPermissionRequests(db, room.id);
+    expect(requests).toHaveLength(1);
+    expect(requests[0]).toMatchObject({
+      mode: 'edit',
+      target: 'docs/runbooks/admin-deploy.md',
+      reason: 'Create the canonical source-of-truth runbook.',
+    });
+    expect(listMessages(db, room.id).map((m) => `${m.authorId}:${m.text}`)).toEqual([
+      'human:@claude create the runbook',
+      'claude:Blocked. The approved permission was edit, but this is a new file.\n\nRe-requesting with the right mode:',
+    ]);
+    expect(permissionBroker.listAgentRuns(room.id)[0]).toMatchObject({
+      status: 'permission-requested',
+      replyMessageId: expect.any(String),
+    });
+  });
+
+  it('creates a permission card for embedded bash command requests', async () => {
+    const permissionBroker = new Broker({
+      db,
+      maxAgentRepliesPerThread: 1,
+      runAgent: async (spec, prompt, sessionId, permission) => {
+        runs.push({
+          agentId: spec.id,
+          prompt,
+          sessionId,
+          ...(permission !== undefined ? { permission } : {}),
+        });
+        return {
+          text: [
+            'Edits landed. Requesting the next scope now.',
+            '',
+            '/permission-request',
+            'mode: bash',
+            'target: C:\\workspaces\\licensing',
+            'reason: Stage and commit the tightened runbook. Exact commands: git -C "C:\\workspaces\\licensing" add docs/runbooks/admin-deploy.md then git -C "C:\\workspaces\\licensing" commit -m "docs(licensing): add wm-license-contract/v1 admin-deploy runbook". No push.',
+          ].join('\n'),
+          sessionId: `${spec.id}-sess`,
+          raw: { stdout: '', stderr: '' },
+        };
+      },
+      getSpec: (id) => {
+        const map: Record<string, AgentSpec> = {
+          claude: fakeSpec('claude', 'claude reply'),
+          codex: fakeSpec('codex', 'codex reply'),
+          gemini: fakeSpec('gemini', 'gemini reply'),
+          echo: fakeSpec('echo', 'echo reply'),
+        };
+        return map[id];
+      },
+    });
+    const room = createRoom(db, { name: 'bash-permission', agents: ['claude'] });
+
+    await permissionBroker.postHumanMessage(room.id, 'human', '@claude commit the runbook');
+
+    const requests = listPermissionRequests(db, room.id);
+    expect(requests).toHaveLength(1);
+    expect(requests[0]).toMatchObject({
+      mode: 'full-auto',
+      requestedMode: 'bash',
+      target: 'C:\\workspaces\\licensing',
+      capabilities: expect.arrayContaining(['read', 'run-command', 'git-commit']),
+      providerProfile: expect.stringContaining('allowed Bash(git *)'),
+    });
+    expect(requests[0]!.capabilities).not.toContain('git-push');
+    expect(listMessages(db, room.id).map((m) => `${m.authorId}:${m.text}`)).toEqual([
+      'human:@claude commit the runbook',
+      'claude:Edits landed. Requesting the next scope now.',
+    ]);
+  });
+
+  it('stores hidden draft artifacts before permission approval', async () => {
+    const contextDir = mkdtempSync(path.join(os.tmpdir(), 'fireside-draft-artifacts-'));
+    const permissionBroker = new Broker({
+      db,
+      contextDir,
+      maxAgentRepliesPerThread: 1,
+      runAgent: async (spec, prompt, sessionId, permission) => {
+        runs.push({
+          agentId: spec.id,
+          prompt,
+          sessionId,
+          ...(permission !== undefined ? { permission } : {}),
+        });
+        return {
+          text: [
+            'I have the runbook drafted and need permission to write it.',
+            '/draft-artifact',
+            'name: admin-deploy.md',
+            'target: docs/runbooks/admin-deploy.md',
+            'content:',
+            '# Admin Deploy',
+            '',
+            'Canonical body.',
+            '/end-draft-artifact',
+            '/permission-request',
+            'mode: write',
+            'target: docs/runbooks/admin-deploy.md',
+            'reason: Create the canonical source-of-truth runbook.',
+          ].join('\n'),
+          sessionId: `${spec.id}-sess`,
+          raw: { stdout: '', stderr: '' },
+        };
+      },
+      getSpec: (id) => {
+        const map: Record<string, AgentSpec> = {
+          claude: fakeSpec('claude', 'claude reply'),
+          codex: fakeSpec('codex', 'codex reply'),
+          gemini: fakeSpec('gemini', 'gemini reply'),
+          echo: fakeSpec('echo', 'echo reply'),
+        };
+        return map[id];
+      },
+    });
+    const room = createRoom(db, { name: 'draft-permission', agents: ['claude'] });
+
+    await permissionBroker.postHumanMessage(room.id, 'human', '@claude draft then request');
+
+    const requests = listPermissionRequests(db, room.id);
+    expect(requests).toHaveLength(1);
+    const artifacts = permissionBroker.listArtifacts(room.id);
+    expect(artifacts?.files.some((file) => file.kind === 'draft-artifact')).toBe(true);
+    const draftDir = path.join(contextDir, room.id, 'drafts');
+    expect(readdirSync(draftDir).some((name) => name.includes('admin-deploy.md'))).toBe(true);
+    expect(listMessages(db, room.id).map((m) => m.text)).toEqual([
+      '@claude draft then request',
+      'I have the runbook drafted and need permission to write it.',
+    ]);
+    expect(permissionBroker.listAgentRunActions(room.id).map((action) => action.label)).toContain(
+      'draft artifact stored',
+    );
+  });
+
+  it('records when an approved permission follow-up produces no visible reply', async () => {
+    const permissionBroker = new Broker({
+      db,
+      maxAgentRepliesPerThread: 1,
+      runAgent: async (spec, prompt, sessionId, permission) => {
+        runs.push({
+          agentId: spec.id,
+          prompt,
+          sessionId,
+          ...(permission !== undefined ? { permission } : {}),
+        });
+        return {
+          text: permission
+            ? ''
+            : [
+                '/permission-request',
+                'mode: edit',
+                'target: foobar.txt',
+                'reason: I need to write the file we discussed.',
+              ].join('\n'),
+          sessionId: `${spec.id}-sess`,
+          raw: { stdout: '', stderr: '' },
+        };
+      },
+      getSpec: (id) => {
+        const map: Record<string, AgentSpec> = {
+          claude: fakeSpec('claude', 'claude reply'),
+          codex: fakeSpec('codex', 'codex reply'),
+          gemini: fakeSpec('gemini', 'gemini reply'),
+          echo: fakeSpec('echo', 'echo reply'),
+        };
+        return map[id];
+      },
+    });
+    const room = createRoom(db, { name: 'permissions-empty', agents: ['claude'] });
+
+    await permissionBroker.postHumanMessage(room.id, 'human', '@claude edit foobar.txt');
+    const [request] = listPermissionRequests(db, room.id);
+    expect(request).toBeDefined();
+
+    permissionBroker.resolvePermissionRequest(request!.id, 'approved', 'human');
+    await new Promise((resolve) => setTimeout(resolve, 25));
+
+    const messageLines = listMessages(db, room.id).map((m) => `${m.authorId}:${m.text}`);
+    expect(messageLines).toHaveLength(4);
+    expect(messageLines[0]).toBe('human:@claude edit foobar.txt');
+    expect(messageLines[1]).toContain('system:Permission approved for claude: edit access to foobar.txt.');
+    expect(messageLines[1]).toContain('Effective capabilities:');
+    expect(messageLines.slice(2)).toEqual([
+      'system:(claude started approved edit turn for foobar.txt.)',
+      'system:(claude finished the approved edit follow-up without a visible chat message.)',
+    ]);
   });
 });

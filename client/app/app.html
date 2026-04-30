@@ -1,0 +1,1374 @@
+<div class="shell">
+  <aside class="sidebar">
+    <nav class="primary-nav" aria-label="Workspace navigation">
+      <button
+        type="button"
+        class="primary-nav__item"
+        [class.is-active]="selectedTab() === 'briefings'"
+        (click)="openBriefings()"
+      >
+        <span>briefings</span>
+        <strong>{{ briefings().length }}</strong>
+      </button>
+    </nav>
+
+    <nav class="rooms" aria-label="Rooms">
+      <vfx-smoke-and-embers class="rooms__vfx"></vfx-smoke-and-embers>
+      <div class="rooms__head">
+        <div class="rooms__label">rooms</div>
+        <button
+          type="button"
+          class="rooms__add"
+          [class.is-active]="creatingRoom()"
+          title="New channel"
+          aria-label="New channel"
+          (click)="toggleCreateRoom()"
+        >
+          <svg viewBox="0 0 20 20" aria-hidden="true">
+            <path d="M10 4v12M4 10h12" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" />
+          </svg>
+        </button>
+      </div>
+      @if (creatingRoom()) {
+        <form class="room-create" (submit)="$event.preventDefault(); createRoom(roomName)">
+          <input
+            #roomName
+            class="room-create__input"
+            type="text"
+            autocomplete="off"
+            placeholder="channel name"
+            aria-label="Channel name"
+          />
+          <div class="room-create__agent-head" aria-hidden="true">
+            <span>agent</span>
+            <span>yolo</span>
+          </div>
+          <div class="room-create__agents" aria-label="Agents">
+            @for (agent of agentChoices; track agent) {
+              <article class="room-agent-choice">
+                <label class="room-agent-listen">
+                  <input
+                    type="checkbox"
+                    [checked]="isNewRoomAgentSelected(agent)"
+                    (change)="toggleNewRoomAgent(agent, $event)"
+                  />
+                  <span class="avatar avatar--sm" [class]="'avatar avatar--sm avatar--' + agent"></span>
+                  <span>{{ agent }}</span>
+                </label>
+                <span class="room-agent-yolo" title="Participates in YOLO rounds">
+                  <input
+                    type="checkbox"
+                    [checked]="isNewRoomYoloAgentSelected(agent)"
+                    (change)="toggleNewRoomYoloAgent(agent, $event)"
+                  />
+                  yolo
+                </span>
+              </article>
+            }
+          </div>
+          <div class="room-create__actions">
+            <button class="room-create__submit" type="submit">create</button>
+            <button class="room-create__cancel" type="button" (click)="cancelCreateRoom(roomName)">cancel</button>
+          </div>
+        </form>
+      }
+      @for (room of rooms(); track room.id) {
+        <div class="room-row" [class.is-active]="room.id === selectedRoomId() && selectedTab() !== 'briefings'">
+          <button
+            type="button"
+            class="room-pill"
+            (click)="selectRoom(room.id)"
+          >
+            <span class="room-pill__hash">#</span>
+            <span class="room-pill__name">{{ room.name }}</span>
+            <span class="room-pill__count">{{ room.agents.length }}</span>
+          </button>
+          <button
+            type="button"
+            class="room-pill__delete"
+            [class.is-confirming]="deletingRoomId() === room.id"
+            [title]="deletingRoomId() === room.id ? 'Click again to delete' : 'Delete channel'"
+            [attr.aria-label]="deletingRoomId() === room.id ? 'Confirm delete channel' : 'Delete channel'"
+            (click)="deleteRoom(room, $event)"
+          >
+            x
+          </button>
+        </div>
+      } @empty {
+        <p class="empty-copy">no rooms yet</p>
+      }
+    </nav>
+
+    <div class="me">
+      <span class="avatar avatar--sm">{{ authorName().slice(0, 1).toUpperCase() }}</span>
+      <input
+        #authorInput
+        class="me__name"
+        type="text"
+        autocomplete="off"
+        spellcheck="false"
+        [value]="authorName()"
+        aria-label="Your name"
+        (blur)="setAuthor(authorInput)"
+        (keydown.enter)="setAuthor(authorInput)"
+      />
+    </div>
+  </aside>
+
+  <aside class="presence" aria-label="People and active work">
+    <section class="presence__body">
+      <div class="presence-group">
+        <div class="presence-group__head">
+          <span class="section-label">agents</span>
+          <em>{{ roomYoloAgents().length }} yolo</em>
+        </div>
+        @if (roomYoloAgents().length > 0 || yoloStatus()?.active) {
+          <div class="yolo-turn-bank" [class]="'yolo-turn-bank yolo-turn-bank--' + yoloTurnTone()">
+            <div class="yolo-turn-bank__head">
+              <span>yolo turns</span>
+              <button
+                type="button"
+                title="Add YOLO turns"
+                [disabled]="yoloStatus()?.active !== true"
+                (click)="addYoloTurns()"
+              >
+                +
+              </button>
+            </div>
+            <strong>{{ yoloTurnCounterText() }}</strong>
+            <div class="yolo-turn-bank__bar" aria-hidden="true">
+              <span [style.width.%]="yoloTurnPercentRemaining()"></span>
+            </div>
+          </div>
+        }
+        @for (agent of roomAgents(); track agent) {
+          <div class="presence-row presence-row--agent">
+            <span class="avatar avatar--sm" [class]="'avatar avatar--sm avatar--' + agent"></span>
+            <span>{{ agent }}</span>
+            <span class="presence-row__actions">
+              <em>{{ isAgentRunning(agent) ? 'working' : isRoomYoloAgent(agent) ? 'yolo' : 'idle' }}</em>
+              @if (canCompactAgent(agent)) {
+                <button
+                  class="agent-compact-btn"
+                  type="button"
+                  [disabled]="isAgentRunning(agent) || compactingAgent() === agent"
+                  [title]="isAgentRunning(agent) ? 'Compact is available when this agent is idle' : 'Compact context'"
+                  aria-label="Compact context"
+                  (click)="openCompactAgent(agent, $event)"
+                >
+                  <svg viewBox="0 0 640 640" aria-hidden="true">
+                    <path
+                      d="M503.5 71C512.9 61.6 528.1 61.6 537.4 71L569.4 103C578.8 112.4 578.8 127.6 569.4 136.9L482.4 223.9L521.4 262.9C528.3 269.8 530.3 280.1 526.6 289.1C522.9 298.1 514.2 304 504.5 304L360.5 304C347.2 304 336.5 293.3 336.5 280L336.5 136C336.5 126.3 342.3 117.5 351.3 113.8C360.3 110.1 370.6 112.1 377.5 119L416.5 158L503.5 71zM136.5 336L280.5 336C293.8 336 304.5 346.7 304.5 360L304.5 504C304.5 513.7 298.7 522.5 289.7 526.2C280.7 529.9 270.4 527.9 263.5 521L224.5 482L137.5 569C128.1 578.4 112.9 578.4 103.6 569L71.6 537C62.2 527.6 62.2 512.4 71.6 503.1L158.6 416.1L119.6 377.1C112.7 370.2 110.7 359.9 114.4 350.9C118.1 341.9 126.8 336 136.5 336z"
+                    />
+                  </svg>
+                </button>
+              }
+            </span>
+            @if (agentContextUsage(agent); as usage) {
+              <div
+                [class]="'agent-context ' + agentContextTone(usage)"
+                [title]="agentContextTitle(usage)"
+              >
+                <span class="agent-context__label">{{ agentContextLabel(usage) }}</span>
+                <span class="agent-context__bar" aria-hidden="true">
+                  <span [style.width.%]="agentContextPercent(usage)"></span>
+                </span>
+              </div>
+            }
+          </div>
+        } @empty {
+          <p class="empty-copy">no agents in this room</p>
+        }
+        <button class="agent-manage-btn" type="button" (click)="openEditAgents()">
+          Manage Agents
+        </button>
+      </div>
+
+      <div class="presence-group">
+        <div class="section-label">humans</div>
+        @for (human of humans(); track human) {
+          <div class="presence-row">
+            <span class="avatar avatar--sm">{{ human.slice(0, 1).toUpperCase() }}</span>
+            <span>{{ human }}</span>
+            <em>present</em>
+          </div>
+        }
+      </div>
+
+      <div class="presence-group">
+        <div class="section-label">working</div>
+        @for (run of runningRuns(); track run.id) {
+          <article class="work-card" [class.is-stale]="isRunStale(run)">
+            <button class="work-row" type="button" (click)="openRunDetail(run.id)">
+              <span class="work-row__top">
+                <strong>{{ run.agentId }}</strong>
+                <em>{{ elapsedLabel(run.startedAt, run.completedAt) }}</em>
+              </span>
+              <span>{{ runMeta(run) }}</span>
+              <small>{{ runActionSignal(run) }}</small>
+              @if (runDraftSignal(run); as draft) {
+                <span class="work-draft">
+                  <span class="work-draft__label">draft</span>
+                  <span>{{ draft }}</span>
+                </span>
+              }
+            </button>
+            @if (canDismissRun(run)) {
+              <button
+                type="button"
+                class="work-dismiss"
+                title="Dismiss stale running cue"
+                (click)="dismissRun(run, $event)"
+              >
+                dismiss
+              </button>
+            }
+          </article>
+        } @empty {
+          <p class="empty-copy">no active runs</p>
+        }
+      </div>
+    </section>
+  </aside>
+
+  <main class="workspace">
+    <header class="topbar">
+      <div class="channel">
+        <span class="channel__hash">{{ selectedTab() === 'briefings' ? '' : '#' }}</span>
+        <span class="channel__name">
+          {{ selectedTab() === 'briefings' ? 'briefing room' : selectedRoom()?.name ?? 'no room selected' }}
+        </span>
+      </div>
+      <div class="tabs" role="tablist" aria-label="Fireside workspace">
+        @for (tab of tabs; track tab.id) {
+          <button
+            type="button"
+            role="tab"
+            class="tab"
+            [class.is-active]="tab.id === selectedTab()"
+            [attr.aria-selected]="tab.id === selectedTab()"
+            (click)="selectTab(tab.id)"
+          >
+            {{ tab.label }}
+          </button>
+        }
+      </div>
+    </header>
+
+    @if (selectedTab() === 'chat') {
+      <section class="chat-pane" aria-label="Chat">
+        <ol #messagesList class="messages">
+          @for (item of chatTimeline(); track item.id) {
+            @if (item.request; as request) {
+              <li class="msg permission-request" [class]="'msg permission-request permission-request--' + request.status">
+                <span class="avatar" [class]="'avatar avatar--' + request.agentId"></span>
+                <div class="permission-card">
+                  <header class="permission-card__head">
+                    <strong>{{ request.agentId }} requests {{ permissionRequestLabel(request) }} permission</strong>
+                    <span [class]="'permission-card__status permission-card__status--' + request.status">
+                      {{ request.status }}
+                    </span>
+                  </header>
+                  <div class="permission-card__target">{{ request.target }}</div>
+                  <p class="permission-card__reason">{{ request.reason }}</p>
+                  <div class="permission-card__facts">
+                    <div><span>effective</span><strong>{{ capabilityText(request.capabilities) }}</strong></div>
+                    <div><span>target</span><strong>{{ targetStatusText(request) }}</strong></div>
+                    @if (request.providerProfile) {
+                      <div><span>provider</span><strong>{{ request.providerProfile }}</strong></div>
+                    }
+                    @if (request.requestedMode && request.requestedMode !== request.mode) {
+                      <div><span>normalized</span><strong>{{ request.requestedMode }}</strong></div>
+                    }
+                  </div>
+                  <footer class="permission-card__foot">
+                    @if (request.status === 'pending') {
+                      <button type="button" class="permission-card__btn permission-card__btn--deny" (click)="decidePermission(request, 'denied')">Deny</button>
+                      <button type="button" class="permission-card__btn permission-card__btn--allow" (click)="decidePermission(request, 'approved')">Allow</button>
+                    } @else {
+                      <span class="permission-card__decided">{{ request.status }}{{ request.decidedBy ? ' by ' + request.decidedBy : '' }}</span>
+                    }
+                  </footer>
+                </div>
+              </li>
+            } @else if (item.message; as message) {
+              <li
+                class="msg"
+                [class.is-system]="message.authorKind === 'system'"
+                [class.is-error]="item.isError"
+                [class.is-grouped]="item.grouped"
+              >
+                <span class="avatar" [class]="'avatar avatar--' + message.authorId">
+                  @if (message.authorKind !== 'agent') {
+                    {{ message.authorId.slice(0, 1).toUpperCase() }}
+                  }
+                </span>
+                <div class="msg__main">
+                  @if (!item.grouped) {
+                    <div class="msg__head">
+                      <span class="msg__author">{{ message.authorId }}</span>
+                      <span class="msg__time">{{ message.createdAt | date: 'shortTime' }}</span>
+                    </div>
+                  }
+                  <div class="msg__body" [innerHTML]="item.html"></div>
+                </div>
+              </li>
+            }
+          } @empty {
+            <li class="empty-state">
+              <h2>quiet room</h2>
+              <p>Messages from humans and agents will land here.</p>
+            </li>
+          }
+        </ol>
+        <form class="composer" (submit)="$event.preventDefault(); sendMessage(messageInput)">
+          <button
+            class="composer__attach"
+            type="button"
+            title="Attach file"
+            aria-label="Attach file"
+            (click)="attachFileToMessage(messageInput)"
+          >
+            <svg viewBox="0 0 20 20" aria-hidden="true">
+              <path d="M7.5 10.5 12 6a2.5 2.5 0 0 1 3.5 3.5l-6.2 6.2a4 4 0 0 1-5.7-5.7l6.4-6.4a5.5 5.5 0 0 1 7.8 7.8l-6 6" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+          </button>
+          <input
+            #messageInput
+            class="composer__input"
+            type="text"
+            autocomplete="off"
+            [placeholder]="composerPlaceholder()"
+            aria-label="Message"
+          />
+          @if (isRoomWorking()) {
+            <button
+              class="composer__stop"
+              type="button"
+              title="Stop active agent runs"
+              (click)="stopActiveRuns()"
+            >
+              stop
+            </button>
+          }
+          <button class="composer__send" type="submit">send</button>
+        </form>
+      </section>
+    } @else if (selectedTab() === 'briefings') {
+      <section class="briefings-pane" aria-label="Briefing Room">
+        <section class="briefing-list-panel">
+          <header class="briefing-panel-head">
+            <div>
+              <div class="section-label">briefing room</div>
+              <h2>mission snapshots</h2>
+            </div>
+            <button type="button" class="control-btn" (click)="loadBriefings()">refresh</button>
+          </header>
+          <div class="briefing-list">
+            @for (briefing of briefings(); track briefing.id) {
+              <button
+                type="button"
+                class="briefing-row"
+                [class.is-active]="briefing.id === selectedBriefingId()"
+                (click)="openBriefing(briefing.id)"
+              >
+                <span>{{ briefing.title }}</span>
+                <strong>{{ formatShortTime(briefing.createdAt) }}</strong>
+                <p>{{ oneLine(briefing.summary, 150) }}</p>
+                <small>{{ briefing.messageCount }} messages / {{ briefing.runCount }} runs / {{ briefing.createdBy }}</small>
+              </button>
+            } @empty {
+              <p class="empty-copy">no mission snapshots saved yet</p>
+            }
+          </div>
+        </section>
+
+        <section class="briefing-detail-panel">
+          @if (briefingLoading()) {
+            <p class="empty-copy">loading briefing</p>
+          } @else if (briefingError()) {
+            <pre class="run-detail__pre">{{ briefingError() }}</pre>
+          } @else if (selectedBriefing(); as briefing) {
+            <header class="briefing-detail-head">
+              <div>
+                <div class="section-label">snapshot</div>
+                <h2>{{ briefing.title }}</h2>
+                <p>{{ briefing.summary }}</p>
+              </div>
+              <dl class="briefing-facts">
+                <div><dt>captured</dt><dd>{{ formatDateTime(briefing.createdAt) }}</dd></div>
+                <div><dt>room</dt><dd>#{{ briefing.payload.room.name }}</dd></div>
+                <div><dt>mission</dt><dd>{{ briefing.payload.task?.title || 'none' }}</dd></div>
+                <div><dt>state</dt><dd>{{ briefing.payload.task?.status || 'archived' }}</dd></div>
+                <div><dt>checklist</dt><dd>{{ briefingStatusCounts(briefing) }}</dd></div>
+                <div><dt>phases</dt><dd>{{ briefingPhaseCounts(briefing) }}</dd></div>
+              </dl>
+            </header>
+
+            <div class="briefing-grid">
+              <section class="briefing-section briefing-section--wide">
+                <div class="section-label">mission brief</div>
+                @if (briefing.payload.task; as task) {
+                  <h3>{{ task.title }}</h3>
+                  <p>{{ task.goal || 'No goal captured.' }}</p>
+                  @if (task.acceptanceCriteria) {
+                    <p><strong>Done when:</strong> {{ task.acceptanceCriteria }}</p>
+                  }
+                  @if (task.repoPath) {
+                    <small>{{ task.repoPath }}</small>
+                  }
+                } @else {
+                  <p class="empty-copy">snapshot captured without an active mission</p>
+                }
+              </section>
+
+              <section class="briefing-section briefing-section--wide">
+                <div class="section-label">plans</div>
+                <div class="briefing-plan-list">
+                  @for (plan of briefing.payload.plans; track plan.id) {
+                    <article class="briefing-plan">
+                      <header>
+                        <h3>{{ plan.title }}</h3>
+                        <strong>{{ plan.status }}</strong>
+                      </header>
+                      <div class="markdown-body" [innerHTML]="briefingPlanHtml(plan.body)"></div>
+                    </article>
+                  } @empty {
+                    <p class="empty-copy">no plans captured</p>
+                  }
+                </div>
+              </section>
+
+              <section class="briefing-section briefing-section--paired briefing-section--phases">
+                <div class="section-label">phase gates</div>
+                <div class="phase-grid phase-grid--briefing">
+                  @for (phase of briefing.payload.phases; track phase.id) {
+                    <article class="phase-card" [class.is-done]="phase.status === 'done'">
+                      <header>
+                        <span>{{ phase.title }}</span>
+                        <strong>{{ phase.status }}</strong>
+                      </header>
+                      @if (phase.planId) {
+                        <small class="phase-card__meta">plan {{ briefingPlanLabel(briefing, phase.planId) }}</small>
+                      }
+                      <p>{{ phase.gate || phase.description || 'No gate criteria recorded.' }}</p>
+                    </article>
+                  } @empty {
+                    <p class="empty-copy">no phase gates captured</p>
+                  }
+                </div>
+              </section>
+
+              <section class="briefing-section briefing-section--paired briefing-section--conversation">
+                <div class="section-label">conversation archive</div>
+                @if (briefing.payload.messages.length > briefingMessages(briefing).length) {
+                  <p class="panel-note">showing latest {{ briefingMessages(briefing).length }} of {{ briefing.payload.messages.length }} messages; the full transcript is stored in the snapshot payload.</p>
+                }
+                <div class="briefing-transcript">
+                  @for (message of briefingMessages(briefing); track message.id) {
+                    <article class="briefing-message">
+                      <header>
+                        <span>{{ message.authorId }}</span>
+                        <strong>{{ formatShortTime(message.createdAt) }}</strong>
+                      </header>
+                      <p>{{ message.text }}</p>
+                    </article>
+                  } @empty {
+                    <p class="empty-copy">no messages captured</p>
+                  }
+                </div>
+              </section>
+
+              <section class="briefing-section briefing-section--paired briefing-section--checklist">
+                <div class="section-label">checklist</div>
+                <div class="checklist">
+                  @for (item of briefing.payload.checklistItems; track item.id) {
+                    <article
+                      class="check-item"
+                      [class.is-blocked]="item.status === 'blocked'"
+                      [class.is-done]="item.status === 'done'"
+                    >
+                      <label class="check-item__main">
+                        <input type="checkbox" [checked]="item.status === 'done'" disabled />
+                        <span class="check-item__title">
+                          <strong>{{ item.title }}</strong>
+                          @if (item.detail) {
+                            <small>{{ item.detail }}</small>
+                          }
+                        </span>
+                        @if (item.ownerAgentId) {
+                          <span
+                            class="check-owner check-owner--assigned"
+                            [title]="'Owner: ' + item.ownerAgentId"
+                          >
+                            <span class="avatar avatar--sm" [class]="'avatar avatar--sm avatar--' + item.ownerAgentId">
+                              @if (!isAgentOwner(item.ownerAgentId)) {
+                                {{ item.ownerAgentId.slice(0, 1).toUpperCase() }}
+                              }
+                            </span>
+                          </span>
+                        }
+                        <em>{{ item.status }}</em>
+                      </label>
+                      @if (item.planId || item.phaseId || item.dependencyIds.length) {
+                        <div class="check-item__meta">
+                          @if (item.planId) {
+                            <span>plan {{ briefingPlanLabel(briefing, item.planId) }}</span>
+                          }
+                          @if (item.phaseId) {
+                            <span>phase {{ item.phaseId }}</span>
+                          }
+                          @if (item.dependencyIds.length) {
+                            <span>after {{ item.dependencyIds.join(', ') }}</span>
+                          }
+                        </div>
+                      }
+                      @if (item.statusNote || item.blockedReason) {
+                        <p>{{ item.blockedReason || item.statusNote }}</p>
+                      }
+                      @for (note of briefingChecklistNotes(briefing, item.id); track note.id) {
+                        <small class="check-note">{{ note.authorId }} / {{ note.kind }}: {{ note.body }}</small>
+                      }
+                    </article>
+                  } @empty {
+                    <p class="empty-copy">no checklist captured</p>
+                  }
+                </div>
+              </section>
+
+              <section class="briefing-section briefing-section--paired briefing-section--collaboration">
+                <div class="section-label">collaboration</div>
+                <div class="briefing-ledger">
+                  @for (item of briefing.payload.collaboration; track item.id) {
+                    <article class="ledger-row">
+                      <header>
+                        <span>{{ item.kind }}</span>
+                        <strong>{{ item.status }}</strong>
+                      </header>
+                      <p>{{ item.body }}</p>
+                    </article>
+                  } @empty {
+                    <p class="empty-copy">no collaboration notes captured</p>
+                  }
+                </div>
+              </section>
+            </div>
+          } @else {
+            <p class="empty-copy">select a saved briefing to inspect its frozen mission state</p>
+          }
+        </section>
+      </section>
+    } @else {
+      <section class="mission-pane" aria-label="Mission Control">
+        <section class="mission-card mission-card--focus">
+          <div class="mission-card__head">
+            <div class="section-label">mission</div>
+            <button
+              type="button"
+              class="control-btn control-btn--briefing"
+              [disabled]="!selectedRoomId() || briefingLoading()"
+              (click)="createMissionBriefing()"
+            >
+              <svg viewBox="0 0 20 20" aria-hidden="true">
+                <path d="M5 3.5h8.4L16 6.1v10.4H5V3.5Z" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" />
+                <path d="M7.5 3.5v4h5v-4M7.5 13h5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+              </svg>
+              <span>save briefing</span>
+            </button>
+          </div>
+          @if (activeTask(); as task) {
+            <h2>{{ task.title }}</h2>
+            <p>{{ task.goal || 'No goal written yet.' }}</p>
+            <dl class="facts">
+              <div><dt>status</dt><dd>{{ task.status }}</dd></div>
+              <div><dt>profile</dt><dd>{{ task.capabilityProfile }}</dd></div>
+              <div><dt>path</dt><dd>{{ task.repoPath || 'not set' }}</dd></div>
+            </dl>
+          } @else {
+            <h2>no active mission</h2>
+            <p>Create the mission brief here; agents will receive it in future turns.</p>
+          }
+          @if (missionHistory().length > 0) {
+            <section class="mission-switcher">
+              <header>
+                <span class="section-label">mission history</span>
+                @if (activeTask()) {
+                  <button type="button" class="control-btn" (click)="toggleMissionDraft()">
+                    {{ creatingMissionDraft() ? 'close' : 'new mission' }}
+                  </button>
+                }
+              </header>
+              <div class="mission-list">
+                @for (mission of missionHistory(); track mission.id) {
+                  <article class="mission-row" [class.is-current]="isCurrentMission(mission)">
+                    <div>
+                      <strong>{{ mission.title }}</strong>
+                      <small>{{ mission.status }} / {{ formatShortTime(mission.updatedAt || mission.createdAt) }}</small>
+                    </div>
+                    <span>{{ mission.capabilityProfile }}</span>
+                    <div class="mission-row__actions">
+                      @if (isCurrentMission(mission)) {
+                        <button type="button" class="mini-btn" (click)="pauseMission(mission)">pause</button>
+                        <button type="button" class="mini-btn mini-btn--done" (click)="completeMission(mission)">done</button>
+                      } @else {
+                        <button type="button" class="mini-btn mini-btn--primary" (click)="activateMission(mission)">
+                          {{ missionActionLabel(mission) }}
+                        </button>
+                      }
+                    </div>
+                  </article>
+                }
+              </div>
+            </section>
+          }
+          @if (activeTask() && creatingMissionDraft()) {
+            <form
+              class="mission-form mission-form--new"
+              (submit)="$event.preventDefault(); createMission(draftTitle, draftGoal, draftPath, draftAcceptance, draftProfile)"
+            >
+              <label>
+                <span>new mission title</span>
+                <input #draftTitle type="text" placeholder="next mission for this team" />
+              </label>
+              <label>
+                <span>goal</span>
+                <textarea #draftGoal rows="3" placeholder="what outcome should the team achieve?"></textarea>
+              </label>
+              <label>
+                <span>repo/path</span>
+                <div class="path-picker-row">
+                  <input #draftPath type="text" [value]="activeTask()?.repoPath || ''" />
+                  <button class="control-btn" type="button" (click)="browseFolderInto(draftPath)">browse</button>
+                </div>
+              </label>
+              <label>
+                <span>done when</span>
+                <textarea #draftAcceptance rows="3" placeholder="acceptance criteria"></textarea>
+              </label>
+              <label>
+                <span>profile</span>
+                <select #draftProfile>
+                  <option value="plan">read-only</option>
+                  <option value="edit">edit/write</option>
+                  <option value="full-auto">full auto</option>
+                </select>
+              </label>
+              <div class="mission-form__actions">
+                <button class="control-btn" type="button" (click)="cancelMissionDraft(draftTitle, draftGoal, draftPath, draftAcceptance, draftProfile)">cancel</button>
+                <button class="control-btn control-btn--primary" type="submit">start new mission</button>
+              </div>
+            </form>
+          }
+          @if (activeTask(); as task) {
+            <form
+              class="mission-form"
+              (submit)="$event.preventDefault(); updateMission(editTitle, editGoal, editPath, editAcceptance, editProfile, editStatus, editSummary)"
+            >
+              <label>
+                <span>title</span>
+                <input #editTitle type="text" [value]="task.title" />
+              </label>
+              <label>
+                <span>goal</span>
+                <textarea #editGoal rows="3" [value]="task.goal || ''"></textarea>
+              </label>
+              <label>
+                <span>repo/path</span>
+                <div class="path-picker-row">
+                  <input #editPath type="text" [value]="task.repoPath || ''" />
+                  <button class="control-btn" type="button" (click)="browseFolderInto(editPath)">browse</button>
+                </div>
+              </label>
+              <label>
+                <span>done when</span>
+                <textarea #editAcceptance rows="3" [value]="task.acceptanceCriteria || ''"></textarea>
+              </label>
+              <div class="mission-form__row">
+                <label>
+                  <span>profile</span>
+                  <select #editProfile [value]="task.capabilityProfile">
+                    <option value="plan">read-only</option>
+                    <option value="edit">edit/write</option>
+                    <option value="full-auto">full auto</option>
+                  </select>
+                </label>
+                <label>
+                  <span>status</span>
+                  <select #editStatus [value]="task.status">
+                    <option value="active">active</option>
+                    <option value="blocked">blocked</option>
+                    <option value="verifying">verifying</option>
+                    <option value="paused">paused</option>
+                    <option value="done">done</option>
+                  </select>
+                </label>
+              </div>
+              <label>
+                <span>summary</span>
+                <textarea #editSummary rows="3" [value]="task.summary || ''"></textarea>
+              </label>
+              <button class="control-btn control-btn--primary" type="submit">save brief</button>
+            </form>
+          } @else {
+            <form
+              class="mission-form"
+              (submit)="$event.preventDefault(); createMission(newTitle, newGoal, newPath, newAcceptance, newProfile)"
+            >
+              <label>
+                <span>title</span>
+                <input #newTitle type="text" placeholder="ship the thing" />
+              </label>
+              <label>
+                <span>goal</span>
+                <textarea #newGoal rows="3" placeholder="what outcome should the team achieve?"></textarea>
+              </label>
+              <label>
+                <span>repo/path</span>
+                <div class="path-picker-row">
+                  <input #newPath type="text" placeholder="C:\path\to\repo" />
+                  <button class="control-btn" type="button" (click)="browseFolderInto(newPath)">browse</button>
+                </div>
+              </label>
+              <label>
+                <span>done when</span>
+                <textarea #newAcceptance rows="3" placeholder="acceptance criteria"></textarea>
+              </label>
+              <label>
+                <span>profile</span>
+                <select #newProfile>
+                  <option value="plan">read-only</option>
+                  <option value="edit">edit/write</option>
+                  <option value="full-auto">full auto</option>
+                </select>
+              </label>
+              <button class="control-btn control-btn--primary" type="submit">create mission</button>
+            </form>
+          }
+        </section>
+
+        <section class="panel panel--controls mission-actions">
+          <header class="mission-actions__head">
+            <div>
+              <div class="section-label">mission actions</div>
+              <h3>{{ missionActionDefinition(selectedMissionAction()).label }}</h3>
+            </div>
+            <span class="mission-actions__chip">posts to chat</span>
+          </header>
+
+          <div class="mission-actions__target">
+            <div class="mission-actions__target-head">
+              <span>send to</span>
+              <strong>{{ missionActionTargetLabel() }}</strong>
+            </div>
+            <div class="mission-action-scope" role="group" aria-label="Mission action target scope">
+              <button
+                type="button"
+                [class.is-active]="missionActionScope() === 'team'"
+                (click)="setMissionActionScope('team')"
+              >
+                Team
+              </button>
+              <button
+                type="button"
+                [class.is-active]="missionActionScope() === 'selected'"
+                (click)="setMissionActionScope('selected')"
+              >
+                Selected
+              </button>
+              <button
+                type="button"
+                [class.is-active]="missionActionScope() === 'single'"
+                (click)="setMissionActionScope('single')"
+              >
+                One Agent
+              </button>
+            </div>
+            @if (missionActionScope() === 'single') {
+              <select
+                class="mission-action-select"
+                [value]="missionActionAgent() || roomAgents()[0] || ''"
+                (change)="setMissionActionAgent($event)"
+              >
+                @for (agent of roomAgents(); track agent) {
+                  <option [value]="agent">{{ agent }}</option>
+                }
+              </select>
+            }
+            @if (missionActionScope() === 'selected') {
+              <div class="mission-action-agent-grid">
+                @for (agent of roomAgents(); track agent) {
+                  <label>
+                    <input
+                      type="checkbox"
+                      [checked]="isMissionActionAgentSelected(agent)"
+                      (change)="toggleMissionActionAgent(agent, $event)"
+                    />
+                    {{ agent }}
+                  </label>
+                }
+              </div>
+            }
+          </div>
+
+          <div class="mission-action-grid">
+            @for (action of missionActions; track action.id) {
+              <button
+                type="button"
+                class="mission-action-option"
+                [class.is-selected]="selectedMissionAction() === action.id"
+                (click)="selectMissionAction(action.id)"
+              >
+                <strong>{{ action.label }}</strong>
+                <span>{{ action.summary }}</span>
+              </button>
+            }
+          </div>
+
+          @if (selectedMissionAction() === 'execute') {
+            <label class="mission-action-field">
+              <span>work item</span>
+              <select [value]="missionActionChecklistItemId()" (change)="setMissionActionChecklistItem($event)">
+                <option value="">next unblocked item</option>
+                @for (item of missionActionWorkItems(); track item.id) {
+                  <option [value]="item.id">{{ item.title }} / {{ item.status }}</option>
+                }
+              </select>
+            </label>
+          }
+
+          <div class="mission-action-preview">
+            <div class="mission-action-preview__head">
+              <span>chat prompt</span>
+              <button
+                type="button"
+                class="control-btn control-btn--primary"
+                [disabled]="!canPostMissionAction()"
+                (click)="dispatchMissionAction()"
+              >
+                post to chat
+              </button>
+            </div>
+            <pre>{{ missionActionPreview() }}</pre>
+          </div>
+
+        </section>
+
+        <section class="panel panel--phases">
+          <div class="section-label">phase gates</div>
+          @if (taskControl(); as control) {
+            <div class="phase-grid">
+              @for (phase of control.phases; track phase.id) {
+                <article
+                  class="phase-card"
+                  [class.is-active]="phase.id === control.currentPhase?.id"
+                  [class.is-done]="phase.status === 'done'"
+                >
+                  @if (phase.status === 'done') {
+                    <svg
+                      class="phase-card__complete-icon"
+                      xmlns="http://www.w3.org/2000/svg"
+                      viewBox="0 0 640 640"
+                      aria-hidden="true"
+                      focusable="false"
+                    >
+                      <path
+                        d="M320 576C178.6 576 64 461.4 64 320C64 178.6 178.6 64 320 64C461.4 64 576 178.6 576 320C576 461.4 461.4 576 320 576zM438 209.7C427.3 201.9 412.3 204.3 404.5 215L285.1 379.2L233 327.1C223.6 317.7 208.4 317.7 199.1 327.1C189.8 336.5 189.7 351.7 199.1 361L271.1 433C276.1 438 282.9 440.5 289.9 440C296.9 439.5 303.3 435.9 307.4 430.2L443.3 243.2C451.1 232.5 448.7 217.5 438 209.7z"
+                      />
+                    </svg>
+                  }
+                  <header>
+                    <span>{{ phase.title }}</span>
+                    <strong>{{ phase.status }}</strong>
+                  </header>
+                  @if (phase.planId) {
+                    <small class="phase-card__meta">plan {{ planLabel(phase.planId) }}</small>
+                  }
+                  <p>{{ phase.gate || phase.description || 'No gate criteria recorded.' }}</p>
+                </article>
+              } @empty {
+                <p class="empty-copy">no phase gates recorded</p>
+              }
+            </div>
+          } @else {
+            <p class="empty-copy">mission control state is waiting on an active mission</p>
+          }
+          @if (activeTask()) {
+            <form
+              class="inline-form"
+              (submit)="$event.preventDefault(); addPhase(phaseTitle, phaseGate, phaseStatus)"
+            >
+              <input #phaseTitle type="text" placeholder="phase title" />
+              <textarea #phaseGate rows="2" placeholder="gate criteria"></textarea>
+              <select #phaseStatus>
+                <option value="planned">planned</option>
+                <option value="active">active</option>
+                <option value="blocked">blocked</option>
+                <option value="done">done</option>
+              </select>
+              <button class="control-btn" type="submit">add phase</button>
+            </form>
+          }
+        </section>
+
+        <section class="panel panel--plan">
+          <div class="section-label">active plan</div>
+          @if (taskControl()?.activePlan; as plan) {
+            <h3>{{ plan.title }}</h3>
+            <p class="panel-note">Team agreement and rationale. Phase gates and checklist items track execution.</p>
+          }
+          <div class="markdown-body" [innerHTML]="activePlanHtml()"></div>
+          @if (activeTask()) {
+            <form class="inline-form" (submit)="$event.preventDefault(); addPlan(planTitle, planBody)">
+              <input #planTitle type="text" placeholder="plan title" />
+              <textarea #planBody rows="8" placeholder="markdown plan"></textarea>
+              <button class="control-btn" type="submit">publish plan</button>
+            </form>
+          }
+        </section>
+
+        <section class="panel panel--checklist">
+          <div class="section-label">checklist</div>
+          @if (taskControl(); as control) {
+            <div class="checklist-toolbar">
+              <label class="inline-check checklist-toggle">
+                <input
+                  type="checkbox"
+                  [checked]="collapseCompletedChecklist()"
+                  (change)="setCollapseCompletedChecklist($event)"
+                />
+                compact completed
+              </label>
+            </div>
+            <div class="checklist">
+              @for (item of control.checklistItems; track item.id) {
+                <article
+                  class="check-item"
+                  [class.is-blocked]="item.status === 'blocked'"
+                  [class.is-done]="item.status === 'done'"
+                  [class.is-waiting]="isWaitingOnDependencies(item)"
+                  [class.is-compact-done]="isChecklistItemCollapsed(item)"
+                >
+                  <label class="check-item__main">
+                    <input
+                      type="checkbox"
+                      [checked]="item.status === 'done'"
+                      [disabled]="item.status === 'skipped'"
+                      (change)="toggleChecklistItem(item, $event)"
+                    />
+                    <span class="check-item__title">
+                      <strong>{{ item.title }}</strong>
+                      @if (item.detail) {
+                        <small>{{ item.detail }}</small>
+                      }
+                    </span>
+                    @if (item.ownerAgentId) {
+                      <span
+                        class="check-owner check-owner--assigned"
+                        [title]="'Owner: ' + item.ownerAgentId"
+                        [attr.aria-label]="'Owner: ' + item.ownerAgentId"
+                      >
+                        <span class="avatar avatar--sm" [class]="'avatar avatar--sm avatar--' + item.ownerAgentId">
+                          @if (!isAgentOwner(item.ownerAgentId)) {
+                            {{ item.ownerAgentId.slice(0, 1).toUpperCase() }}
+                          }
+                        </span>
+                      </span>
+                    } @else {
+                      <span class="check-owner check-owner--empty">unassigned</span>
+                    }
+                    <em>{{ item.status }}</em>
+                  </label>
+                  @if (!isChecklistItemCollapsed(item)) {
+                    <div class="check-item__actions">
+                      <select
+                        class="check-item__owner-select"
+                        title="Assign owner"
+                        [value]="item.ownerAgentId"
+                        (change)="assignChecklistOwner(item, $event)"
+                      >
+                        <option value="" [selected]="!item.ownerAgentId">unassigned</option>
+                        @if (item.ownerAgentId && !roomAgents().includes(item.ownerAgentId)) {
+                          <option [value]="item.ownerAgentId" [selected]="true">{{ item.ownerAgentId }}</option>
+                        }
+                        @for (agent of roomAgents(); track agent) {
+                          <option [value]="agent" [selected]="agent === item.ownerAgentId">{{ agent }}</option>
+                        }
+                      </select>
+                    </div>
+                    <div class="check-item__meta">
+                      @if (item.planId) {
+                        <span>plan {{ planLabel(item.planId) }}</span>
+                      }
+                      @if (item.dependencyIds.length) {
+                        <span>after {{ dependencyLabels(item) }}</span>
+                      }
+                      @if (item.councilRequired) {
+                        <span>council required</span>
+                      }
+                    </div>
+                    @if (item.statusNote || item.blockedReason) {
+                      <p>{{ item.blockedReason || item.statusNote }}</p>
+                    }
+                    @for (note of checklistNotes(item.id); track note.id) {
+                      <small class="check-note">{{ note.authorId }} / {{ note.kind }}: {{ note.body }}</small>
+                    }
+                  }
+                </article>
+              } @empty {
+                <p class="empty-copy">no checklist items yet</p>
+              }
+            </div>
+          } @else {
+            <p class="empty-copy">no active checklist</p>
+          }
+          @if (activeTask()) {
+            <form
+              class="inline-form"
+              (submit)="$event.preventDefault(); addChecklistItem(checkTitle, checkDetail, checkPhase, checkDeps, checkOwner)"
+            >
+              <input #checkTitle type="text" placeholder="checklist item" />
+              <textarea #checkDetail rows="2" placeholder="detail or evidence needed"></textarea>
+              <select #checkPhase>
+                <option value="">no phase</option>
+                @for (phase of taskControl()?.phases || []; track phase.id) {
+                  <option [value]="phase.id">{{ phase.title }}</option>
+                }
+              </select>
+              <input #checkDeps type="text" placeholder="depends on item title or id" />
+              <select #checkOwner>
+                <option value="">unassigned</option>
+                @for (agent of roomAgents(); track agent) {
+                  <option [value]="agent">{{ agent }}</option>
+                }
+              </select>
+              <button class="control-btn" type="submit">add item</button>
+            </form>
+          }
+        </section>
+
+        <section class="panel panel--collaboration">
+          <div class="section-label">collaboration</div>
+          @if (hasCollaborationTrail()) {
+            @for (action of missionReceiptActions(); track action.id) {
+              <article class="ledger-row ledger-row--receipt" [class.is-missing]="action.status === 'failed'">
+                <header>
+                  <span>receipt</span>
+                  <strong>{{ action.label.replace('mission receipt: ', '') }}</strong>
+                </header>
+                <p>{{ missionReceiptDetail(action) }}</p>
+              </article>
+            }
+            @for (item of collaboration(); track item.id) {
+              <article class="ledger-row">
+                <header>
+                  <span>{{ item.kind }}</span>
+                  <strong>{{ item.status }}</strong>
+                </header>
+                <p>{{ item.body }}</p>
+              </article>
+            }
+          } @else {
+            <p class="empty-copy">no collaboration notes yet</p>
+          }
+        </section>
+      </section>
+    }
+  </main>
+
+  <aside class="context-rail" aria-label="Room context">
+    <section class="context-rail__body">
+      <section class="context-group">
+        <div class="context-group__head">
+          <span class="section-label">artifacts</span>
+          <strong>{{ artifacts()?.files?.length || 0 }}</strong>
+        </div>
+        <div class="artifact-list">
+          @for (artifact of visibleArtifacts(); track artifact.path) {
+            <article class="artifact-row">
+              <header class="artifact-row__head">
+                <span class="artifact-row__kind">{{ artifact.kind }}</span>
+                @if (canRemoveArtifact(artifact)) {
+                  <button
+                    type="button"
+                    class="artifact-row__remove"
+                    title="Remove artifact"
+                    [attr.aria-label]="'Remove ' + artifact.name"
+                    (click)="removeArtifact(artifact)"
+                  >
+                    x
+                  </button>
+                }
+              </header>
+              <div class="artifact-row__name">{{ artifact.name }}</div>
+              <div class="artifact-row__path">{{ artifact.path }}</div>
+              <div class="artifact-row__meta">
+                {{ formatBytes(artifact.size) }} / {{ formatShortTime(artifact.updatedAt) }}
+              </div>
+            </article>
+          } @empty {
+            <p class="empty-copy">no context artifacts yet</p>
+          }
+        </div>
+      </section>
+
+      <section class="context-group">
+        <div class="context-group__head">
+          <span class="section-label">completed runs</span>
+          <strong>{{ completedRuns().length }}</strong>
+        </div>
+        <div class="run-list">
+          @for (run of completedRuns(); track run.id) {
+            <button class="run-row" type="button" (click)="openRunDetail(run.id)">
+              <span>{{ run.agentId }}</span>
+              <strong>{{ run.status }}</strong>
+              <p>{{ runMeta(run) }}</p>
+              <small>{{ runActionSignal(run) }}</small>
+            </button>
+          } @empty {
+            <p class="empty-copy">no completed runs yet</p>
+          }
+        </div>
+      </section>
+    </section>
+  </aside>
+</div>
+
+@if (editingAgents()) {
+  <div class="modal">
+    <div class="modal__scrim" (click)="cancelEditAgents()"></div>
+    <section class="modal__panel" role="dialog" aria-modal="true" aria-labelledby="edit-agents-title">
+      <header class="modal__head">
+        <h2 id="edit-agents-title">agents in #{{ selectedRoom()?.name }}</h2>
+        <p>Choose who participates in the room, then choose who joins autonomous YOLO rounds.</p>
+      </header>
+      <div class="agent-editor">
+        @for (agent of agentChoices; track agent) {
+          <article class="agent-toggle">
+            <span class="avatar avatar--sm" [class]="'avatar avatar--sm avatar--' + agent"></span>
+            <div class="agent-toggle__body">
+              <strong>{{ agent }}</strong>
+              <span>{{ isEditAgentSelected(agent) ? 'listens and responds in this room' : 'not in this room' }}</span>
+            </div>
+            <label class="agent-toggle__check">
+              <input
+                type="checkbox"
+                [checked]="isEditAgentSelected(agent)"
+                (change)="toggleEditAgent(agent, $event)"
+              />
+              in room
+            </label>
+            <label class="agent-toggle__yolo" title="Participates in YOLO rounds">
+              <input
+                type="checkbox"
+                [checked]="isEditYoloAgentSelected(agent)"
+                (change)="toggleEditYoloAgent(agent, $event)"
+              />
+              yolo
+            </label>
+          </article>
+        }
+      </div>
+      <footer class="modal__foot">
+        <button type="button" class="control-btn" (click)="cancelEditAgents()">cancel</button>
+        <button type="button" class="control-btn control-btn--primary" (click)="saveEditAgents()">save</button>
+      </footer>
+    </section>
+  </div>
+}
+
+@if (compactAgent(); as agent) {
+  <div class="modal">
+    <div class="modal__scrim" (click)="closeCompactAgent()"></div>
+    <section class="modal__panel" role="dialog" aria-modal="true" aria-labelledby="compact-agent-title">
+      <header class="modal__head">
+        <h2 id="compact-agent-title">compact {{ agent }} context</h2>
+        <p>{{ compactAgentDescription(agent) }}</p>
+      </header>
+      <div class="compact-agent">
+        <div class="compact-agent__agent">
+          <span class="avatar avatar--sm" [class]="'avatar avatar--sm avatar--' + agent"></span>
+          <div>
+            <strong>{{ agent }}</strong>
+            <span>{{ isAgentRunning(agent) ? 'working now' : 'idle and eligible' }}</span>
+          </div>
+        </div>
+        @if (agentContextUsage(agent); as usage) {
+          <div class="compact-agent__usage">
+            <span>current context</span>
+            <strong>{{ agentContextLabel(usage) }}</strong>
+            <div
+              [class]="'agent-context ' + agentContextTone(usage)"
+              [title]="agentContextTitle(usage)"
+            >
+              <span class="agent-context__bar" aria-hidden="true">
+                <span [style.width.%]="agentContextPercent(usage)"></span>
+              </span>
+            </div>
+          </div>
+        } @else {
+          <p class="empty-copy">no context telemetry has been recorded for this agent yet</p>
+        }
+        @if (compactError()) {
+          <p class="compact-agent__error">{{ compactError() }}</p>
+        }
+      </div>
+      <footer class="modal__foot">
+        <button type="button" class="control-btn" [disabled]="compactingAgent() === agent" (click)="closeCompactAgent()">close</button>
+        <button
+          type="button"
+          class="control-btn control-btn--primary"
+          [disabled]="isAgentRunning(agent) || compactingAgent() === agent"
+          (click)="startCompactAgent(agent)"
+        >
+          @if (compactingAgent() === agent) {
+            starting
+          } @else {
+            compact now
+          }
+        </button>
+      </footer>
+    </section>
+  </div>
+}
+
+@if (openRunDetailId()) {
+  <div class="modal">
+    <div class="modal__scrim" (click)="closeRunDetail()"></div>
+    <section class="modal__panel modal__panel--wide" role="dialog" aria-modal="true" aria-labelledby="run-detail-title">
+      <header class="modal__head">
+        <h2 id="run-detail-title">{{ runDetail()?.run?.agentId || 'agent' }} run</h2>
+        <p>
+          @if (runDetail(); as detail) {
+            {{ detail.run.status }} / {{ elapsedLabel(detail.run.startedAt, detail.run.completedAt) }} / {{ detail.run.estimatedPromptTokens || 0 }}t / {{ permissionModeLabel(detail.run.permissionMode) }}
+          } @else {
+            loading
+          }
+        </p>
+      </header>
+      <div class="run-detail">
+        @if (runDetailLoading()) {
+          <p class="empty-copy">loading run</p>
+        } @else if (runDetailError()) {
+          <pre class="run-detail__pre">{{ runDetailError() }}</pre>
+        } @else if (runDetail(); as detail) {
+          <div class="run-detail__grid">
+            <div><span>status</span><strong>{{ detail.run.status }}</strong></div>
+            <div><span>agent</span><strong>{{ detail.run.agentId }}</strong></div>
+            <div><span>started</span><strong>{{ formatDateTime(detail.run.startedAt) }}</strong></div>
+            <div><span>completed</span><strong>{{ formatDateTime(detail.run.completedAt) }}</strong></div>
+            <div><span>duration</span><strong>{{ elapsedLabel(detail.run.startedAt, detail.run.completedAt) }}</strong></div>
+            <div><span>permission</span><strong>{{ permissionModeLabel(detail.run.permissionMode) }}</strong></div>
+            <div><span>prompt</span><strong>{{ detail.run.promptChars || 0 }} chars / {{ detail.run.estimatedPromptTokens || 0 }} tokens</strong></div>
+            <div><span>live context</span><strong>{{ detail.run.liveMessages || 0 }} messages / {{ detail.run.contextArtifacts || 0 }} artifacts</strong></div>
+            <div><span>session</span><strong>{{ detail.run.cliSessionId || 'none' }}</strong></div>
+            <div><span>task</span><strong>{{ detail.run.taskId || 'none' }}</strong></div>
+          </div>
+
+          @if (detail.run.permissionTarget || detail.run.permissionSource || detail.run.permissionReason) {
+            <section class="run-detail__section">
+              <h3>permission</h3>
+              <div class="run-detail__grid">
+                <div><span>source</span><strong>{{ detail.run.permissionSource || 'none' }}</strong></div>
+                <div><span>target</span><strong>{{ detail.run.permissionTarget || 'none' }}</strong></div>
+                <div><span>target status</span><strong>{{ targetStatusText(detail.run) }}</strong></div>
+                <div><span>capabilities</span><strong>{{ capabilityText(detail.run.permissionCapabilities) }}</strong></div>
+                <div><span>provider</span><strong>{{ detail.run.permissionProviderProfile || 'none' }}</strong></div>
+                <div><span>scope</span><strong>{{ detail.run.permissionFilesystemScope || 'none' }}</strong></div>
+                <div><span>web</span><strong>{{ detail.run.permissionWeb ? 'requested' : 'not requested' }}</strong></div>
+              </div>
+              @if (detail.run.permissionReason) {
+                <p class="run-detail__message-body">{{ detail.run.permissionReason }}</p>
+              }
+            </section>
+          }
+
+          <section class="run-detail__section">
+            <h3>trigger</h3>
+            <p class="run-detail__message-meta">{{ detail.triggerMessage?.authorId || 'unknown' }} / {{ formatDateTime(detail.triggerMessage?.createdAt) }}</p>
+            <p class="run-detail__message-body">{{ oneLine(detail.triggerMessage?.text, 900) || 'trigger message unavailable' }}</p>
+          </section>
+
+          <section class="run-detail__section">
+            <h3>{{ detail.run.error ? 'error' : 'reply' }}</h3>
+            @if (detail.run.error) {
+              <pre class="run-detail__pre">{{ detail.run.error }}</pre>
+            } @else {
+              <p class="run-detail__message-meta">{{ detail.replyMessage?.authorId || 'no visible reply' }} / {{ formatDateTime(detail.replyMessage?.createdAt) }}</p>
+              <p class="run-detail__message-body">{{ oneLine(detail.replyMessage?.text || detail.run.replyText, 900) || 'no visible reply' }}</p>
+            }
+          </section>
+
+          <section class="run-detail__section">
+            <div class="run-detail__section-head">
+              <h3>signals</h3>
+              <label class="run-detail__filter-toggle">
+                <input
+                  type="checkbox"
+                  [checked]="showLowSignalRunEvents()"
+                  (change)="setShowLowSignalRunEvents($event)"
+                />
+                show low-signal events
+              </label>
+            </div>
+            @if (hiddenDiagnosticSignalCount(detail.diagnostics.signals)) {
+              <p class="run-detail__filter-note">{{ hiddenDiagnosticSignalCount(detail.diagnostics.signals) }} low-signal provider events hidden</p>
+            } @else if (showLowSignalRunEvents() && lowSignalDiagnosticSignalCount(detail.diagnostics.signals)) {
+              <p class="run-detail__filter-note">showing {{ lowSignalDiagnosticSignalCount(detail.diagnostics.signals) }} low-signal provider events</p>
+            }
+            @for (signal of visibleDiagnosticSignals(detail.diagnostics.signals); track signal.label + signal.detail) {
+              <div class="run-detail__signal">
+                <strong>{{ signal.label }}</strong>
+                <span>{{ providerSignalDetail(signal) }}</span>
+              </div>
+            } @empty {
+              <p class="empty-copy">no structured CLI events detected</p>
+            }
+          </section>
+
+          <section class="run-detail__section">
+            <div class="run-detail__section-head">
+              <h3>timeline</h3>
+              <label class="run-detail__filter-toggle">
+                <input
+                  type="checkbox"
+                  [checked]="showLowSignalRunEvents()"
+                  (change)="setShowLowSignalRunEvents($event)"
+                />
+                show low-signal events
+              </label>
+            </div>
+            @if (hiddenRunActionCount(detail.actions)) {
+              <p class="run-detail__filter-note">{{ hiddenRunActionCount(detail.actions) }} low-signal provider events hidden</p>
+            } @else if (showLowSignalRunEvents() && lowSignalRunActionCount(detail.actions)) {
+              <p class="run-detail__filter-note">showing {{ lowSignalRunActionCount(detail.actions) }} low-signal provider events</p>
+            }
+            @for (action of visibleRunActions(detail.actions); track action.id) {
+              <div class="run-detail__signal">
+                <strong>{{ formatShortTime(action.createdAt) }} / {{ action.kind || 'event' }} / {{ action.label }}</strong>
+                <span>{{ runActionDetail(action) }}</span>
+              </div>
+            } @empty {
+              <p class="empty-copy">no action timeline recorded</p>
+            }
+          </section>
+
+          <section class="run-detail__section">
+            <h3>prompt</h3>
+            <pre class="run-detail__pre">{{ detail.run.promptText || 'prompt not stored' }}</pre>
+          </section>
+          <section class="run-detail__section">
+            <h3>stdout</h3>
+            <pre class="run-detail__pre">{{ detail.run.stdout || 'empty' }}</pre>
+          </section>
+          <section class="run-detail__section">
+            <h3>stderr</h3>
+            <pre class="run-detail__pre">{{ detail.run.stderr || 'empty' }}</pre>
+          </section>
+        }
+      </div>
+      <footer class="modal__foot">
+        <button type="button" class="control-btn" (click)="closeRunDetail()">close</button>
+      </footer>
+    </section>
+  </div>
+}

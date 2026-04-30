@@ -76,9 +76,9 @@ describe('WebSocket fanout', () => {
       ws.send(JSON.stringify({ type: 'subscribe', roomId: room.id }));
     });
 
-    await broker.postHumanMessage(room.id, 'matt', 'hi');
+    await broker.postHumanMessage(room.id, 'human', 'hi');
 
-    // Wait for 2 messageAppended events to land (matt + claude).
+    // Wait for 2 messageAppended events to land (human + claude).
     await new Promise<void>((resolve) => {
       const timer = setInterval(() => {
         if (received.filter((r) => r.type === 'messageAppended').length >= 2) {
@@ -89,7 +89,7 @@ describe('WebSocket fanout', () => {
     });
 
     const appended = received.filter((r) => r.type === 'messageAppended');
-    expect(appended.map((r) => r.message!.authorId)).toEqual(['matt', 'claude']);
+    expect(appended.map((r) => r.message!.authorId)).toEqual(['human', 'claude']);
     ws.close();
   });
 

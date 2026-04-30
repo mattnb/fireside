@@ -109,6 +109,50 @@ describe('runSubprocess', () => {
     expect(result.stderr).toBe('warn');
   });
 
+  it('emits stdout and stderr lines before the subprocess exits', async () => {
+    const seen: Array<{ stream: 'stdout' | 'stderr'; line: string; at: number }> = [];
+    let resolveFirstLine: (() => void) | null = null;
+    const firstLine = new Promise<void>((resolve) => {
+      resolveFirstLine = resolve;
+    });
+    const startedAt = Date.now();
+    const run = runSubprocess({
+      command: process.execPath,
+      args: [
+        '-e',
+        [
+          'process.stdout.write("out-one\\n");',
+          'process.stderr.write("err-one\\n");',
+          'setTimeout(()=>process.stdout.write("out-two"), 250);',
+        ].join(''),
+      ],
+      timeoutMs: 5000,
+      onStdoutLine: (line) => {
+        seen.push({ stream: 'stdout', line, at: Date.now() });
+        resolveFirstLine?.();
+      },
+      onStderrLine: (line) => {
+        seen.push({ stream: 'stderr', line, at: Date.now() });
+      },
+    });
+
+    await Promise.race([
+      firstLine,
+      new Promise((_, reject) => setTimeout(() => reject(new Error('line timed out')), 1000)),
+    ]);
+    expect(seen[0]?.line).toBe('out-one');
+    expect(Date.now() - startedAt).toBeLessThan(1000);
+
+    const result = await run;
+    expect(result.stdout).toBe('out-one\nout-two');
+    expect(result.stderr).toBe('err-one\n');
+    expect(seen.map((item) => `${item.stream}:${item.line}`)).toEqual([
+      'stdout:out-one',
+      'stderr:err-one',
+      'stdout:out-two',
+    ]);
+  });
+
   it('throws SubprocessSpawnError when the spawn syscall fails (bad cwd)', async () => {
     // We want a true ENOENT/spawn failure — the child never starts, so
     // exitCode is undefined and stderr is empty. Pointing at a non-existent

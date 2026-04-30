@@ -1,29 +1,91 @@
 // server/src/agents/runner.ts
 import { runSubprocess } from '../windows/spawn.js';
-import type { AgentReply, AgentSpec } from './types.js';
+import type {
+  AgentReply,
+  AgentRunContext,
+  AgentSpec,
+  AgentStreamEvent,
+  AgentStreamName,
+} from './types.js';
 
 export interface RunAgentOptions {
   spec: AgentSpec;
   prompt: string;
   sessionId: string | null;
-  timeoutMs?: number;
+  timeoutMs?: number | null;
   cwd?: string;
+  permission?: AgentRunContext['permission'];
+  cancelSignal?: AbortSignal;
+  onStreamEvent?: (event: AgentStreamEvent) => void;
+}
+
+function emitStreamEvents(
+  spec: AgentSpec,
+  line: string,
+  stream: AgentStreamName,
+  callback: ((event: AgentStreamEvent) => void) | undefined,
+): void {
+  if (!callback) return;
+  let events: AgentStreamEvent[] = [];
+  try {
+    events = spec.parseStreamLine?.(line, stream) ?? [];
+  } catch {
+    events = [];
+  }
+  if (events.length === 0 && stream === 'stderr' && line.trim()) {
+    events = [
+      {
+        kind: 'stderr',
+        status: 'failed',
+        label: 'stderr',
+        detail: line.trim(),
+      },
+    ];
+  }
+  for (const event of events) {
+    try {
+      callback(event);
+    } catch {
+      // Streaming observers must not affect the provider turn.
+    }
+  }
 }
 
 export async function runAgentTurn(opts: RunAgentOptions): Promise<AgentReply> {
   const { spec, prompt, sessionId } = opts;
-  const args = spec.buildArgs(prompt, sessionId);
-  const stdin = spec.buildStdin?.(prompt, sessionId);
-  // Caller-supplied cwd wins; otherwise use the agent's defaultCwd if set
-  // (e.g. gemini's neutral tmpdir to suppress its project auto-detection);
-  // otherwise inherit the parent process cwd by omitting the field.
-  const effectiveCwd = opts.cwd ?? spec.defaultCwd;
+  const context: AgentRunContext | undefined = opts.permission
+    ? { permission: opts.permission }
+    : undefined;
+  const args = context
+    ? spec.buildArgs(prompt, sessionId, context)
+    : spec.buildArgs(prompt, sessionId);
+  const stdin = context
+    ? spec.buildStdin?.(prompt, sessionId, context)
+    : spec.buildStdin?.(prompt, sessionId);
+  // Caller-supplied cwd wins; otherwise let the adapter create a per-turn cwd;
+  // otherwise use the adapter's static defaultCwd if set.
+  const builtCwd =
+    opts.cwd === undefined
+      ? context
+        ? spec.buildCwd?.(prompt, sessionId, context)
+        : spec.buildCwd?.(prompt, sessionId)
+      : undefined;
+  const effectiveCwd = opts.cwd ?? builtCwd ?? spec.defaultCwd;
   const result = await runSubprocess({
     command: spec.command,
     args,
     stdin: stdin ?? '',
-    timeoutMs: opts.timeoutMs ?? spec.defaultTimeoutMs,
+    timeoutMs: opts.timeoutMs === undefined ? spec.defaultTimeoutMs : opts.timeoutMs,
+    ...(opts.cancelSignal !== undefined ? { cancelSignal: opts.cancelSignal } : {}),
     ...(effectiveCwd !== undefined ? { cwd: effectiveCwd } : {}),
+    ...(opts.onStreamEvent !== undefined
+      ? {
+          onStdoutLine: (line: string) =>
+            emitStreamEvents(spec, line, 'stdout', opts.onStreamEvent),
+          onStderrLine: (line: string) =>
+            emitStreamEvents(spec, line, 'stderr', opts.onStreamEvent),
+        }
+      : {}),
   });
   // We deliberately don't bail on non-zero exit codes here. Some CLIs exit
   // non-zero on benign warnings while still emitting parseable output on

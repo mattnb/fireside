@@ -7,6 +7,7 @@ export interface Room {
   id: string;
   name: string;
   agents: AgentId[];
+  yoloAgents: AgentId[];
   createdAt: number;
 }
 
@@ -14,28 +15,42 @@ interface RoomRow {
   id: string;
   name: string;
   agents_json: string;
+  yolo_agents_json: string;
   created_at: number;
 }
 
+function parseAgents(json: string): AgentId[] {
+  try {
+    const parsed = JSON.parse(json) as unknown;
+    return Array.isArray(parsed) ? (parsed.filter((item) => typeof item === 'string') as AgentId[]) : [];
+  } catch {
+    return [];
+  }
+}
+
 function rowToRoom(row: RoomRow): Room {
+  const agents = parseAgents(row.agents_json);
+  const yoloAgents = parseAgents(row.yolo_agents_json).filter((agent) => agents.includes(agent));
   return {
     id: row.id,
     name: row.name,
-    agents: JSON.parse(row.agents_json) as AgentId[],
+    agents,
+    yoloAgents,
     createdAt: row.created_at,
   };
 }
 
 export function createRoom(
   db: Database,
-  input: { name: string; agents: AgentId[] },
+  input: { name: string; agents: AgentId[]; yoloAgents?: AgentId[] },
 ): Room {
   const id = nanoid(12);
   const now = Date.now();
+  const yoloAgents = (input.yoloAgents ?? []).filter((agent) => input.agents.includes(agent));
   db.prepare(
-    `INSERT INTO rooms (id, name, created_at, agents_json) VALUES (?, ?, ?, ?)`,
-  ).run(id, input.name, now, JSON.stringify(input.agents));
-  return { id, name: input.name, agents: input.agents, createdAt: now };
+    `INSERT INTO rooms (id, name, created_at, agents_json, yolo_agents_json) VALUES (?, ?, ?, ?, ?)`,
+  ).run(id, input.name, now, JSON.stringify(input.agents), JSON.stringify(yoloAgents));
+  return { id, name: input.name, agents: input.agents, yoloAgents, createdAt: now };
 }
 
 export function getRoom(db: Database, id: string): Room | null {
@@ -48,14 +63,21 @@ export function listRooms(db: Database): Room[] {
   return rows.map(rowToRoom);
 }
 
-export function setRoomAgents(db: Database, roomId: string, agents: AgentId[]): void {
+export function setRoomAgents(
+  db: Database,
+  roomId: string,
+  agents: AgentId[],
+  yoloAgents?: AgentId[],
+): void {
   const room = getRoom(db, roomId);
   if (!room) return;
   const removed = room.agents.filter((a) => !agents.includes(a));
+  const nextYoloAgents = (yoloAgents ?? room.yoloAgents).filter((agent) => agents.includes(agent));
   // Run as a transaction so the agent list and session cleanup are atomic.
   const tx = db.transaction((newAgents: AgentId[]) => {
-    db.prepare(`UPDATE rooms SET agents_json = ? WHERE id = ?`).run(
+    db.prepare(`UPDATE rooms SET agents_json = ?, yolo_agents_json = ? WHERE id = ?`).run(
       JSON.stringify(newAgents),
+      JSON.stringify(nextYoloAgents),
       roomId,
     );
     if (removed.length > 0) {
