@@ -30,6 +30,7 @@ import {
   Task,
   TaskChecklistItem,
   TaskChecklistNote,
+  TaskChecklistStatus,
   TaskControl,
   TaskPhase,
   TaskPhaseStatus,
@@ -40,7 +41,7 @@ import { FiresideWs } from './ws.service';
 import { VfxSmokeAndEmbersComponent } from './vfx-smoke-and-embers/vfx-smoke-and-embers';
 
 type TabId = 'chat' | 'mission' | 'briefings';
-type MissionViewId = 'overview' | 'board' | 'roadmap' | 'plan' | 'evidence' | 'setup';
+type MissionViewId = 'overview' | 'board' | 'checklist' | 'roadmap' | 'plan' | 'evidence' | 'setup';
 type ChatTimelineItem = {
   id: string;
   kind: 'message' | 'permission' | 'activity';
@@ -196,6 +197,7 @@ export class App implements OnDestroy {
   readonly missionViews: Array<{ id: MissionViewId; label: string; summary: string }> = [
     { id: 'overview', label: 'Overview', summary: 'health, blockers, active work' },
     { id: 'board', label: 'Board', summary: 'status lanes and phase swimlanes' },
+    { id: 'checklist', label: 'Checklist', summary: 'task details and ownership' },
     { id: 'roadmap', label: 'Roadmap', summary: 'phase gates and dependencies' },
     { id: 'plan', label: 'Plan', summary: 'team agreement and rationale' },
     { id: 'evidence', label: 'Evidence', summary: 'runs, artifacts, receipts' },
@@ -208,6 +210,7 @@ export class App implements OnDestroy {
     { id: 'review', label: 'Review', summary: 'evidence exists but state is not closed' },
     { id: 'done', label: 'Done', summary: 'completed or skipped work' },
   ];
+  readonly checklistStatuses: TaskChecklistStatus[] = ['open', 'blocked', 'done', 'skipped'];
 
   readonly selectedTab = signal<TabId>('chat');
   readonly selectedMissionView = signal<MissionViewId>('overview');
@@ -244,6 +247,7 @@ export class App implements OnDestroy {
   readonly runDetail = signal<AgentRunDetail | null>(null);
   readonly runDetailLoading = signal(false);
   readonly runDetailError = signal('');
+  readonly taskInspectorItemId = signal<string | null>(null);
   readonly missionActionScope = signal<MissionActionScope>('team');
   readonly selectedMissionAction = signal<MissionActionKind>('plan');
   readonly missionActionAgent = signal<AgentId>('');
@@ -360,6 +364,9 @@ export class App implements OnDestroy {
   readonly missionGraphLanes = computed(() => this.buildMissionGraphLanes());
   readonly missionGraphSummary = computed(() => this.buildMissionGraphSummary());
   readonly missionBoardSwimlanes = computed(() => this.buildMissionBoardSwimlanes());
+  readonly taskInspectorCard = computed(() =>
+    this.findMissionGraphCard(this.taskInspectorItemId()),
+  );
   readonly missionActivity = computed(() => this.buildMissionActivityEvents());
   readonly chatTimeline = computed(() => {
     const rawItems: ChatTimelineItem[] = [
@@ -1243,6 +1250,15 @@ export class App implements OnDestroy {
     return 'ready';
   }
 
+  private findMissionGraphCard(itemId: string | null): MissionGraphCard | null {
+    if (!itemId) return null;
+    for (const lane of this.missionGraphLanes()) {
+      const card = lane.cards.find((candidate) => candidate.item.id === itemId);
+      if (card) return card;
+    }
+    return null;
+  }
+
   private buildMissionGraphLanes(): MissionGraphLane[] {
     const control = this.taskControl();
     if (!control) return [];
@@ -1499,6 +1515,119 @@ export class App implements OnDestroy {
   focusMissionGraphItem(item: TaskChecklistItem): void {
     this.selectedMissionAction.set('execute');
     this.missionActionChecklistItemId.set(item.id);
+    this.taskInspectorItemId.set(item.id);
+  }
+
+  closeTaskInspector(): void {
+    this.taskInspectorItemId.set(null);
+  }
+
+  shortTaskId(id: string): string {
+    return id.length > 10 ? id.slice(0, 10) : id;
+  }
+
+  taskInspectorPhaseLabel(item: TaskChecklistItem): string {
+    if (!item.phaseId) return 'unphased';
+    return (
+      this.taskControl()?.phases.find((phase) => phase.id === item.phaseId)?.title ?? item.phaseId
+    );
+  }
+
+  taskInspectorReference(card: MissionGraphCard): string {
+    const item = card.item;
+    const detail = item.detail ? ` - ${item.detail}` : '';
+    return `Checklist item ${item.id}: ${item.title}${detail}`;
+  }
+
+  taskInspectorMissionBlock(card: MissionGraphCard): string {
+    return [
+      '/mission-task',
+      'action: update',
+      `id: ${card.item.id}`,
+      `status: ${card.item.status}`,
+      'note: ',
+      '/end-mission-task',
+    ].join('\n');
+  }
+
+  copyChecklistItemId(item: TaskChecklistItem): void {
+    void navigator.clipboard?.writeText(item.id);
+  }
+
+  copyTaskInspectorReference(card: MissionGraphCard): void {
+    void navigator.clipboard?.writeText(this.taskInspectorReference(card));
+  }
+
+  copyTaskInspectorMissionBlock(card: MissionGraphCard): void {
+    void navigator.clipboard?.writeText(this.taskInspectorMissionBlock(card));
+  }
+
+  taskInspectorBlockedSummary(card: MissionGraphCard): string {
+    if (card.item.blockedReason) return card.item.blockedReason;
+    if (card.waiting && card.dependencies.length) {
+      return `Waiting on ${card.dependencies
+        .filter((dependency) => !dependency.done)
+        .map((dependency) => dependency.title)
+        .join(', ')}.`;
+    }
+    if (card.item.status === 'blocked') return 'Blocked without a recorded reason.';
+    return '';
+  }
+
+  changeChecklistStatus(item: TaskChecklistItem, event: Event): void {
+    const status =
+      event.target instanceof HTMLSelectElement
+        ? (event.target.value as TaskChecklistStatus)
+        : item.status;
+    this.updateChecklistItemFromUi(item, {
+      status,
+      statusNote: `${this.authorName()} set status to ${status}.`,
+      ...(status !== 'blocked' ? { blockedReason: '', councilRequired: false } : {}),
+    });
+  }
+
+  markChecklistDone(item: TaskChecklistItem): void {
+    this.updateChecklistItemFromUi(item, {
+      status: 'done',
+      statusNote: `${this.authorName()} marked this work item complete.`,
+      blockedReason: '',
+      councilRequired: false,
+    });
+  }
+
+  reopenChecklistItem(item: TaskChecklistItem): void {
+    this.updateChecklistItemFromUi(item, {
+      status: 'open',
+      statusNote: `${this.authorName()} reopened this work item.`,
+      blockedReason: '',
+      councilRequired: false,
+    });
+  }
+
+  saveTaskInspectorNotes(
+    item: TaskChecklistItem,
+    statusNoteInput: HTMLTextAreaElement,
+    blockedReasonInput: HTMLTextAreaElement,
+    councilInput: HTMLInputElement,
+  ): void {
+    this.updateChecklistItemFromUi(item, {
+      statusNote: statusNoteInput.value.trim(),
+      blockedReason: blockedReasonInput.value.trim(),
+      councilRequired: councilInput.checked,
+      status: blockedReasonInput.value.trim() ? 'blocked' : item.status,
+    });
+  }
+
+  private updateChecklistItemFromUi(
+    item: TaskChecklistItem,
+    patch: Partial<TaskChecklistItem>,
+  ): void {
+    const roomId = this.selectedRoomId();
+    const task = this.activeTask();
+    if (!roomId || !task) return;
+    this.api.tasks
+      .updateChecklistItem(roomId, task.id, item.id, patch)
+      .subscribe(() => this.loadTaskControl(roomId, task.id));
   }
 
   openMissionGraphCardRun(card: MissionGraphCard, event: Event): void {

@@ -987,7 +987,10 @@
             <article
               [class]="'mission-graph-card mission-board-card ' + missionGraphCardClass(card)"
               [class.is-selected]="missionActionChecklistItemId() === card.item.id"
+              tabindex="0"
               (click)="focusMissionGraphItem(card.item)"
+              (keydown.enter)="focusMissionGraphItem(card.item)"
+              (keydown.space)="focusMissionGraphItem(card.item); $event.preventDefault()"
             >
               <header class="mission-graph-card__head">
                 <span class="mission-graph-card__status" aria-hidden="true"></span>
@@ -1011,6 +1014,7 @@
                 } @else {
                 <span>unassigned</span>
                 }
+                <span>id {{ shortTaskId(card.item.id) }}</span>
                 <span>phase {{ swimlane.title }}</span>
                 @if (card.notesCount) {
                 <span>{{ card.notesCount }} notes</span>
@@ -1118,7 +1122,10 @@
               <article
                 [class]="'mission-graph-card ' + missionGraphCardClass(card)"
                 [class.is-selected]="missionActionChecklistItemId() === card.item.id"
+                tabindex="0"
                 (click)="focusMissionGraphItem(card.item)"
+                (keydown.enter)="focusMissionGraphItem(card.item)"
+                (keydown.space)="focusMissionGraphItem(card.item); $event.preventDefault()"
               >
                 <header class="mission-graph-card__head">
                   <span class="mission-graph-card__status" aria-hidden="true"></span>
@@ -1142,7 +1149,9 @@
                   </span>
                   } @else {
                   <span>unassigned</span>
-                  } @if (card.waiting) {
+                  }
+                  <span>id {{ shortTaskId(card.item.id) }}</span>
+                  @if (card.waiting) {
                   <span>waiting</span>
                   } @if (card.ready) {
                   <span>parallel ready</span>
@@ -1511,7 +1520,7 @@
         </form>
         }
       </section>
-      } @if (selectedMissionView() === 'board') {
+      } @if (selectedMissionView() === 'checklist') {
       <section class="panel panel--checklist">
         <div class="section-label">checklist</div>
         @if (taskControl(); as control) {
@@ -1876,6 +1885,218 @@
       >
         @if (compactingAgent() === agent) { starting } @else { compact now }
       </button>
+    </footer>
+  </section>
+</div>
+} @if (taskInspectorCard(); as card) {
+<div class="modal">
+  <div class="modal__scrim" (click)="closeTaskInspector()"></div>
+  <section
+    class="modal__panel modal__panel--wide"
+    role="dialog"
+    aria-modal="true"
+    aria-labelledby="task-inspector-title"
+  >
+    <header class="modal__head task-inspector__head">
+      <div>
+        <h2 id="task-inspector-title">{{ card.item.title }}</h2>
+        <p>{{ card.item.status }} / id {{ card.item.id }}</p>
+      </div>
+      <span [class]="'task-inspector__status is-' + card.item.status">{{ card.item.status }}</span>
+    </header>
+    <div class="task-inspector">
+      @if (taskInspectorBlockedSummary(card)) {
+      <section class="task-inspector__alert">
+        <strong>{{ card.waiting ? 'waiting on dependencies' : 'blocked' }}</strong>
+        <p>{{ taskInspectorBlockedSummary(card) }}</p>
+      </section>
+      }
+
+      <section class="task-inspector__section task-inspector__section--reference">
+        <div class="task-inspector__section-head">
+          <h3>reference</h3>
+          <div class="task-inspector__actions">
+            <button type="button" class="mini-btn" (click)="copyChecklistItemId(card.item)">
+              copy id
+            </button>
+            <button type="button" class="mini-btn" (click)="copyTaskInspectorReference(card)">
+              copy reference
+            </button>
+            <button type="button" class="mini-btn" (click)="copyTaskInspectorMissionBlock(card)">
+              copy update block
+            </button>
+          </div>
+        </div>
+        <div class="task-inspector__reference-grid">
+          <div>
+            <span>canonical id</span>
+            <strong>{{ card.item.id }}</strong>
+          </div>
+          <div>
+            <span>agent-ready reference</span>
+            <strong>{{ taskInspectorReference(card) }}</strong>
+          </div>
+        </div>
+      </section>
+
+      <section class="task-inspector__section">
+        <div class="task-inspector__grid">
+          <div>
+            <span>owner</span>
+            <strong>{{ card.item.ownerAgentId || 'unassigned' }}</strong>
+          </div>
+          <div>
+            <span>phase</span>
+            <strong>{{ taskInspectorPhaseLabel(card.item) }}</strong>
+          </div>
+          <div>
+            <span>plan</span>
+            <strong>{{ planLabel(card.item.planId) || 'none' }}</strong>
+          </div>
+          <div>
+            <span>updated</span>
+            <strong>{{ formatDateTime(card.item.updatedAt) }}</strong>
+          </div>
+          <div>
+            <span>completed</span>
+            <strong>{{ formatDateTime(card.item.completedAt) }}</strong>
+          </div>
+          <div>
+            <span>evidence</span>
+            <strong>{{ card.evidenceCount }} receipt(s)</strong>
+          </div>
+        </div>
+        @if (card.item.detail) {
+        <p class="task-inspector__detail">{{ card.item.detail }}</p>
+        }
+      </section>
+
+      <section class="task-inspector__section task-inspector__section--controls">
+        <label>
+          <span>status</span>
+          <select [value]="card.item.status" (change)="changeChecklistStatus(card.item, $event)">
+            @for (status of checklistStatuses; track status) {
+            <option [value]="status">{{ status }}</option>
+            }
+          </select>
+        </label>
+        <label>
+          <span>owner</span>
+          <select
+            [value]="card.item.ownerAgentId"
+            (change)="assignChecklistOwner(card.item, $event)"
+          >
+            <option value="">unassigned</option>
+            @if (card.item.ownerAgentId && !roomAgents().includes(card.item.ownerAgentId)) {
+            <option [value]="card.item.ownerAgentId">{{ card.item.ownerAgentId }}</option>
+            } @for (agent of roomAgents(); track agent) {
+            <option [value]="agent">{{ agent }}</option>
+            }
+          </select>
+        </label>
+        <div class="task-inspector__quick-actions">
+          <button type="button" class="control-btn" (click)="reopenChecklistItem(card.item)">
+            unblock / reopen
+          </button>
+          <button
+            type="button"
+            class="control-btn control-btn--primary"
+            (click)="markChecklistDone(card.item)"
+          >
+            mark done
+          </button>
+        </div>
+      </section>
+
+      <section class="task-inspector__section">
+        <div class="task-inspector__section-head">
+          <h3>notes and blockers</h3>
+        </div>
+        <form
+          class="task-inspector__notes"
+          (submit)="$event.preventDefault(); saveTaskInspectorNotes(card.item, taskNote, blockedReason, councilRequired)"
+        >
+          <label>
+            <span>status note</span>
+            <textarea #taskNote rows="3" [value]="card.item.statusNote"></textarea>
+          </label>
+          <label>
+            <span>blocked reason</span>
+            <textarea #blockedReason rows="3" [value]="card.item.blockedReason"></textarea>
+          </label>
+          <label class="inline-check">
+            <input #councilRequired type="checkbox" [checked]="card.item.councilRequired" />
+            council / human intervention required
+          </label>
+          <button type="submit" class="control-btn">save notes</button>
+        </form>
+      </section>
+
+      <section class="task-inspector__section task-inspector__section--split">
+        <div>
+          <h3>dependencies</h3>
+          <div class="task-inspector__chips">
+            @for (dependency of card.dependencies; track dependency.id) {
+            <span [class.is-done]="dependency.done">
+              {{ dependency.title }} / {{ dependency.status }}
+            </span>
+            } @empty {
+            <p class="empty-copy">no dependencies</p>
+            }
+          </div>
+        </div>
+        <div>
+          <h3>dependents</h3>
+          <div class="task-inspector__chips">
+            @for (dependent of card.dependents; track dependent.id) {
+            <span [class.is-done]="dependent.done">
+              {{ dependent.title }} / {{ dependent.status }}
+            </span>
+            } @empty {
+            <p class="empty-copy">no dependent work</p>
+            }
+          </div>
+        </div>
+      </section>
+
+      <section class="task-inspector__section task-inspector__section--split">
+        <div>
+          <h3>linked runs</h3>
+          <div class="task-inspector__runs">
+            @for (run of card.linkedRuns; track run.id) {
+            <button
+              type="button"
+              class="run-row"
+              (click)="closeTaskInspector(); openRunDetail(run.id)"
+            >
+              <span>{{ run.agentId }}</span>
+              <strong>{{ run.status }}</strong>
+              <p>{{ runMeta(run) }}</p>
+              <small>{{ runActionSignal(run) }}</small>
+            </button>
+            } @empty {
+            <p class="empty-copy">no linked runs yet</p>
+            }
+          </div>
+        </div>
+        <div>
+          <h3>status history</h3>
+          <div class="task-inspector__notes-list">
+            @for (note of checklistNotes(card.item.id); track note.id) {
+            <article>
+              <strong>{{ note.authorId }} / {{ note.kind }}</strong>
+              <p>{{ note.body }}</p>
+              <span>{{ formatDateTime(note.createdAt) }}</span>
+            </article>
+            } @empty {
+            <p class="empty-copy">no status history recorded</p>
+            }
+          </div>
+        </div>
+      </section>
+    </div>
+    <footer class="modal__foot">
+      <button type="button" class="control-btn" (click)="closeTaskInspector()">close</button>
     </footer>
   </section>
 </div>
