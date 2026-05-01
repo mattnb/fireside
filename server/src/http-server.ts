@@ -8,7 +8,7 @@ import { createProject, getProject, listProjects, updateProject } from './repos/
 import { getPermissionRequest, listPermissionRequests } from './repos/permission-requests.js';
 import type { AgentId } from './agents/types.js';
 import type { TaskStatus } from './repos/tasks.js';
-import type { TaskChecklistStatus } from './repos/task-checklist.js';
+import type { TaskChecklistParallelism, TaskChecklistStatus } from './repos/task-checklist.js';
 import type { TaskPhaseStatus } from './repos/task-phases.js';
 import type { TaskPlanStatus } from './repos/task-plans.js';
 import type { PermissionMode } from './permissions.js';
@@ -30,6 +30,7 @@ const TASK_STATUSES = ['active', 'paused', 'blocked', 'verifying', 'done'] as co
 const CAPABILITY_PROFILES = ['plan', 'edit', 'full-auto'] as const;
 const TASK_PHASE_STATUSES = ['planned', 'active', 'blocked', 'done'] as const;
 const TASK_CHECKLIST_STATUSES = ['open', 'blocked', 'done', 'skipped'] as const;
+const TASK_CHECKLIST_PARALLELISM = ['parallel-safe', 'coordinate', 'exclusive'] as const;
 const TASK_PLAN_STATUSES = ['draft', 'active', 'superseded', 'archived'] as const;
 
 function isTaskStatus(value: unknown): value is TaskStatus {
@@ -47,6 +48,12 @@ function isTaskPhaseStatus(value: unknown): value is TaskPhaseStatus {
 function isTaskChecklistStatus(value: unknown): value is TaskChecklistStatus {
   return (
     typeof value === 'string' && (TASK_CHECKLIST_STATUSES as readonly string[]).includes(value)
+  );
+}
+
+function isTaskChecklistParallelism(value: unknown): value is TaskChecklistParallelism {
+  return (
+    typeof value === 'string' && (TASK_CHECKLIST_PARALLELISM as readonly string[]).includes(value)
   );
 }
 
@@ -145,12 +152,12 @@ export function buildHttpServer(deps: HttpDeps) {
     if (projectId && !getProject(deps.db, projectId)) {
       return reply.code(400).send({ error: 'project not found' });
     }
-      return createRoom(deps.db, {
-        name,
-        agents,
-        yoloAgents: yoloAgents ?? [],
-        ...(projectId !== undefined ? { projectId } : {}),
-      });
+    return createRoom(deps.db, {
+      name,
+      agents,
+      yoloAgents: yoloAgents ?? [],
+      ...(projectId !== undefined ? { projectId } : {}),
+    });
   });
 
   app.get<{ Params: { id: string } }>('/api/rooms/:id', async (req, reply) => {
@@ -430,6 +437,10 @@ export function buildHttpServer(deps: HttpDeps) {
       detail?: string;
       status?: TaskChecklistStatus;
       dependencyIds?: string[];
+      expectedTouches?: string[];
+      parallelism?: TaskChecklistParallelism;
+      conflictGroup?: string;
+      workRole?: string;
       ownerAgentId?: string;
       statusNote?: string;
       blockedReason?: string;
@@ -446,6 +457,10 @@ export function buildHttpServer(deps: HttpDeps) {
       detail,
       status,
       dependencyIds,
+      expectedTouches,
+      parallelism,
+      conflictGroup,
+      workRole,
       ownerAgentId,
       statusNote,
       blockedReason,
@@ -460,6 +475,12 @@ export function buildHttpServer(deps: HttpDeps) {
     if (dependencyIds !== undefined && !Array.isArray(dependencyIds)) {
       return reply.code(400).send({ error: 'dependencyIds must be an array' });
     }
+    if (expectedTouches !== undefined && !Array.isArray(expectedTouches)) {
+      return reply.code(400).send({ error: 'expectedTouches must be an array' });
+    }
+    if (parallelism !== undefined && !isTaskChecklistParallelism(parallelism)) {
+      return reply.code(400).send({ error: 'invalid parallelism' });
+    }
     const item = deps.broker.createTaskChecklistItem(req.params.id, req.params.taskId, {
       planId: planId ?? null,
       phaseId: phaseId ?? null,
@@ -467,6 +488,14 @@ export function buildHttpServer(deps: HttpDeps) {
       ...(detail !== undefined ? { detail: String(detail).slice(0, 2000) } : {}),
       ...(status !== undefined ? { status } : {}),
       ...(dependencyIds !== undefined ? { dependencyIds: dependencyIds.map(String) } : {}),
+      ...(expectedTouches !== undefined
+        ? { expectedTouches: expectedTouches.map((value) => String(value).slice(0, 500)) }
+        : {}),
+      ...(parallelism !== undefined ? { parallelism } : {}),
+      ...(conflictGroup !== undefined
+        ? { conflictGroup: String(conflictGroup).slice(0, 160) }
+        : {}),
+      ...(workRole !== undefined ? { workRole: String(workRole).slice(0, 80) } : {}),
       ...(ownerAgentId !== undefined ? { ownerAgentId: String(ownerAgentId).slice(0, 80) } : {}),
       ...(statusNote !== undefined ? { statusNote: String(statusNote).slice(0, 2000) } : {}),
       ...(blockedReason !== undefined
@@ -488,6 +517,10 @@ export function buildHttpServer(deps: HttpDeps) {
       detail?: string;
       status?: TaskChecklistStatus;
       dependencyIds?: string[];
+      expectedTouches?: string[];
+      parallelism?: TaskChecklistParallelism;
+      conflictGroup?: string;
+      workRole?: string;
       ownerAgentId?: string;
       statusNote?: string;
       blockedReason?: string;
@@ -504,6 +537,10 @@ export function buildHttpServer(deps: HttpDeps) {
       detail,
       status,
       dependencyIds,
+      expectedTouches,
+      parallelism,
+      conflictGroup,
+      workRole,
       ownerAgentId,
       statusNote,
       blockedReason,
@@ -516,6 +553,12 @@ export function buildHttpServer(deps: HttpDeps) {
     if (dependencyIds !== undefined && !Array.isArray(dependencyIds)) {
       return reply.code(400).send({ error: 'dependencyIds must be an array' });
     }
+    if (expectedTouches !== undefined && !Array.isArray(expectedTouches)) {
+      return reply.code(400).send({ error: 'expectedTouches must be an array' });
+    }
+    if (parallelism !== undefined && !isTaskChecklistParallelism(parallelism)) {
+      return reply.code(400).send({ error: 'invalid parallelism' });
+    }
     const item = deps.broker.updateTaskChecklistItem(
       req.params.id,
       req.params.taskId,
@@ -527,6 +570,14 @@ export function buildHttpServer(deps: HttpDeps) {
         ...(detail !== undefined ? { detail: String(detail).slice(0, 2000) } : {}),
         ...(status !== undefined ? { status } : {}),
         ...(dependencyIds !== undefined ? { dependencyIds: dependencyIds.map(String) } : {}),
+        ...(expectedTouches !== undefined
+          ? { expectedTouches: expectedTouches.map((value) => String(value).slice(0, 500)) }
+          : {}),
+        ...(parallelism !== undefined ? { parallelism } : {}),
+        ...(conflictGroup !== undefined
+          ? { conflictGroup: String(conflictGroup).slice(0, 160) }
+          : {}),
+        ...(workRole !== undefined ? { workRole: String(workRole).slice(0, 80) } : {}),
         ...(ownerAgentId !== undefined ? { ownerAgentId: String(ownerAgentId).slice(0, 80) } : {}),
         ...(statusNote !== undefined ? { statusNote: String(statusNote).slice(0, 2000) } : {}),
         ...(blockedReason !== undefined

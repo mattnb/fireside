@@ -26,6 +26,10 @@ describe('mission control repositories', () => {
       taskId: task.id,
       phaseId: phase.id,
       title: 'Wire prompt context',
+      expectedTouches: ['server/src/transcript.ts'],
+      parallelism: 'exclusive',
+      conflictGroup: 'prompt-context',
+      workRole: 'implement',
       sortOrder: 1,
     });
     const blockedItem = createTaskChecklistItem(db, {
@@ -53,6 +57,10 @@ describe('mission control repositories', () => {
     ]);
     expect(updateTaskChecklistItem(db, openItem.id, { status: 'done' })).toMatchObject({
       status: 'done',
+      expectedTouches: ['server/src/transcript.ts'],
+      parallelism: 'exclusive',
+      conflictGroup: 'prompt-context',
+      workRole: 'implement',
     });
     expect(listTaskChecklistItems(db, task.id).map((item) => item.id)).toEqual([
       openItem.id,

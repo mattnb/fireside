@@ -1,4 +1,8 @@
-import type { TaskChecklistNoteKind, TaskChecklistStatus } from './repos/task-checklist.js';
+import type {
+  TaskChecklistNoteKind,
+  TaskChecklistParallelism,
+  TaskChecklistStatus,
+} from './repos/task-checklist.js';
 
 export type MissionTaskAction = 'create' | 'update' | 'note';
 
@@ -9,6 +13,10 @@ export interface ParsedMissionTaskUpdate {
   detail: string;
   status: TaskChecklistStatus | null;
   dependencyRefs: string[];
+  expectedTouches: string[];
+  parallelism: TaskChecklistParallelism | null;
+  conflictGroup: string;
+  workRole: string;
   ownerAgentId: string;
   statusNote: string;
   blockedReason: string;
@@ -48,6 +56,22 @@ const STATUS_ALIASES = new Map<string, TaskChecklistStatus>([
   ['deferred', 'skipped'],
 ]);
 const NOTE_KINDS = new Set(['status', 'completion', 'blocker', 'council']);
+const PARALLELISM_ALIASES = new Map<string, TaskChecklistParallelism>([
+  ['parallel', 'parallel-safe'],
+  ['parallel_safe', 'parallel-safe'],
+  ['parallel-safe', 'parallel-safe'],
+  ['safe', 'parallel-safe'],
+  ['independent', 'parallel-safe'],
+  ['coordinate', 'coordinate'],
+  ['coordinated', 'coordinate'],
+  ['shared', 'coordinate'],
+  ['exclusive', 'exclusive'],
+  ['serial', 'exclusive'],
+  ['single_writer', 'exclusive'],
+  ['single-writer', 'exclusive'],
+  ['lock', 'exclusive'],
+  ['locked', 'exclusive'],
+]);
 
 function parseFields(block: string): Map<string, string[]> {
   const fields = new Map<string, string[]>();
@@ -102,6 +126,11 @@ function normalizeNoteKind(
   return 'status';
 }
 
+function normalizeParallelism(value: string): TaskChecklistParallelism | null {
+  const normalized = value.trim().toLowerCase().replace(/\s+/g, '_');
+  return PARALLELISM_ALIASES.get(normalized) ?? null;
+}
+
 function splitRefs(values: string[]): string[] {
   return [
     ...new Set(
@@ -128,6 +157,9 @@ function parseBlock(block: string): ParsedMissionTaskUpdate | null {
   const detail = all(fields, 'detail', 'description').join('\n').trim();
   const status = normalizeStatus(first(fields, 'status', 'state'));
   const statusNote = all(fields, 'status_note', 'note', 'summary').join('\n').trim();
+  const parallelism = normalizeParallelism(
+    first(fields, 'parallelism', 'parallel', 'coordination'),
+  );
   const blockedReason = all(fields, 'blocked_reason', 'blocker', 'reason').join('\n').trim();
   const councilRequired = parseBoolean(
     first(fields, 'council', 'council_required', 'needs_council'),
@@ -144,6 +176,12 @@ function parseBlock(block: string): ParsedMissionTaskUpdate | null {
     detail,
     status,
     dependencyRefs: splitRefs(all(fields, 'depends_on', 'dependencies', 'dependency_ids')),
+    expectedTouches: splitRefs(
+      all(fields, 'expected_touches', 'expected_touch', 'touches', 'files', 'paths'),
+    ),
+    parallelism,
+    conflictGroup: first(fields, 'conflict_group', 'conflict', 'scope_group', 'scope'),
+    workRole: first(fields, 'work_role', 'role'),
     ownerAgentId: first(fields, 'owner', 'agent', 'assignee'),
     statusNote,
     blockedReason,

@@ -2,6 +2,7 @@ import type { Database } from 'better-sqlite3';
 import { nanoid } from 'nanoid';
 
 export type TaskChecklistStatus = 'open' | 'blocked' | 'done' | 'skipped';
+export type TaskChecklistParallelism = 'parallel-safe' | 'coordinate' | 'exclusive';
 
 export interface TaskChecklistItem {
   id: string;
@@ -12,6 +13,10 @@ export interface TaskChecklistItem {
   detail: string;
   status: TaskChecklistStatus;
   dependencyIds: string[];
+  expectedTouches: string[];
+  parallelism: TaskChecklistParallelism;
+  conflictGroup: string;
+  workRole: string;
   ownerAgentId: string;
   statusNote: string;
   blockedReason: string;
@@ -44,6 +49,10 @@ interface TaskChecklistItemRow {
   detail: string;
   status: TaskChecklistStatus;
   dependency_ids_json: string;
+  expected_touches_json: string;
+  parallelism: TaskChecklistParallelism;
+  conflict_group: string;
+  work_role: string;
   owner_agent_id: string;
   status_note: string;
   blocked_reason: string;
@@ -73,6 +82,10 @@ export interface CreateTaskChecklistItemInput {
   detail?: string;
   status?: TaskChecklistStatus;
   dependencyIds?: string[];
+  expectedTouches?: string[];
+  parallelism?: TaskChecklistParallelism;
+  conflictGroup?: string;
+  workRole?: string;
   ownerAgentId?: string;
   statusNote?: string;
   blockedReason?: string;
@@ -88,6 +101,10 @@ export interface UpdateTaskChecklistItemInput {
   detail?: string;
   status?: TaskChecklistStatus;
   dependencyIds?: string[];
+  expectedTouches?: string[];
+  parallelism?: TaskChecklistParallelism;
+  conflictGroup?: string;
+  workRole?: string;
   ownerAgentId?: string;
   statusNote?: string;
   blockedReason?: string;
@@ -105,9 +122,15 @@ export interface CreateTaskChecklistNoteInput {
 }
 
 function parseDependencyIds(json: string): string[] {
+  return parseStringArray(json);
+}
+
+function parseStringArray(json: string): string[] {
   try {
     const parsed = JSON.parse(json) as unknown;
-    return Array.isArray(parsed) ? parsed.filter((item): item is string => typeof item === 'string') : [];
+    return Array.isArray(parsed)
+      ? parsed.filter((item): item is string => typeof item === 'string')
+      : [];
   } catch {
     return [];
   }
@@ -116,6 +139,17 @@ function parseDependencyIds(json: string): string[] {
 function cleanDependencyIds(ids: string[] | undefined): string[] {
   if (!ids) return [];
   return [...new Set(ids.map((id) => id.trim()).filter(Boolean))].slice(0, 20);
+}
+
+function cleanExpectedTouches(touches: string[] | undefined): string[] {
+  if (!touches) return [];
+  return [...new Set(touches.map((touch) => touch.trim()).filter(Boolean))].slice(0, 30);
+}
+
+function normalizeParallelism(
+  value: TaskChecklistParallelism | undefined,
+): TaskChecklistParallelism {
+  return value === 'coordinate' || value === 'exclusive' ? value : 'parallel-safe';
 }
 
 function rowToTaskChecklistItem(row: TaskChecklistItemRow): TaskChecklistItem {
@@ -128,6 +162,10 @@ function rowToTaskChecklistItem(row: TaskChecklistItemRow): TaskChecklistItem {
     detail: row.detail,
     status: row.status,
     dependencyIds: parseDependencyIds(row.dependency_ids_json),
+    expectedTouches: parseStringArray(row.expected_touches_json),
+    parallelism: normalizeParallelism(row.parallelism),
+    conflictGroup: row.conflict_group,
+    workRole: row.work_role,
     ownerAgentId: row.owner_agent_id,
     statusNote: row.status_note,
     blockedReason: row.blocked_reason,
@@ -161,10 +199,11 @@ export function createTaskChecklistItem(
   const status = input.status ?? 'open';
   db.prepare(
     `INSERT INTO task_checklist_items (
-      id, task_id, plan_id, phase_id, title, detail, status, dependency_ids_json, owner_agent_id,
+      id, task_id, plan_id, phase_id, title, detail, status, dependency_ids_json,
+      expected_touches_json, parallelism, conflict_group, work_role, owner_agent_id,
       status_note, blocked_reason, council_required, updated_by, completed_at,
       sort_order, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     id,
     input.taskId,
@@ -174,6 +213,10 @@ export function createTaskChecklistItem(
     input.detail ?? '',
     status,
     JSON.stringify(cleanDependencyIds(input.dependencyIds)),
+    JSON.stringify(cleanExpectedTouches(input.expectedTouches)),
+    normalizeParallelism(input.parallelism),
+    input.conflictGroup?.trim().slice(0, 160) ?? '',
+    input.workRole?.trim().slice(0, 80) ?? '',
     input.ownerAgentId ?? '',
     input.statusNote ?? '',
     input.blockedReason ?? '',
@@ -220,6 +263,14 @@ export function updateTaskChecklistItem(
     ...('detail' in input ? { detail: input.detail ?? '' } : {}),
     ...('status' in input ? { status: input.status ?? existing.status } : {}),
     ...('dependencyIds' in input ? { dependencyIds: cleanDependencyIds(input.dependencyIds) } : {}),
+    ...('expectedTouches' in input
+      ? { expectedTouches: cleanExpectedTouches(input.expectedTouches) }
+      : {}),
+    ...('parallelism' in input ? { parallelism: normalizeParallelism(input.parallelism) } : {}),
+    ...('conflictGroup' in input
+      ? { conflictGroup: input.conflictGroup?.trim().slice(0, 160) ?? '' }
+      : {}),
+    ...('workRole' in input ? { workRole: input.workRole?.trim().slice(0, 80) ?? '' } : {}),
     ...('ownerAgentId' in input ? { ownerAgentId: input.ownerAgentId ?? '' } : {}),
     ...('statusNote' in input ? { statusNote: input.statusNote ?? '' } : {}),
     ...('blockedReason' in input ? { blockedReason: input.blockedReason ?? '' } : {}),
@@ -237,6 +288,7 @@ export function updateTaskChecklistItem(
   db.prepare(
     `UPDATE task_checklist_items
      SET plan_id = ?, phase_id = ?, title = ?, detail = ?, status = ?, dependency_ids_json = ?,
+         expected_touches_json = ?, parallelism = ?, conflict_group = ?, work_role = ?,
          owner_agent_id = ?, status_note = ?, blocked_reason = ?, council_required = ?,
          updated_by = ?, completed_at = ?, sort_order = ?, updated_at = ?
      WHERE id = ?`,
@@ -247,6 +299,10 @@ export function updateTaskChecklistItem(
     updated.detail,
     updated.status,
     JSON.stringify(updated.dependencyIds),
+    JSON.stringify(updated.expectedTouches),
+    updated.parallelism,
+    updated.conflictGroup,
+    updated.workRole,
     updated.ownerAgentId,
     updated.statusNote,
     updated.blockedReason,
@@ -270,15 +326,7 @@ export function createTaskChecklistNote(
     `INSERT INTO task_checklist_notes (
       id, task_id, item_id, author_id, kind, body, created_at
     ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-  ).run(
-    id,
-    input.taskId,
-    input.itemId,
-    input.authorId,
-    input.kind ?? 'status',
-    input.body,
-    now,
-  );
+  ).run(id, input.taskId, input.itemId, input.authorId, input.kind ?? 'status', input.body, now);
   return getTaskChecklistNote(db, id)!;
 }
 

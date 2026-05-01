@@ -3,6 +3,7 @@ export type AuthorKind = 'human' | 'agent' | 'system';
 export type TaskStatus = 'active' | 'paused' | 'blocked' | 'verifying' | 'done';
 export type TaskPhaseStatus = 'planned' | 'active' | 'blocked' | 'done';
 export type TaskChecklistStatus = 'open' | 'blocked' | 'done' | 'skipped';
+export type TaskChecklistParallelism = 'parallel-safe' | 'coordinate' | 'exclusive';
 export type TaskPlanStatus = 'draft' | 'active' | 'superseded' | 'archived';
 export type RunStatus = 'running' | 'completed' | 'failed' | 'empty' | 'permission-requested';
 export type RunLifecycleState =
@@ -219,6 +220,10 @@ export interface TaskChecklistItem {
   detail: string;
   status: TaskChecklistStatus;
   dependencyIds: string[];
+  expectedTouches: string[];
+  parallelism: TaskChecklistParallelism;
+  conflictGroup: string;
+  workRole: string;
   ownerAgentId: string;
   statusNote: string;
   blockedReason: string;

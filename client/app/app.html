@@ -192,12 +192,19 @@
           </em>
         </div>
         @if (!selectedRoom()) { @for (agent of selectedProjectAgents(); track agent) {
-        <div class="presence-row presence-row--agent">
-          <span class="avatar avatar--sm" [class]="'avatar avatar--sm avatar--' + agent"></span>
-          <span>{{ agent }}</span>
-          <span class="presence-row__actions">
-            <em>{{ selectedProjectYoloAgents().includes(agent) ? 'yolo' : 'project' }}</em>
-          </span>
+        <div [class]="'rail-agent rail-agent--' + agent + ' rail-agent--idle rail-agent--no-usage'">
+          <span
+            class="avatar avatar--sm rail-agent__glyph"
+            [class]="'avatar avatar--sm avatar--' + agent + ' rail-agent__glyph'"
+          ></span>
+          <div class="rail-agent__top">
+            <span class="rail-agent__name">{{ agent }}</span>
+            <span class="rail-agent__sep" aria-hidden="true">·</span>
+            <span class="rail-agent__status"
+              >{{ selectedProjectYoloAgents().includes(agent) ? 'yolo' : 'project' }}</span
+            >
+            <span class="rail-agent__pulse" aria-hidden="true"></span>
+          </div>
         </div>
         } @empty {
         <p class="empty-copy">no project agents yet</p>
@@ -220,17 +227,19 @@
           </div>
         </div>
         } @for (agent of roomAgents(); track agent) {
-        <div class="presence-row presence-row--agent">
-          <span class="avatar avatar--sm" [class]="'avatar avatar--sm avatar--' + agent"></span>
-          <span>{{ agent }}</span>
-          <span class="presence-row__actions">
-            <em
-              >{{ isAgentRunning(agent) ? 'working' : isRoomYoloAgent(agent) ? 'yolo' : 'idle'
-              }}</em
-            >
+        <div [class]="'rail-agent rail-agent--' + agent + ' rail-agent--' + agentRailKind(agent)">
+          <span
+            class="avatar avatar--sm rail-agent__glyph"
+            [class]="'avatar avatar--sm avatar--' + agent + ' rail-agent__glyph'"
+          ></span>
+          <div class="rail-agent__top">
+            <span class="rail-agent__name">{{ agent }}</span>
+            <span class="rail-agent__sep" aria-hidden="true">·</span>
+            <span class="rail-agent__status">{{ agentRailStatus(agent) }}</span>
+            <span class="rail-agent__pulse" aria-hidden="true"></span>
             @if (canCompactAgent(agent)) {
             <button
-              class="agent-compact-btn"
+              class="agent-compact-btn rail-agent__compact"
               type="button"
               [disabled]="isAgentRunning(agent) || compactingAgent() === agent"
               [title]="isAgentRunning(agent) ? 'Compact is available when this agent is idle' : 'Compact context'"
@@ -244,17 +253,19 @@
               </svg>
             </button>
             }
-          </span>
+          </div>
           @if (agentContextUsage(agent); as usage) {
           <div
-            [class]="'agent-context ' + agentContextTone(usage)"
+            class="rail-agent__bar-row"
+            [class]="'rail-agent__bar-row ' + agentContextTone(usage)"
             [title]="agentContextTitle(usage)"
           >
-            <span class="agent-context__label">{{ agentContextLabel(usage) }}</span>
-            <span class="agent-context__bar" aria-hidden="true">
+            <span class="rail-agent__bar" aria-hidden="true">
               <span [style.width.%]="agentContextPercent(usage)"></span>
             </span>
+            <span class="rail-agent__pct">{{ agentContextPercentRounded(usage) }}%</span>
           </div>
+          <div class="rail-agent__meta">{{ agentContextLabel(usage) }}</div>
           }
         </div>
         } @empty {
@@ -748,6 +759,12 @@
                   <span>phase {{ item.phaseId }}</span>
                   } @if (item.dependencyIds.length) {
                   <span>after {{ item.dependencyIds.join(', ') }}</span>
+                  } @if (item.parallelism) {
+                  <span>{{ item.parallelism }}</span>
+                  } @if (item.expectedTouches?.length) {
+                  <span>{{ item.expectedTouches.length }} touch(es)</span>
+                  } @if (item.conflictGroup) {
+                  <span>group {{ item.conflictGroup }}</span>
                   }
                 </div>
                 } @if (item.statusNote || item.blockedReason) {
@@ -1162,7 +1179,14 @@
                 }
                 <span>id {{ shortTaskId(card.item.id) }}</span>
                 <span>phase {{ swimlane.title }}</span>
-                @if (card.notesCount) {
+                <span [class]="'mission-scope-chip is-' + card.item.parallelism">
+                  {{ card.item.parallelism }}
+                </span>
+                @if (card.item.expectedTouches?.length) {
+                <span>{{ card.item.expectedTouches.length }} touch(es)</span>
+                } @if (card.item.conflictGroup) {
+                <span>group {{ card.item.conflictGroup }}</span>
+                } @if (card.notesCount) {
                 <span>{{ card.notesCount }} notes</span>
                 } @if (card.evidenceCount) {
                 <span>{{ card.evidenceCount }} evidence</span>
@@ -1301,6 +1325,14 @@
                   <span>waiting</span>
                   } @if (card.ready) {
                   <span>parallel ready</span>
+                  } @if (card.item.parallelism) {
+                  <span [class]="'mission-scope-chip is-' + card.item.parallelism">
+                    {{ card.item.parallelism }}
+                  </span>
+                  } @if (card.item.expectedTouches?.length) {
+                  <span>{{ card.item.expectedTouches.length }} touch(es)</span>
+                  } @if (card.item.conflictGroup) {
+                  <span>group {{ card.item.conflictGroup }}</span>
                   } @if (card.notesCount) {
                   <span>{{ card.notesCount }} notes</span>
                   } @if (card.evidenceCount) {
@@ -1746,6 +1778,12 @@
               <span>plan {{ planLabel(item.planId) }}</span>
               } @if (item.dependencyIds.length) {
               <span>after {{ dependencyLabels(item) }}</span>
+              } @if (item.parallelism) {
+              <span>{{ item.parallelism }}</span>
+              } @if (item.expectedTouches?.length) {
+              <span>{{ item.expectedTouches.length }} touch(es)</span>
+              } @if (item.conflictGroup) {
+              <span>group {{ item.conflictGroup }}</span>
               } @if (item.councilRequired) {
               <span>council required</span>
               }
@@ -2111,10 +2149,37 @@
             <span>evidence</span>
             <strong>{{ card.evidenceCount }} receipt(s)</strong>
           </div>
+          <div>
+            <span>scope contract</span>
+            <strong>{{ taskScopeContractLabel(card.item) }}</strong>
+          </div>
+          <div>
+            <span>work role</span>
+            <strong>{{ card.item.workRole || 'unspecified' }}</strong>
+          </div>
         </div>
         @if (card.item.detail) {
         <p class="task-inspector__detail">{{ card.item.detail }}</p>
         }
+      </section>
+
+      <section class="task-inspector__section">
+        <div class="task-inspector__section-head">
+          <h3>parallel scope</h3>
+        </div>
+        <div class="task-inspector__chips task-inspector__chips--scope">
+          <span [class]="'mission-scope-chip is-' + card.item.parallelism">
+            {{ card.item.parallelism }}
+          </span>
+          @if (card.item.conflictGroup) {
+          <span>group {{ card.item.conflictGroup }}</span>
+          } @if (card.item.workRole) {
+          <span>role {{ card.item.workRole }}</span>
+          }
+        </div>
+        <p class="task-inspector__detail">
+          Expected touches: {{ taskExpectedTouchesLabel(card.item) }}
+        </p>
       </section>
 
       <section class="task-inspector__section task-inspector__section--controls">

@@ -56,6 +56,10 @@ export interface WorkLanePromptItem {
   planId: string | null;
   phaseId: string | null;
   dependencyIds?: string[];
+  expectedTouches?: string[];
+  parallelism?: string;
+  conflictGroup?: string;
+  workRole?: string;
   ownerAgentId?: string;
   statusNote?: string;
   blockedReason?: string;
@@ -140,6 +144,10 @@ function formatChecklistItem(item: {
   planId: string | null;
   phaseId: string | null;
   dependencyIds?: string[];
+  expectedTouches?: string[];
+  parallelism?: string;
+  conflictGroup?: string;
+  workRole?: string;
   ownerAgentId?: string;
   statusNote?: string;
   blockedReason?: string;
@@ -152,6 +160,14 @@ function formatChecklistItem(item: {
     item.dependencyIds && item.dependencyIds.length > 0
       ? `depends_on=${item.dependencyIds.join(',')}`
       : '',
+    item.expectedTouches && item.expectedTouches.length > 0
+      ? `expected_touches=${item.expectedTouches.join(',')}`
+      : '',
+    item.parallelism && item.parallelism !== 'parallel-safe'
+      ? `parallelism=${item.parallelism}`
+      : '',
+    item.conflictGroup ? `conflict_group=${item.conflictGroup}` : '',
+    item.workRole ? `role=${item.workRole}` : '',
     item.ownerAgentId ? `owner=${item.ownerAgentId}` : '',
     item.councilRequired ? `council_required=true` : '',
     item.blockedReason ? `blocker=${compact(item.blockedReason, 120)}` : '',
@@ -272,12 +288,16 @@ function renderPrompt(
         `plan: optional active plan id or title; defaults to the phase's plan or active plan from this reply`,
         `phase: optional phase id or title`,
         `depends_on: optional item id(s) from the checklist, comma-separated`,
+        `expected_touches: optional file paths, globs, package names, or logical scopes this item will likely touch, comma-separated`,
+        `parallelism: optional parallel-safe | coordinate | exclusive. Use parallel-safe for independent work, coordinate for shared scopes requiring handoff/review, and exclusive for single-writer work.`,
+        `conflict_group: optional short label for work that should not run concurrently with another item in the same group`,
+        `work_role: optional implement | review | verify | research | docs, or another concise role`,
         `owner: optional agent id`,
         `detail: one sentence of scope or acceptance evidence`,
         `note: status note, completion evidence, or blocker summary`,
         `council_required: false`,
         `/end-mission-task`,
-        `Use action "update" with id: <checklist item id> to change plan, phase, status, dependencies, owner, detail, note, blocked_reason, or council_required. To take ownership, update owner to your agent id before or while working. When the task is complete, set status: done and include completion evidence in note. Status aliases accepted/complete/completed/finished/resolved also count as done. If blocked and council_required is true, the mission will be marked blocked for human/team council.`,
+        `Use action "update" with id: <checklist item id> to change plan, phase, status, dependencies, owner, detail, note, blocked_reason, council_required, expected_touches, parallelism, conflict_group, or work_role. To take ownership, update owner to your agent id before or while working. When the task is complete, set status: done and include completion evidence in note. Status aliases accepted/complete/completed/finished/resolved also count as done. If blocked and council_required is true, the mission will be marked blocked for human/team council.`,
         `Mission receipt protocol: every active-mission turn must leave a reconciliation trail. If you create or change mission state, use the mission-plan, mission-phase, mission-task, or mission-create blocks above. If you do not change mission state, append one hidden receipt block after your visible reply so Fireside can explain what happened:`,
         `/mission-receipt`,
         `status: completed | blocked | needs_review | continuing | no_update`,
@@ -414,6 +434,9 @@ function renderPrompt(
         ``,
         `YOLO work lane: Fireside has assigned you one unblocked checklist item for this pulse. Work this lane independently while other agents handle their own lanes; coordinate only if you hit a blocker, need a shared file/scope, or need another agent's review.`,
         `Assigned item: ${formatChecklistItem(opts.workLane)}`,
+        opts.workLane.expectedTouches?.length
+          ? `Scope contract: expected_touches=${opts.workLane.expectedTouches.join(', ')}; parallelism=${opts.workLane.parallelism ?? 'parallel-safe'}; conflict_group=${opts.workLane.conflictGroup || 'none'}; role=${opts.workLane.workRole || 'unspecified'}. Stay inside this scope unless the task requires a small safe fix or you update Mission Control before crossing lanes.`
+          : `Scope contract: no expected_touches recorded. Before broad edits, update the checklist item with expected_touches plus parallelism/conflict_group if needed so other agents can work safely in parallel.`,
         `Before or while working, make sure the checklist item owner is "${opts.agentId}". When you finish, append a /mission-task update with id: ${opts.workLane.id}, status: done, and completion evidence in note. If blocked, update the item with status: blocked, blocked_reason, and council_required when human/team council is needed.`,
         `Do not wait for another agent unless this lane is blocked by a dependency or shared scope conflict. End the turn with a visible status plus the required mission state update or /mission-receipt.`,
       ]

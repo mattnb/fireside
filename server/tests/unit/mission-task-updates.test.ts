@@ -93,4 +93,30 @@ note: Closed as non-blocking/superseded for mission acceptance.
       },
     ]);
   });
+
+  it('extracts parallel work scope contracts from task blocks', () => {
+    const extracted = extractMissionTaskUpdates(`Planned parallel work.
+
+/mission-task
+action: create
+title: Build board filters
+status: open
+expected_touches: client/app/app.html, client/app/app.ts, client/app/app.css
+parallelism: coordinate
+conflict_group: mission-board-ui
+work_role: implement
+note: UI slice can run beside backend tests but should coordinate with board markup edits.
+/end-mission-task`);
+
+    expect(extracted.updates).toMatchObject([
+      {
+        action: 'create',
+        title: 'Build board filters',
+        expectedTouches: ['client/app/app.html', 'client/app/app.ts', 'client/app/app.css'],
+        parallelism: 'coordinate',
+        conflictGroup: 'mission-board-ui',
+        workRole: 'implement',
+      },
+    ]);
+  });
 });

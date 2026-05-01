@@ -559,6 +559,104 @@ describe('Broker', () => {
     expect(actionLabels).toContain('mission receipt: continuing');
   });
 
+  it('does not assign conflicting YOLO lane scope contracts in the same pulse', async () => {
+    let turn = 0;
+    const yoloBroker = new Broker({
+      db,
+      runAgent: async (spec, prompt, sessionId, permission) => {
+        turn += 1;
+        runs.push({
+          agentId: spec.id,
+          prompt,
+          sessionId,
+          ...(permission !== undefined ? { permission } : {}),
+        });
+        return {
+          text:
+            turn <= 2
+              ? [
+                  `${spec.id} started a lane.`,
+                  '',
+                  '/mission-receipt',
+                  'status: continuing',
+                  'summary: Started assigned work.',
+                  '/end-mission-receipt',
+                ].join('\n')
+              : '',
+          sessionId: `${spec.id}-sess`,
+          raw: { stdout: '', stderr: '' },
+        };
+      },
+      getSpec: (id) => {
+        const map: Record<string, AgentSpec> = {
+          claude: fakeSpec('claude', 'claude reply'),
+          codex: fakeSpec('codex', 'codex reply'),
+          gemini: fakeSpec('gemini', 'gemini reply'),
+          echo: fakeSpec('echo', 'echo reply'),
+        };
+        return map[id];
+      },
+    });
+    const room = createRoom(db, { name: 'scope-contracts', agents: ['claude', 'codex'] });
+    const task = yoloBroker.createTask(room.id, {
+      title: 'Scoped parallel mission',
+      repoPath: 'C:/work/project',
+    });
+    if (!task) throw new Error('task not created');
+    createTaskChecklistItem(db, {
+      taskId: task.id,
+      title: 'Implement board shell',
+      expectedTouches: ['client/app/app.html', 'client/app/app.css'],
+      parallelism: 'coordinate',
+      conflictGroup: 'mission-board-ui',
+    });
+    createTaskChecklistItem(db, {
+      taskId: task.id,
+      title: 'Polish board cards',
+      expectedTouches: ['client/app/app.css'],
+      parallelism: 'coordinate',
+      conflictGroup: 'mission-board-ui',
+    });
+    createTaskChecklistItem(db, {
+      taskId: task.id,
+      title: 'Verify broker tests',
+      expectedTouches: ['server/tests/integration/broker-echo.test.ts'],
+      parallelism: 'parallel-safe',
+      conflictGroup: 'broker-tests',
+    });
+
+    await yoloBroker.startYoloDiscussion(room.id, 'human', {
+      mode: 'edit',
+      filesystemScope: 'task',
+    });
+
+    const assignedLines = runs
+      .slice(0, 2)
+      .map((run) => run.prompt.split(/\r?\n/).find((line) => line.startsWith('Assigned item:')));
+    const assignedText = assignedLines.join('\n');
+    const assignedBoardItems = ['Implement board shell', 'Polish board cards'].filter((title) =>
+      assignedText.includes(title),
+    );
+    expect(assignedBoardItems).toHaveLength(1);
+    expect(assignedLines.join('\n')).toContain('Verify broker tests');
+    expect(runs[0]!.prompt).toContain('Scope contract: expected_touches=');
+    const items = listTaskChecklistItems(db, task.id);
+    const unassignedBoardItems = items.filter(
+      (item) =>
+        ['Implement board shell', 'Polish board cards'].includes(item.title) && !item.ownerAgentId,
+    );
+    expect(unassignedBoardItems).toHaveLength(1);
+    const jobs = listAgentJobsForRoom(db, room.id);
+    expect(
+      jobs
+        .map(
+          (job) => JSON.parse(job.workPacketJson) as { assignedItem?: { conflictGroup?: string } },
+        )
+        .map((packet) => packet.assignedItem?.conflictGroup)
+        .filter(Boolean),
+    ).toContain('mission-board-ui');
+  });
+
   it('auto-approves agent permission requests during YOLO without creating a prompt', async () => {
     let turn = 0;
     const yoloBroker = new Broker({

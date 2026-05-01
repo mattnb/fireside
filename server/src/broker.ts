@@ -79,6 +79,7 @@ import {
   listActiveAgentJobsForRoom,
   recoverInterruptedAgentJobs,
   renewAgentJobLease,
+  type AgentJob,
 } from './repos/agent-jobs.js';
 import {
   createCollaborationItem,
@@ -138,36 +139,21 @@ import { getWorkspacePath } from './workspaces.js';
 import type { AgentId, AgentReply, AgentSpec, AgentStreamEvent } from './agents/types.js';
 import { logger } from './logger.js';
 import { buildRunDiagnostics, type RunDiagnostics } from './run-diagnostics.js';
-import {
-  isVisibleProviderSignal,
-  readableProviderSignalDetail,
-} from './provider-signals.js';
+import { isVisibleProviderSignal, readableProviderSignalDetail } from './provider-signals.js';
 import { codexContextUsage, formatContextUsage } from './context-usage.js';
-import {
-  extractCollaborationNotes,
-  type ParsedCollaborationNote,
-} from './collaboration-notes.js';
+import { extractCollaborationNotes, type ParsedCollaborationNote } from './collaboration-notes.js';
 import { extractDraftArtifacts, writeDraftArtifact } from './draft-artifacts.js';
-import {
-  extractMissionTaskUpdates,
-  type ParsedMissionTaskUpdate,
-} from './mission-task-updates.js';
+import { extractMissionTaskUpdates, type ParsedMissionTaskUpdate } from './mission-task-updates.js';
 import {
   extractMissionPhaseUpdates,
   type ParsedMissionPhaseUpdate,
 } from './mission-phase-updates.js';
-import {
-  extractMissionPlanUpdates,
-  type ParsedMissionPlanUpdate,
-} from './mission-plan-updates.js';
+import { extractMissionPlanUpdates, type ParsedMissionPlanUpdate } from './mission-plan-updates.js';
 import {
   extractMissionCreateUpdates,
   type ParsedMissionCreateUpdate,
 } from './mission-create-updates.js';
-import {
-  extractMissionReceipts,
-  type ParsedMissionReceipt,
-} from './mission-receipts.js';
+import { extractMissionReceipts, type ParsedMissionReceipt } from './mission-receipts.js';
 
 export interface BrokerDeps {
   db: Database;
@@ -217,6 +203,17 @@ interface DiscussionTurn {
 
 interface WorkLaneAssignment {
   item: TaskChecklistItem;
+}
+
+interface WorkLaneScopeContract {
+  itemId: string;
+  title: string;
+  agentId: AgentId | '';
+  expectedTouches: string[];
+  parallelism: TaskChecklistItem['parallelism'];
+  conflictGroup: string;
+  workRole: string;
+  source: 'checklist' | 'active-job';
 }
 
 interface WorkflowProfilePromptItem {
@@ -323,11 +320,7 @@ function normalizeYoloPermissionProfile(
   const filesystemScope = isYoloFilesystemScope(rawScope) ? rawScope : 'task';
   const rawMode = typeof profile?.mode === 'string' ? profile.mode : '';
   const mode =
-    filesystemScope === 'unrestricted'
-      ? 'full-auto'
-      : isPermissionMode(rawMode)
-        ? rawMode
-        : 'edit';
+    filesystemScope === 'unrestricted' ? 'full-auto' : isPermissionMode(rawMode) ? rawMode : 'edit';
   const target = cleanYoloTarget(profile?.target);
   return {
     mode,
@@ -340,7 +333,11 @@ function normalizeYoloPermissionProfile(
 function inferYoloPermissionProfileFromText(text: string): YoloPermissionProfile | null {
   const normalized = text.toLowerCase();
   if (!/\byolo\b/.test(normalized)) return null;
-  if (!/\byolo\s+mode\b|\byolo\s+run\b|\byolo\s+collaboration\b|\bunrestricted\s+yolo\b/.test(normalized)) {
+  if (
+    !/\byolo\s+mode\b|\byolo\s+run\b|\byolo\s+collaboration\b|\bunrestricted\s+yolo\b/.test(
+      normalized,
+    )
+  ) {
     return null;
   }
   if (/\b(no|not|never|don't|do not)\b.{0,32}\byolo\b/.test(normalized)) return null;
@@ -386,10 +383,7 @@ function rawOutputFromError(err: unknown): { stdout: string; stderr: string } {
 function cleanVisibleAgentMessage(agentId: AgentId, text: string): string {
   const escaped = agentId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   return text
-    .replace(
-      new RegExp(`(?:\\n\\s*)+(?:[*_~\\s]*)${escaped}(?:[*_~\\s]*)(?::|,)?\\s*$`, 'i'),
-      '',
-    )
+    .replace(new RegExp(`(?:\\n\\s*)+(?:[*_~\\s]*)${escaped}(?:[*_~\\s]*)(?::|,)?\\s*$`, 'i'), '')
     .trim();
 }
 
@@ -429,7 +423,10 @@ function waitForRetryDelay(delayMs: number, signal?: AbortSignal): Promise<boole
 
 export class Broker extends EventEmitter {
   private activeYoloDiscussions = new Map<string, YoloDiscussionState>();
-  private activeRunAbortControllers = new Map<string, { roomId: string; controller: AbortController }>();
+  private activeRunAbortControllers = new Map<
+    string,
+    { roomId: string; controller: AbortController }
+  >();
   private queuedHumanMessageIds = new Map<string, Set<string>>();
   private drainingQueuedRooms = new Set<string>();
   private yoloSequence = 0;
@@ -527,16 +524,20 @@ export class Broker extends EventEmitter {
         ? respondersOverride.filter((agent) => room.agents.includes(agent))
         : room.yoloAgents.length > 0
           ? room.yoloAgents.filter((agent) => room.agents.includes(agent))
-        : room.agents;
+          : room.agents;
     const scopeLabel = yoloScopeLabel(profile.filesystemScope);
     const targetLabel =
-      profile.filesystemScope === 'unrestricted' ? permission.target : `${scopeLabel}: ${permission.target}`;
-    const text = messageText ?? [
-      `YOLO collaboration mode: participating agents should keep working together on the active mission while the human is away.`,
-      `You may exchange up to ${YOLO_MAX_AGENT_REPLIES} total agent messages before stopping for human intervention.`,
-      `YOLO permissions: ${profile.mode}; filesystem scope: ${targetLabel}; web: ${profile.web ? 'requested' : 'not requested'}.`,
-      `Stay concrete: plan, execute, review, hand off, and stop early if the useful work is exhausted.`,
-    ].join(' ');
+      profile.filesystemScope === 'unrestricted'
+        ? permission.target
+        : `${scopeLabel}: ${permission.target}`;
+    const text =
+      messageText ??
+      [
+        `YOLO collaboration mode: participating agents should keep working together on the active mission while the human is away.`,
+        `You may exchange up to ${YOLO_MAX_AGENT_REPLIES} total agent messages before stopping for human intervention.`,
+        `YOLO permissions: ${profile.mode}; filesystem scope: ${targetLabel}; web: ${profile.web ? 'requested' : 'not requested'}.`,
+        `Stay concrete: plan, execute, review, hand off, and stop early if the useful work is exhausted.`,
+      ].join(' ');
     try {
       return await this.append(roomId, authorId, 'human', text, {
         mode: 'yolo',
@@ -844,7 +845,9 @@ export class Broker extends EventEmitter {
             lifecycleState: 'released',
             lifecycleReason: `${authorId || 'human'} dismissed stale running cue`,
           })
-        : listAgentRunsRepo(this.deps.db, roomId, { limit: 200 }).find((item) => item.id === run.id) ?? null;
+        : (listAgentRunsRepo(this.deps.db, roomId, { limit: 200 }).find(
+            (item) => item.id === run.id,
+          ) ?? null);
     if (!updated) return null;
     this.recordRunAction({
       roomId,
@@ -860,15 +863,15 @@ export class Broker extends EventEmitter {
     return updated;
   }
 
-  startAgentCompaction(
-    roomId: string,
-    agentId: AgentId,
-    authorId: string,
-  ): AgentCompactionResult {
+  startAgentCompaction(roomId: string, agentId: AgentId, authorId: string): AgentCompactionResult {
     const room = getRoom(this.deps.db, roomId);
     if (!room) return { ok: false, statusCode: 404, error: 'room not found' };
     if (!COMPACTABLE_AGENT_IDS.has(agentId)) {
-      return { ok: false, statusCode: 400, error: 'manual compaction is only available for claude and codex' };
+      return {
+        ok: false,
+        statusCode: 400,
+        error: 'manual compaction is only available for claude and codex',
+      };
     }
     if (!room.agents.includes(agentId)) {
       return { ok: false, statusCode: 400, error: `${agentId} is not in this room` };
@@ -990,9 +993,7 @@ export class Broker extends EventEmitter {
       ...action,
       contextUsage: corrected,
       detail:
-        action.label === 'codex turn completed'
-          ? formatContextUsage(corrected)
-          : action.detail,
+        action.label === 'codex turn completed' ? formatContextUsage(corrected) : action.detail,
     };
   }
 
@@ -1089,14 +1090,17 @@ export class Broker extends EventEmitter {
       );
     }
 
-    void this.runPermissionDecisionFollowup(
-      resolved,
-      decisionMessage,
-      permission,
-    ).catch((err: unknown) => {
-      const errMsg = err instanceof Error ? err.message : String(err);
-      this.appendDirect(resolved.roomId, 'system', 'system', `(${resolved.agentId} failed: ${errMsg})`);
-    });
+    void this.runPermissionDecisionFollowup(resolved, decisionMessage, permission).catch(
+      (err: unknown) => {
+        const errMsg = err instanceof Error ? err.message : String(err);
+        this.appendDirect(
+          resolved.roomId,
+          'system',
+          'system',
+          `(${resolved.agentId} failed: ${errMsg})`,
+        );
+      },
+    );
     return resolved;
   }
 
@@ -1146,7 +1150,9 @@ export class Broker extends EventEmitter {
     })();
     const reason = [
       `YOLO collaboration permission profile (${profile.mode}, ${yoloScopeLabel(profile.filesystemScope)}).`,
-      profile.web ? 'The human requested web lookup/fetch access for this YOLO run where supported.' : '',
+      profile.web
+        ? 'The human requested web lookup/fetch access for this YOLO run where supported.'
+        : '',
     ]
       .filter(Boolean)
       .join(' ');
@@ -1350,10 +1356,7 @@ export class Broker extends EventEmitter {
     }
   }
 
-  listMessages(
-    roomId: string,
-    opts: { limit?: number } = {},
-  ): Message[] {
+  listMessages(roomId: string, opts: { limit?: number } = {}): Message[] {
     return listMessages(this.deps.db, roomId, opts).map((message) =>
       this.withDeliveryStatus(roomId, message),
     );
@@ -1374,6 +1377,10 @@ export class Broker extends EventEmitter {
       planId: item.planId,
       phaseId: item.phaseId,
       dependencyIds: item.dependencyIds,
+      expectedTouches: item.expectedTouches,
+      parallelism: item.parallelism,
+      conflictGroup: item.conflictGroup,
+      workRole: item.workRole,
       ownerAgentId: item.ownerAgentId,
       statusNote: item.statusNote,
       blockedReason: item.blockedReason,
@@ -1391,36 +1398,201 @@ export class Broker extends EventEmitter {
     });
   }
 
-  private assignYoloWorkLanes(
-    roomId: string,
-    agents: AgentId[],
-  ): Map<AgentId, WorkLaneAssignment> {
+  private workLaneScopeContract(
+    item: TaskChecklistItem,
+    agentId: AgentId | '' = '',
+    source: WorkLaneScopeContract['source'] = 'checklist',
+  ): WorkLaneScopeContract {
+    return {
+      itemId: item.id,
+      title: item.title,
+      agentId,
+      expectedTouches: item.expectedTouches,
+      parallelism: item.parallelism,
+      conflictGroup: item.conflictGroup.trim().toLowerCase(),
+      workRole: item.workRole,
+      source,
+    };
+  }
+
+  private workLaneScopeContractFromJob(job: AgentJob): WorkLaneScopeContract | null {
+    const item = job.checklistItemId
+      ? getTaskChecklistItem(this.deps.db, job.checklistItemId)
+      : null;
+    if (item) return this.workLaneScopeContract(item, job.agentId, 'active-job');
+    try {
+      const parsed = JSON.parse(job.workPacketJson) as {
+        assignedItem?: {
+          id?: unknown;
+          title?: unknown;
+          expectedTouches?: unknown;
+          parallelism?: unknown;
+          conflictGroup?: unknown;
+          workRole?: unknown;
+        } | null;
+      };
+      const assigned = parsed.assignedItem;
+      if (!assigned || typeof assigned.id !== 'string') return null;
+      const parallelism =
+        assigned.parallelism === 'coordinate' || assigned.parallelism === 'exclusive'
+          ? assigned.parallelism
+          : 'parallel-safe';
+      return {
+        itemId: assigned.id,
+        title: typeof assigned.title === 'string' ? assigned.title : assigned.id,
+        agentId: job.agentId,
+        expectedTouches: Array.isArray(assigned.expectedTouches)
+          ? assigned.expectedTouches.filter((touch): touch is string => typeof touch === 'string')
+          : [],
+        parallelism,
+        conflictGroup:
+          typeof assigned.conflictGroup === 'string'
+            ? assigned.conflictGroup.trim().toLowerCase()
+            : '',
+        workRole: typeof assigned.workRole === 'string' ? assigned.workRole : '',
+        source: 'active-job',
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  private activeWorkLaneContracts(roomId: string, taskId: string): WorkLaneScopeContract[] {
+    return listActiveAgentJobsForRoom(this.deps.db, roomId)
+      .filter((job) => job.taskId === taskId && Boolean(job.checklistItemId))
+      .map((job) => this.workLaneScopeContractFromJob(job))
+      .filter((contract): contract is WorkLaneScopeContract => Boolean(contract));
+  }
+
+  private normalizeTouchScope(value: string): string {
+    return value
+      .trim()
+      .replace(/\\/g, '/')
+      .replace(/^["']|["']$/g, '')
+      .replace(/\/+/g, '/')
+      .replace(/\/$/, '')
+      .toLowerCase();
+  }
+
+  private touchScopeRoot(value: string): string {
+    const normalized = this.normalizeTouchScope(value);
+    const globIndex = normalized.search(/[*{[]/);
+    const base = globIndex >= 0 ? normalized.slice(0, globIndex) : normalized;
+    return base.replace(/\/[^/]*$/, '').replace(/\/$/, '') || normalized;
+  }
+
+  private touchScopeHasGlob(value: string): boolean {
+    return /[*{[]/.test(value);
+  }
+
+  private touchScopesOverlap(a: string, b: string): boolean {
+    const left = this.normalizeTouchScope(a);
+    const right = this.normalizeTouchScope(b);
+    if (!left || !right) return false;
+    if (left === right) return true;
+    if (!this.touchScopeHasGlob(left) && !this.touchScopeHasGlob(right)) {
+      return left.startsWith(`${right}/`) || right.startsWith(`${left}/`);
+    }
+    const leftRoot = this.touchScopeRoot(left);
+    const rightRoot = this.touchScopeRoot(right);
+    if (!leftRoot || !rightRoot) return false;
+    return (
+      leftRoot === rightRoot ||
+      leftRoot.startsWith(`${rightRoot}/`) ||
+      rightRoot.startsWith(`${leftRoot}/`)
+    );
+  }
+
+  private workLaneConflictReason(
+    candidate: TaskChecklistItem,
+    activeContracts: WorkLaneScopeContract[],
+  ): string {
+    const candidateContract = this.workLaneScopeContract(candidate);
+    for (const active of activeContracts) {
+      if (active.itemId === candidate.id) {
+        return `item already assigned to ${active.agentId || 'another active job'}`;
+      }
+      if (
+        candidateContract.conflictGroup &&
+        active.conflictGroup &&
+        candidateContract.conflictGroup === active.conflictGroup
+      ) {
+        return `conflict group ${candidateContract.conflictGroup} is active`;
+      }
+      const touchesOverlap = candidateContract.expectedTouches.some((left) =>
+        active.expectedTouches.some((right) => this.touchScopesOverlap(left, right)),
+      );
+      if (touchesOverlap) {
+        return `expected touch scope overlaps with ${active.title}`;
+      }
+      const exclusiveWithoutScope =
+        candidateContract.parallelism === 'exclusive' &&
+        candidateContract.expectedTouches.length === 0 &&
+        !candidateContract.conflictGroup;
+      const activeExclusiveWithoutScope =
+        active.parallelism === 'exclusive' &&
+        active.expectedTouches.length === 0 &&
+        !active.conflictGroup;
+      if (exclusiveWithoutScope || activeExclusiveWithoutScope) {
+        return `exclusive work is active`;
+      }
+    }
+    return '';
+  }
+
+  private assignYoloWorkLanes(roomId: string, agents: AgentId[]): Map<AgentId, WorkLaneAssignment> {
     const uniqueAgents = agents.filter((agent, index) => agents.indexOf(agent) === index);
     if (uniqueAgents.length === 0) return new Map();
     const task = getActiveTask(this.deps.db, roomId);
     if (!task) return new Map();
 
-    const agentSet = new Set<AgentId>(uniqueAgents);
+    const activeJobs = listActiveAgentJobsForRoom(this.deps.db, roomId).filter(
+      (job) => job.taskId === task.id,
+    );
+    const busyAgents = new Set(activeJobs.map((job) => job.agentId));
+    const activeItemIds = new Set(
+      activeJobs.map((job) => job.checklistItemId).filter((id): id is string => Boolean(id)),
+    );
+    const activeContracts = this.activeWorkLaneContracts(roomId, task.id);
+    const reservedContracts = [...activeContracts];
+    const assignableAgents = uniqueAgents.filter((agentId) => !busyAgents.has(agentId));
+    const agentSet = new Set<AgentId>(assignableAgents);
     const items = listTaskChecklistItems(this.deps.db, task.id);
     const byId = new Map(items.map((item) => [item.id, item]));
     const eligibleItems = items.filter(
       (item) =>
         item.status === 'open' &&
+        !activeItemIds.has(item.id) &&
         this.checklistDependenciesSatisfied(item, byId) &&
         (!item.ownerAgentId || agentSet.has(item.ownerAgentId as AgentId)),
     );
     const assignments = new Map<AgentId, WorkLaneAssignment>();
+    const assignedItemIds = new Set<string>();
 
-    for (const agentId of uniqueAgents) {
-      const owned = eligibleItems.find((item) => item.ownerAgentId === agentId);
-      if (owned) assignments.set(agentId, { item: owned });
+    for (const agentId of assignableAgents) {
+      const owned = eligibleItems.find(
+        (item) =>
+          item.ownerAgentId === agentId &&
+          !assignedItemIds.has(item.id) &&
+          !this.workLaneConflictReason(item, reservedContracts),
+      );
+      if (owned) {
+        assignments.set(agentId, { item: owned });
+        assignedItemIds.add(owned.id);
+        reservedContracts.push(this.workLaneScopeContract(owned, agentId));
+      }
     }
 
     const unownedItems = eligibleItems.filter((item) => !item.ownerAgentId);
-    const availableAgents = uniqueAgents.filter((agentId) => !assignments.has(agentId));
+    const availableAgents = assignableAgents.filter((agentId) => !assignments.has(agentId));
     let changedOwner = false;
     for (const agentId of availableAgents) {
-      const item = unownedItems.shift();
+      const itemIndex = unownedItems.findIndex(
+        (candidate) =>
+          !assignedItemIds.has(candidate.id) &&
+          !this.workLaneConflictReason(candidate, reservedContracts),
+      );
+      const item = itemIndex >= 0 ? unownedItems.splice(itemIndex, 1)[0] : undefined;
       if (!item) break;
       const updated =
         updateTaskChecklistItem(this.deps.db, item.id, {
@@ -1429,6 +1601,8 @@ export class Broker extends EventEmitter {
         }) ?? item;
       assignments.set(agentId, { item: updated });
       byId.set(updated.id, updated);
+      assignedItemIds.add(updated.id);
+      reservedContracts.push(this.workLaneScopeContract(updated, agentId));
       changedOwner = true;
     }
 
@@ -1465,7 +1639,8 @@ export class Broker extends EventEmitter {
     }
     const allMessages = listMessages(this.deps.db, roomId);
     const triggerIndex = allMessages.findIndex((m) => m.id === trigger.id);
-    const history = triggerIndex >= 0 ? allMessages.slice(0, triggerIndex) : allMessages.slice(0, -1);
+    const history =
+      triggerIndex >= 0 ? allMessages.slice(0, triggerIndex) : allMessages.slice(0, -1);
     const maxHistory = this.deps.maxHistory ?? DEFAULT_PROMPT_HISTORY;
     const promptHistory = history.slice(-maxHistory);
     this.markQueuedMessagesDelivered(roomId, [...promptHistory, trigger]);
@@ -1482,7 +1657,9 @@ export class Broker extends EventEmitter {
           ...(this.deps.artifactExcerptChars !== undefined
             ? { artifactExcerptChars: this.deps.artifactExcerptChars }
             : {}),
-          ...(this.deps.maxRecapChars !== undefined ? { maxRecapChars: this.deps.maxRecapChars } : {}),
+          ...(this.deps.maxRecapChars !== undefined
+            ? { maxRecapChars: this.deps.maxRecapChars }
+            : {}),
           ...(this.deps.maxTranscriptChars !== undefined
             ? { maxTranscriptChars: this.deps.maxTranscriptChars }
             : {}),
@@ -1529,7 +1706,10 @@ export class Broker extends EventEmitter {
         ? this.buildRoomYoloPermissionGrant(agentId, activeTask)
         : undefined;
     const taskPermission: PermissionGrant | undefined =
-      !explicitPermission && !roomYoloPermission && activeTask && activeTask.capabilityProfile !== 'plan'
+      !explicitPermission &&
+      !roomYoloPermission &&
+      activeTask &&
+      activeTask.capabilityProfile !== 'plan'
         ? buildPermissionGrant({
             agentId,
             source: 'task',
@@ -1710,7 +1890,9 @@ export class Broker extends EventEmitter {
       agentId,
       kind: effectivePermission ? 'permission' : 'run',
       status: 'info',
-      label: effectivePermission ? `${effectivePermission.mode} permission active` : 'read-only turn',
+      label: effectivePermission
+        ? `${effectivePermission.mode} permission active`
+        : 'read-only turn',
       detail: effectivePermission
         ? `${effectivePermission.source} permission for ${effectivePermission.target}; capabilities: ${effectivePermission.capabilities?.join(', ') || 'none'}`
         : 'no write/full-auto permission grant for this turn',
@@ -1791,7 +1973,8 @@ export class Broker extends EventEmitter {
       stopHeartbeat();
       const errMsg = err instanceof Error ? err.message : String(err);
       const raw = rawOutputFromError(err);
-      const canceled = cancelSignal?.aborted || (err instanceof Error && err.name === 'SubprocessCanceledError');
+      const canceled =
+        cancelSignal?.aborted || (err instanceof Error && err.name === 'SubprocessCanceledError');
       const failedRun = updateAgentRun(this.deps.db, run.id, {
         status: 'failed',
         completedAt: Date.now(),
@@ -1802,7 +1985,14 @@ export class Broker extends EventEmitter {
         lifecycleReason: errMsg,
       });
       if (failedRun) this.emit('agentRunUpdated', failedRun);
-      this.recordDiagnosticActions(roomId, activeTask?.id ?? null, run.id, agentId, raw.stdout, raw.stderr);
+      this.recordDiagnosticActions(
+        roomId,
+        activeTask?.id ?? null,
+        run.id,
+        agentId,
+        raw.stdout,
+        raw.stderr,
+      );
       this.recordRunAction({
         roomId,
         taskId: activeTask?.id ?? null,
@@ -1950,7 +2140,8 @@ export class Broker extends EventEmitter {
     const defaultPlan =
       sameTurnPlan ??
       (missionTask
-        ? (listTaskPlans(this.deps.db, missionTask.id).find((plan) => plan.status === 'active') ?? null)
+        ? (listTaskPlans(this.deps.db, missionTask.id).find((plan) => plan.status === 'active') ??
+          null)
         : null);
     const extractedMissionPhases = extractMissionPhaseUpdates(extractedMissionPlans.visibleText);
     this.applyMissionPhaseUpdates({
@@ -2039,7 +2230,10 @@ export class Broker extends EventEmitter {
     if (extractedPermission) {
       const permissionRequest = extractedPermission.request;
       const visiblePermissionText = extractCollaborationNotes(extractedPermission.visibleText);
-      const cleanedVisibleText = cleanVisibleAgentMessage(agentId, visiblePermissionText.visibleText);
+      const cleanedVisibleText = cleanVisibleAgentMessage(
+        agentId,
+        visiblePermissionText.visibleText,
+      );
       const message = cleanedVisibleText
         ? this.appendDirect(roomId, agentId, 'agent', cleanedVisibleText)
         : null;
@@ -2186,7 +2380,9 @@ export class Broker extends EventEmitter {
       replyText: rawText,
       cliSessionId: reply.sessionId,
       lifecycleState: 'succeeded',
-      lifecycleReason: message ? 'message emitted' : 'collaboration note stored without visible chat text',
+      lifecycleReason: message
+        ? 'message emitted'
+        : 'collaboration note stored without visible chat text',
     });
     if (completedRun) this.emit('agentRunUpdated', completedRun);
     this.recordRunAction({
@@ -2381,6 +2577,10 @@ export class Broker extends EventEmitter {
             planId: input.workLane.item.planId,
             ownerAgentId: input.workLane.item.ownerAgentId,
             dependencyIds: input.workLane.item.dependencyIds,
+            expectedTouches: input.workLane.item.expectedTouches,
+            parallelism: input.workLane.item.parallelism,
+            conflictGroup: input.workLane.item.conflictGroup,
+            workRole: input.workLane.item.workRole,
           }
         : null,
       permission: input.permission
@@ -2439,6 +2639,10 @@ export class Broker extends EventEmitter {
               id: input.workLane.item.id,
               title: input.workLane.item.title,
               status: input.workLane.item.status,
+              expectedTouches: input.workLane.item.expectedTouches,
+              parallelism: input.workLane.item.parallelism,
+              conflictGroup: input.workLane.item.conflictGroup,
+              workRole: input.workLane.item.workRole,
             }
           : null,
         permission: input.permission
@@ -2457,7 +2661,8 @@ export class Broker extends EventEmitter {
               repliesUsed: input.discussion.repliesUsed,
               maxRepliesPerAgent: input.discussion.maxRepliesPerAgent,
               totalRepliesUsed: input.discussion.totalRepliesUsed ?? 0,
-              maxTotalReplies: input.discussion.maxTotalReplies ?? input.discussion.maxRepliesPerAgent,
+              maxTotalReplies:
+                input.discussion.maxTotalReplies ?? input.discussion.maxRepliesPerAgent,
             }
           : null,
         expected: [
@@ -2768,9 +2973,10 @@ export class Broker extends EventEmitter {
     } else {
       patch.status = 'blocked';
       patch.blockedReason = note || `${item.title}: blocked`;
-      patch.councilRequired = /\b(human|council|decision|intervene|intervention|approval|permission)\b/i.test(
-        input.visibleText,
-      );
+      patch.councilRequired =
+        /\b(human|council|decision|intervene|intervention|approval|permission)\b/i.test(
+          input.visibleText,
+        );
     }
     const updated = updateTaskChecklistItem(this.deps.db, item.id, patch);
     if (!updated) return 0;
@@ -2901,7 +3107,10 @@ export class Broker extends EventEmitter {
     });
   }
 
-  private missionReceiptDetail(receipt: ParsedMissionReceipt, fallback = 'Mission receipt recorded.'): string {
+  private missionReceiptDetail(
+    receipt: ParsedMissionReceipt,
+    fallback = 'Mission receipt recorded.',
+  ): string {
     const refs = [
       receipt.planRef ? `plan ${receipt.planRef}` : '',
       receipt.phaseRef ? `phase ${receipt.phaseRef}` : '',
@@ -3139,10 +3348,7 @@ export class Broker extends EventEmitter {
     }
   }
 
-  private resolveChecklistItem(
-    items: TaskChecklistItem[],
-    ref: string,
-  ): TaskChecklistItem | null {
+  private resolveChecklistItem(items: TaskChecklistItem[], ref: string): TaskChecklistItem | null {
     const trimmed = ref.trim();
     if (!trimmed) return null;
     const lower = trimmed.toLowerCase();
@@ -3209,7 +3415,9 @@ export class Broker extends EventEmitter {
     ];
   }
 
-  private noteKindForMissionUpdate(update: ParsedMissionTaskUpdate): 'status' | 'completion' | 'blocker' | 'council' {
+  private noteKindForMissionUpdate(
+    update: ParsedMissionTaskUpdate,
+  ): 'status' | 'completion' | 'blocker' | 'council' {
     if (update.councilRequired === true) return 'council';
     if (this.inferChecklistCompletion(update)) return 'completion';
     return update.noteKind;
@@ -3221,7 +3429,8 @@ export class Broker extends EventEmitter {
         (phase) =>
           phase.status === 'planned' &&
           (phase.sortOrder > completedPhase.sortOrder ||
-            (phase.sortOrder === completedPhase.sortOrder && phase.createdAt > completedPhase.createdAt)),
+            (phase.sortOrder === completedPhase.sortOrder &&
+              phase.createdAt > completedPhase.createdAt)),
       ) ??
       phases.find((phase) => phase.status === 'planned') ??
       null
@@ -3268,7 +3477,9 @@ export class Broker extends EventEmitter {
     ) {
       return false;
     }
-    return /\b(done|complete|completed|finished|resolved|accepted|settled|merged|landed)\b/.test(text);
+    return /\b(done|complete|completed|finished|resolved|accepted|settled|merged|landed)\b/.test(
+      text,
+    );
   }
 
   private applyMissionCreateUpdates(input: {
@@ -3383,17 +3594,16 @@ export class Broker extends EventEmitter {
         ...(update.status ? { status: update.status } : {}),
       };
 
-      const plan =
-        shouldCreate
-          ? createTaskPlan(this.deps.db, {
-              taskId: input.task.id,
-              title: update.title.slice(0, 180),
-              body: update.body.slice(0, 20_000),
-              status: update.status ?? 'active',
-            })
-          : existing
-            ? updateTaskPlan(this.deps.db, existing.id, patch)
-            : null;
+      const plan = shouldCreate
+        ? createTaskPlan(this.deps.db, {
+            taskId: input.task.id,
+            title: update.title.slice(0, 180),
+            body: update.body.slice(0, 20_000),
+            status: update.status ?? 'active',
+          })
+        : existing
+          ? updateTaskPlan(this.deps.db, existing.id, patch)
+          : null;
 
       if (!plan) {
         this.recordRunAction({
@@ -3489,20 +3699,19 @@ export class Broker extends EventEmitter {
         ...(update.sortOrder !== null ? { sortOrder: update.sortOrder } : {}),
       };
 
-      const phase =
-        shouldCreate
-          ? createTaskPhase(this.deps.db, {
-              taskId: input.task.id,
-              planId,
-              title: update.title.slice(0, 160),
-              description: update.description.slice(0, 2000),
-              status: update.status ?? (phases.length === 0 ? 'active' : 'planned'),
-              gate: update.gate.slice(0, 2000),
-              sortOrder: update.sortOrder ?? phases.length + 1,
-            })
-          : existing
-            ? updateTaskPhase(this.deps.db, existing.id, patch)
-            : null;
+      const phase = shouldCreate
+        ? createTaskPhase(this.deps.db, {
+            taskId: input.task.id,
+            planId,
+            title: update.title.slice(0, 160),
+            description: update.description.slice(0, 2000),
+            status: update.status ?? (phases.length === 0 ? 'active' : 'planned'),
+            gate: update.gate.slice(0, 2000),
+            sortOrder: update.sortOrder ?? phases.length + 1,
+          })
+        : existing
+          ? updateTaskPhase(this.deps.db, existing.id, patch)
+          : null;
 
       if (!phase) {
         this.recordRunAction({
@@ -3624,13 +3833,18 @@ export class Broker extends EventEmitter {
         update.dependencyRefs,
         existing?.id ?? '',
       );
-      const effectiveStatus = update.status ?? (this.inferChecklistCompletion(update) ? 'done' : null);
+      const effectiveStatus =
+        update.status ?? (this.inferChecklistCompletion(update) ? 'done' : null);
       const basePatch: UpdateTaskChecklistItemInput = {
         ...(hasPlanRef || phase?.planId || input.forcePlanOnUpdates ? { planId } : {}),
         ...(update.title ? { title: update.title.slice(0, 240) } : {}),
         ...(update.detail ? { detail: update.detail.slice(0, 2000) } : {}),
         ...(effectiveStatus ? { status: effectiveStatus } : {}),
         ...(update.dependencyRefs.length > 0 ? { dependencyIds } : {}),
+        ...(update.expectedTouches.length > 0 ? { expectedTouches: update.expectedTouches } : {}),
+        ...(update.parallelism ? { parallelism: update.parallelism } : {}),
+        ...(update.conflictGroup ? { conflictGroup: update.conflictGroup.slice(0, 160) } : {}),
+        ...(update.workRole ? { workRole: update.workRole.slice(0, 80) } : {}),
         ...(update.ownerAgentId ? { ownerAgentId: update.ownerAgentId.slice(0, 80) } : {}),
         ...(update.statusNote ? { statusNote: update.statusNote.slice(0, 2000) } : {}),
         ...(update.blockedReason ? { blockedReason: update.blockedReason.slice(0, 2000) } : {}),
@@ -3649,6 +3863,10 @@ export class Broker extends EventEmitter {
               detail: update.detail.slice(0, 2000),
               status: effectiveStatus ?? 'open',
               dependencyIds,
+              expectedTouches: update.expectedTouches,
+              ...(update.parallelism ? { parallelism: update.parallelism } : {}),
+              conflictGroup: update.conflictGroup.slice(0, 160),
+              workRole: update.workRole.slice(0, 80),
               ownerAgentId: update.ownerAgentId.slice(0, 80),
               statusNote: update.statusNote.slice(0, 2000),
               blockedReason: update.blockedReason.slice(0, 2000),
@@ -3712,11 +3930,7 @@ export class Broker extends EventEmitter {
     if (updatedTask) this.emit('taskUpdated', updatedTask);
   }
 
-  private yoloStatus(
-    state: YoloDiscussionState,
-    active: boolean,
-    reason?: string,
-  ): YoloStatus {
+  private yoloStatus(state: YoloDiscussionState, active: boolean, reason?: string): YoloStatus {
     const remainingReplies = Math.max(0, state.maxTotalReplies - state.totalRepliesUsed);
     return {
       roomId: state.roomId,
@@ -3730,7 +3944,7 @@ export class Broker extends EventEmitter {
       cancelled: state.cancelled,
       ...(state.cancelledBy !== undefined ? { cancelledBy: state.cancelledBy } : {}),
       ...(!active ? { stoppedAt: state.cancelledAt ?? Date.now() } : {}),
-      ...(reason ?? state.cancelReason ? { reason: reason ?? state.cancelReason } : {}),
+      ...((reason ?? state.cancelReason) ? { reason: reason ?? state.cancelReason } : {}),
     };
   }
 
@@ -3777,7 +3991,8 @@ export class Broker extends EventEmitter {
     // bounded discussion thread managed below.
     if (authorKind === 'agent') return message;
 
-    const responders = discussionOptions?.responders ?? this.pickResponders(room.agents, text, authorId);
+    const responders =
+      discussionOptions?.responders ?? this.pickResponders(room.agents, text, authorId);
     await this.runRoomAwareDiscussionThread(roomId, room, responders, message, discussionOptions);
     return message;
   }
@@ -3847,7 +4062,8 @@ export class Broker extends EventEmitter {
   private withDeliveryStatus(roomId: string, message: Message): Message {
     if (
       message.authorKind === 'human' &&
-      (message.deliveryStatus === 'queued' || this.queuedHumanMessageIds.get(roomId)?.has(message.id))
+      (message.deliveryStatus === 'queued' ||
+        this.queuedHumanMessageIds.get(roomId)?.has(message.id))
     ) {
       return { ...message, deliveryStatus: 'queued' };
     }
@@ -3864,7 +4080,11 @@ export class Broker extends EventEmitter {
     this.drainingQueuedRooms.add(roomId);
     try {
       const maxQueuedDrains = listQueuedHumanMessages(this.deps.db, roomId).length;
-      for (let drained = 0; drained < maxQueuedDrains && !this.roomHasActiveWork(roomId); drained += 1) {
+      for (
+        let drained = 0;
+        drained < maxQueuedDrains && !this.roomHasActiveWork(roomId);
+        drained += 1
+      ) {
         const message = this.latestQueuedHumanMessage(roomId);
         if (!message) return;
         const room = getRoom(this.deps.db, roomId);
@@ -3916,8 +4136,7 @@ export class Broker extends EventEmitter {
   }
 
   private maxAgentRepliesPerThread(): number {
-    const configured =
-      this.deps.maxAgentRepliesPerThread ?? DEFAULT_MAX_AGENT_REPLIES_PER_THREAD;
+    const configured = this.deps.maxAgentRepliesPerThread ?? DEFAULT_MAX_AGENT_REPLIES_PER_THREAD;
     return Math.max(1, Math.floor(configured));
   }
 
@@ -3936,8 +4155,7 @@ export class Broker extends EventEmitter {
     const isCancelled = (): boolean => options.yoloState?.cancelled === true;
     const room = getRoom(this.deps.db, roomId);
     const roomAgents = room?.agents ?? responders;
-    const handoffPool =
-      options.mode === 'yolo' && options.responders ? responders : roomAgents;
+    const handoffPool = options.mode === 'yolo' && options.responders ? responders : roomAgents;
     const uniqueResponders = responders.filter(
       (agentId, index) => responders.indexOf(agentId) === index,
     );
@@ -3968,14 +4186,16 @@ export class Broker extends EventEmitter {
         : 1;
     const knownAgents = new Set<AgentId>([...handoffPool, ...uniqueResponders]);
     const allowedAgents = new Set<AgentId>(uniqueResponders);
-    const replyCounts = new Map<AgentId, number>(
-      Array.from(knownAgents).map((id) => [id, 0]),
-    );
+    const replyCounts = new Map<AgentId, number>(Array.from(knownAgents).map((id) => [id, 0]));
     let candidates = [...uniqueResponders];
     let totalReplies = options.yoloState?.totalRepliesUsed ?? 0;
 
     try {
-      for (let round = 1; candidates.length > 0 && totalReplies < currentMaxTotalReplies(); round++) {
+      for (
+        let round = 1;
+        candidates.length > 0 && totalReplies < currentMaxTotalReplies();
+        round++
+      ) {
         if (isCancelled()) return;
         const laneAssignments =
           options.mode === 'yolo'
@@ -4001,15 +4221,24 @@ export class Broker extends EventEmitter {
         const results = await Promise.all(
           eligible.map(async (agentId) => ({
             agentId,
-            result: await this.runAgentReply(roomId, agentId, trigger, {
-              round: Math.min(round, currentMaxPromptRounds()),
-              maxRounds: currentMaxPromptRounds(),
-              repliesUsed: replyCounts.get(agentId) ?? 0,
-              maxRepliesPerAgent: currentMaxRepliesPerAgent(),
-              mode: options.mode ?? 'normal',
-              totalRepliesUsed: totalReplies,
-              maxTotalReplies: currentMaxTotalReplies(),
-            }, options.permission, options.yoloState?.abortController.signal, 0, laneAssignments.get(agentId)),
+            result: await this.runAgentReply(
+              roomId,
+              agentId,
+              trigger,
+              {
+                round: Math.min(round, currentMaxPromptRounds()),
+                maxRounds: currentMaxPromptRounds(),
+                repliesUsed: replyCounts.get(agentId) ?? 0,
+                maxRepliesPerAgent: currentMaxRepliesPerAgent(),
+                mode: options.mode ?? 'normal',
+                totalRepliesUsed: totalReplies,
+                maxTotalReplies: currentMaxTotalReplies(),
+              },
+              options.permission,
+              options.yoloState?.abortController.signal,
+              0,
+              laneAssignments.get(agentId),
+            ),
           })),
         );
         if (isCancelled()) return;

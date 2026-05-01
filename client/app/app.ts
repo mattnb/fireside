@@ -808,6 +808,23 @@ export class App implements OnDestroy {
     return agentId === 'claude' || agentId === 'codex';
   }
 
+  agentRailStatus(agentId: AgentId): string {
+    if (this.compactingAgent() === agentId) return 'compacting';
+    if (this.isAgentRunning(agentId)) return 'working';
+    if (this.isRoomYoloAgent(agentId)) return 'yolo';
+    return 'idle';
+  }
+
+  agentRailKind(agentId: AgentId): 'running' | 'yolo' | 'idle' {
+    if (this.isAgentRunning(agentId)) return 'running';
+    if (this.isRoomYoloAgent(agentId)) return 'yolo';
+    return 'idle';
+  }
+
+  agentContextPercentRounded(usage: AgentContextUsage): number {
+    return Math.round(this.agentContextPercent(usage));
+  }
+
   openCompactAgent(agentId: AgentId, event?: Event): void {
     event?.preventDefault();
     event?.stopPropagation();
@@ -1695,15 +1712,40 @@ export class App implements OnDestroy {
     return `Checklist item ${item.id}: ${item.title}${detail}`;
   }
 
+  taskScopeContractLabel(item: TaskChecklistItem): string {
+    const expectedTouches = item.expectedTouches ?? [];
+    const touches =
+      expectedTouches.length === 0
+        ? 'no touch map'
+        : `${expectedTouches.length} expected touch${expectedTouches.length === 1 ? '' : 'es'}`;
+    const group = item.conflictGroup ? `group ${item.conflictGroup}` : 'no group';
+    return `${item.parallelism ?? 'parallel-safe'} / ${touches} / ${group}`;
+  }
+
+  taskExpectedTouchesLabel(item: TaskChecklistItem): string {
+    const expectedTouches = item.expectedTouches ?? [];
+    return expectedTouches.length ? expectedTouches.join(', ') : 'none recorded';
+  }
+
   taskInspectorMissionBlock(card: MissionGraphCard): string {
     return [
       '/mission-task',
       'action: update',
       `id: ${card.item.id}`,
       `status: ${card.item.status}`,
+      (card.item.expectedTouches ?? []).length
+        ? `expected_touches: ${card.item.expectedTouches.join(', ')}`
+        : '',
+      card.item.parallelism && card.item.parallelism !== 'parallel-safe'
+        ? `parallelism: ${card.item.parallelism}`
+        : '',
+      card.item.conflictGroup ? `conflict_group: ${card.item.conflictGroup}` : '',
+      card.item.workRole ? `work_role: ${card.item.workRole}` : '',
       'note: ',
       '/end-mission-task',
-    ].join('\n');
+    ]
+      .filter(Boolean)
+      .join('\n');
   }
 
   copyChecklistItemId(item: TaskChecklistItem): void {
