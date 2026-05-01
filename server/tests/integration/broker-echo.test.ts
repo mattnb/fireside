@@ -92,6 +92,62 @@ describe('Broker', () => {
     expect(runs.map((r) => r.agentId)).toEqual(['claude']);
   });
 
+  it('records read receipts when an agent turn begins, even if the reply is empty', async () => {
+    const receiptUpdates: Array<{
+      roomId: string;
+      messageId: string;
+      agentId: AgentId;
+      seenBy: AgentId[];
+      runId: string;
+    }> = [];
+    const emptyBroker = new Broker({
+      db,
+      runAgent: async () => ({
+        text: '',
+        sessionId: null,
+        raw: { stdout: '', stderr: '' },
+      }),
+      getSpec: (id) => {
+        const map: Record<string, AgentSpec> = {
+          claude: fakeSpec('claude', ''),
+        };
+        return map[id];
+      },
+      maxAgentRepliesPerThread: 1,
+    });
+    emptyBroker.on('messageReadReceiptUpdated', (update) => receiptUpdates.push(update));
+    const room = createRoom(db, { name: 'g', agents: ['claude'] });
+
+    await emptyBroker.postHumanMessage(room.id, 'human', '@claude take a look');
+
+    const messages = listMessages(db, room.id);
+    expect(messages).toHaveLength(1);
+    expect(messages[0]).toMatchObject({ authorId: 'human', seenBy: ['claude'] });
+    expect(receiptUpdates).toHaveLength(1);
+    expect(receiptUpdates[0]).toMatchObject({
+      roomId: room.id,
+      messageId: messages[0]!.id,
+      agentId: 'claude',
+      seenBy: ['claude'],
+    });
+    expect(receiptUpdates[0]!.runId).toBeTruthy();
+  });
+
+  it('records read receipts for prompt history messages that survived the budget', async () => {
+    const room = createRoom(db, { name: 'g', agents: ['claude'] });
+
+    await broker.postHumanMessage(room.id, 'human', '@claude first');
+    await broker.postHumanMessage(room.id, 'human', '@claude second');
+
+    const messages = listMessages(db, room.id);
+    const firstHuman = messages.find((message) => message.text === '@claude first');
+    const secondHuman = messages.find((message) => message.text === '@claude second');
+    const claudeReply = messages.find((message) => message.authorId === 'claude');
+    expect(firstHuman?.seenBy).toEqual(['claude']);
+    expect(secondHuman?.seenBy).toEqual(['claude']);
+    expect(claudeReply?.seenBy).toEqual([]);
+  });
+
   it('without mentions, all agents in the room reply', async () => {
     const room = createRoom(db, { name: 'g', agents: ['claude', 'codex'] });
     await broker.postHumanMessage(room.id, 'human', 'hi everyone');

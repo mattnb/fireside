@@ -518,6 +518,15 @@ export class App implements OnDestroy {
           ),
         );
       }
+      if (event.type === 'messageReadReceiptUpdated' && event.update.roomId === roomId) {
+        this.messages.update((messages) =>
+          messages.map((message) =>
+            message.id === event.update.messageId
+              ? { ...message, seenBy: event.update.seenBy }
+              : message,
+          ),
+        );
+      }
       if (event.type === 'permissionRequestCreated' && event.request.roomId === roomId) {
         this.permissionRequests.update((requests) => this.upsert(requests, event.request));
         this.scheduleChatScrollToBottom();
@@ -814,12 +823,13 @@ export class App implements OnDestroy {
   }
 
   messageSeenAgents(message: Message): AgentId[] {
-    const seen = new Set<AgentId>();
+    const seen = new Set<AgentId>(message.seenBy ?? []);
     for (const run of this.runs()) {
       if (run.triggerMessageId !== message.id) continue;
       if (run.agentId === message.authorId) continue;
       seen.add(run.agentId);
     }
+    seen.delete(message.authorId);
     const roomOrder = this.roomAgents();
     return [
       ...roomOrder.filter((agentId) => seen.has(agentId)),

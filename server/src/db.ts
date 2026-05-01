@@ -34,6 +34,21 @@ CREATE TABLE IF NOT EXISTS messages (
 
 CREATE INDEX IF NOT EXISTS idx_messages_room_created ON messages(room_id, created_at);
 
+CREATE TABLE IF NOT EXISTS message_read_receipts (
+  room_id TEXT NOT NULL REFERENCES rooms(id) ON DELETE CASCADE,
+  message_id TEXT NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+  agent_id TEXT NOT NULL,
+  run_id TEXT REFERENCES agent_runs(id) ON DELETE SET NULL,
+  seen_at INTEGER NOT NULL,
+  PRIMARY KEY (message_id, agent_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_message_read_receipts_room_message
+  ON message_read_receipts(room_id, message_id);
+
+CREATE INDEX IF NOT EXISTS idx_message_read_receipts_room_seen
+  ON message_read_receipts(room_id, seen_at);
+
 CREATE TABLE IF NOT EXISTS sessions (
   room_id TEXT NOT NULL,
   agent_id TEXT NOT NULL,
@@ -340,6 +355,25 @@ function ensureMessageColumns(db: DbType): void {
       `ALTER TABLE messages ADD COLUMN delivery_status TEXT NOT NULL DEFAULT 'delivered'`,
     ).run();
   }
+}
+
+function ensureMessageReadReceiptTables(db: DbType): void {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS message_read_receipts (
+      room_id TEXT NOT NULL REFERENCES rooms(id) ON DELETE CASCADE,
+      message_id TEXT NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+      agent_id TEXT NOT NULL,
+      run_id TEXT REFERENCES agent_runs(id) ON DELETE SET NULL,
+      seen_at INTEGER NOT NULL,
+      PRIMARY KEY (message_id, agent_id)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_message_read_receipts_room_message
+      ON message_read_receipts(room_id, message_id);
+
+    CREATE INDEX IF NOT EXISTS idx_message_read_receipts_room_seen
+      ON message_read_receipts(room_id, seen_at);
+  `);
 }
 
 function ensureAgentRunColumns(db: DbType): void {
@@ -898,6 +932,7 @@ export function openDatabase(filename: string): DbType {
   ensureProjects(db);
   ensureRoomColumns(db);
   ensureMessageColumns(db);
+  ensureMessageReadReceiptTables(db);
   ensurePermissionRequestColumns(db);
   ensureTaskColumns(db);
   ensureTaskIndexes(db);

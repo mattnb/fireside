@@ -12,6 +12,10 @@ import {
   type MessageDeliveryStatus,
 } from './repos/messages.js';
 import {
+  listSeenAgentsByMessage,
+  recordMessageReadReceipts as recordMessageReadReceiptsRepo,
+} from './repos/message-read-receipts.js';
+import {
   getRoom,
   deleteRoom as deleteRoomRepo,
   listRooms,
@@ -273,6 +277,15 @@ export interface MessageDeliveryUpdate {
   messageId: string;
   deliveryStatus: MessageDeliveryStatus;
   deliveredAt?: number;
+}
+
+export interface MessageReadReceiptUpdate {
+  roomId: string;
+  messageId: string;
+  seenBy: AgentId[];
+  agentId: AgentId;
+  runId: string;
+  seenAt: number;
 }
 
 export interface AgentRunDetail {
@@ -1887,6 +1900,16 @@ export class Broker extends EventEmitter {
     attachAgentJobRun(this.deps.db, agentJob.id, run.id, {
       leaseOwner: this.agentJobLeaseOwner(),
       leaseMs: AGENT_JOB_LEASE_MS,
+    });
+    const promptMessagesSeen = [
+      ...promptHistory.slice(-promptResult.stats.historyMessagesIncluded),
+      trigger,
+    ];
+    this.recordMessageReadReceipts({
+      roomId,
+      agentId,
+      runId: run.id,
+      messages: promptMessagesSeen,
     });
     this.emit('agentRunUpdated', run);
     this.recordRunAction({
@@ -4271,6 +4294,36 @@ export class Broker extends EventEmitter {
         deliveryStatus: 'delivered',
         deliveredAt,
       } satisfies MessageDeliveryUpdate);
+    }
+  }
+
+  private recordMessageReadReceipts(input: {
+    roomId: string;
+    agentId: AgentId;
+    runId: string;
+    messages: Message[];
+  }): void {
+    const receipts = recordMessageReadReceiptsRepo(this.deps.db, {
+      roomId: input.roomId,
+      agentId: input.agentId,
+      runId: input.runId,
+      messageIds: input.messages.map((message) => message.id),
+    });
+    if (receipts.length === 0) return;
+    const seenByMessage = listSeenAgentsByMessage(
+      this.deps.db,
+      input.roomId,
+      receipts.map((receipt) => receipt.messageId),
+    );
+    for (const receipt of receipts) {
+      this.emit('messageReadReceiptUpdated', {
+        roomId: input.roomId,
+        messageId: receipt.messageId,
+        seenBy: seenByMessage.get(receipt.messageId) ?? [input.agentId],
+        agentId: input.agentId,
+        runId: input.runId,
+        seenAt: receipt.seenAt,
+      } satisfies MessageReadReceiptUpdate);
     }
   }
 

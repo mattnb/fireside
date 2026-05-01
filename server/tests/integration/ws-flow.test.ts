@@ -93,6 +93,53 @@ describe('WebSocket fanout', () => {
     ws.close();
   });
 
+  it('broadcasts message read receipts to subscribed clients', async () => {
+    const room = createRoom(db, { name: 'g', agents: ['claude'] });
+
+    const ws = new WebSocket(`ws://127.0.0.1:${port}/ws`);
+    await new Promise<void>((resolve, reject) => {
+      ws.once('open', () => resolve());
+      ws.once('error', reject);
+    });
+
+    const received: Array<{
+      type: string;
+      update?: { messageId: string; agentId: string; seenBy: string[] };
+    }> = [];
+
+    await new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error('subscribe timed out')), 5000);
+      const onSubscribed = (data: import('ws').RawData) => {
+        const msg = JSON.parse(data.toString()) as { type: string; roomId?: string };
+        if (msg.type === 'subscribed' && msg.roomId === room.id) {
+          clearTimeout(timer);
+          ws.off('message', onSubscribed);
+          resolve();
+        }
+      };
+      ws.on('message', onSubscribed);
+      ws.send(JSON.stringify({ type: 'subscribe', roomId: room.id }));
+    });
+
+    ws.on('message', (data) => received.push(JSON.parse(data.toString())));
+
+    await broker.postHumanMessage(room.id, 'human', '@claude hi');
+
+    await new Promise<void>((resolve) => {
+      const timer = setInterval(() => {
+        if (received.some((r) => r.type === 'messageReadReceiptUpdated')) {
+          clearInterval(timer);
+          resolve();
+        }
+      }, 25);
+    });
+
+    const receipt = received.find((r) => r.type === 'messageReadReceiptUpdated');
+    expect(receipt?.update).toMatchObject({ agentId: 'claude', seenBy: ['claude'] });
+    expect(receipt?.update?.messageId).toBeTruthy();
+    ws.close();
+  });
+
   it('only broadcasts to clients subscribed to that room', async () => {
     const a = createRoom(db, { name: 'A', agents: [] });
     const b = createRoom(db, { name: 'B', agents: [] });

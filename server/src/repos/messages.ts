@@ -1,6 +1,8 @@
 // server/src/repos/messages.ts
 import type { Database } from 'better-sqlite3';
 import { nanoid } from 'nanoid';
+import type { AgentId } from '../agents/types.js';
+import { listSeenAgentsByMessage } from './message-read-receipts.js';
 
 export type AuthorKind = 'human' | 'agent' | 'system';
 export type MessageDeliveryStatus = 'queued' | 'delivered';
@@ -13,6 +15,7 @@ export interface Message {
   text: string;
   createdAt: number;
   deliveryStatus: MessageDeliveryStatus;
+  seenBy: AgentId[];
 }
 
 interface MessageRow {
@@ -25,7 +28,7 @@ interface MessageRow {
   delivery_status: MessageDeliveryStatus;
 }
 
-function rowToMessage(row: MessageRow): Message {
+function rowToMessage(row: MessageRow, seenBy: AgentId[] = []): Message {
   return {
     id: row.id,
     roomId: row.room_id,
@@ -34,7 +37,21 @@ function rowToMessage(row: MessageRow): Message {
     text: row.text,
     createdAt: row.created_at,
     deliveryStatus: row.delivery_status ?? 'delivered',
+    seenBy,
   };
+}
+
+function attachSeenBy(db: Database, roomId: string, messages: Message[]): Message[] {
+  if (messages.length === 0) return messages;
+  const seenByMessage = listSeenAgentsByMessage(
+    db,
+    roomId,
+    messages.map((message) => message.id),
+  );
+  return messages.map((message) => ({
+    ...message,
+    seenBy: seenByMessage.get(message.id) ?? [],
+  }));
 }
 
 export function addMessage(
@@ -64,7 +81,7 @@ export function addMessage(
       id, room_id, author_id, author_kind, text, created_at, delivery_status
     ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
   ).run(id, input.roomId, input.authorId, input.authorKind, input.text, createdAt, deliveryStatus);
-  return { id, ...input, deliveryStatus, createdAt };
+  return { id, ...input, deliveryStatus, createdAt, seenBy: [] };
 }
 
 export function listMessages(
@@ -80,19 +97,21 @@ export function listMessages(
          ) ORDER BY created_at ASC, id ASC`,
       )
       .all(roomId, opts.limit) as MessageRow[];
-    return rows.map(rowToMessage);
+    return attachSeenBy(db, roomId, rows.map((row) => rowToMessage(row)));
   }
   const rows = db
     .prepare(`SELECT * FROM messages WHERE room_id = ? ORDER BY created_at ASC, id ASC`)
     .all(roomId) as MessageRow[];
-  return rows.map(rowToMessage);
+  return attachSeenBy(db, roomId, rows.map((row) => rowToMessage(row)));
 }
 
 export function getMessage(db: Database, id: string): Message | null {
   const row = db.prepare(`SELECT * FROM messages WHERE id = ?`).get(id) as
     | MessageRow
     | undefined;
-  return row ? rowToMessage(row) : null;
+  if (!row) return null;
+  const seenBy = listSeenAgentsByMessage(db, row.room_id, [row.id]).get(row.id) ?? [];
+  return rowToMessage(row, seenBy);
 }
 
 export function updateMessageDeliveryStatus(
@@ -112,7 +131,7 @@ export function listQueuedHumanMessages(db: Database, roomId: string): Message[]
        ORDER BY created_at ASC, id ASC`,
     )
     .all(roomId) as MessageRow[];
-  return rows.map(rowToMessage);
+  return attachSeenBy(db, roomId, rows.map((row) => rowToMessage(row)));
 }
 
 export function listMessagesAfter(db: Database, roomId: string, afterMs: number): Message[] {
@@ -121,5 +140,5 @@ export function listMessagesAfter(db: Database, roomId: string, afterMs: number)
       `SELECT * FROM messages WHERE room_id = ? AND created_at > ? ORDER BY created_at ASC, id ASC`,
     )
     .all(roomId, afterMs) as MessageRow[];
-  return rows.map(rowToMessage);
+  return attachSeenBy(db, roomId, rows.map((row) => rowToMessage(row)));
 }

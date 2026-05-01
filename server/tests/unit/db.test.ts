@@ -15,6 +15,7 @@ describe('openDatabase', () => {
     const names = tables.map((t) => t.name);
     expect(names).toContain('rooms');
     expect(names).toContain('messages');
+    expect(names).toContain('message_read_receipts');
     expect(names).toContain('sessions');
     expect(names).toContain('collaboration_items');
     expect(names).toContain('agent_run_actions');

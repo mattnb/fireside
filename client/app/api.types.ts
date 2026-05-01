@@ -184,6 +184,7 @@ export interface Message {
   text: string;
   createdAt: number;
   deliveryStatus?: 'queued' | 'delivered';
+  seenBy?: AgentId[];
 }
 
 export interface PermissionRequest {
@@ -477,6 +478,17 @@ export type FiresideWsEvent =
         messageId: string;
         deliveryStatus: 'queued' | 'delivered';
         deliveredAt?: number;
+      };
+    }
+  | {
+      type: 'messageReadReceiptUpdated';
+      update: {
+        roomId: string;
+        messageId: string;
+        seenBy: AgentId[];
+        agentId: AgentId;
+        runId: string;
+        seenAt: number;
       };
     }
   | { type: 'permissionRequestCreated'; request: PermissionRequest }

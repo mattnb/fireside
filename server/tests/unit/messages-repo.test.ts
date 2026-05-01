@@ -9,6 +9,11 @@ import {
   listQueuedHumanMessages,
   updateMessageDeliveryStatus,
 } from '../../src/repos/messages.js';
+import { createAgentRun } from '../../src/repos/agent-runs.js';
+import {
+  listMessageReadReceiptsForRoom,
+  recordMessageReadReceipts,
+} from '../../src/repos/message-read-receipts.js';
 
 describe('messages repo', () => {
   let db: ReturnType<typeof openDatabase>;
@@ -67,5 +72,47 @@ describe('messages repo', () => {
       deliveryStatus: 'delivered',
     });
     expect(listQueuedHumanMessages(db, roomId)).toEqual([]);
+  });
+
+  it('attaches durable seen-by receipts to listed messages', () => {
+    const human = addMessage(db, { roomId, authorId: 'human', authorKind: 'human', text: 'hi' });
+    const ownAgentMessage = addMessage(db, {
+      roomId,
+      authorId: 'claude',
+      authorKind: 'agent',
+      text: 'working',
+    });
+    const run = createAgentRun(db, {
+      roomId,
+      triggerMessageId: human.id,
+      agentId: 'claude',
+      permissionMode: 'plan',
+      promptChars: 10,
+      estimatedPromptTokens: 3,
+      liveMessages: 1,
+      contextArtifacts: 0,
+    });
+
+    const receipts = recordMessageReadReceipts(db, {
+      roomId,
+      agentId: 'claude',
+      runId: run.id,
+      messageIds: [human.id, human.id, ownAgentMessage.id],
+      seenAt: 123,
+    });
+
+    expect(receipts).toHaveLength(1);
+    expect(listMessageReadReceiptsForRoom(db, roomId)).toEqual([
+      expect.objectContaining({
+        messageId: human.id,
+        agentId: 'claude',
+        runId: run.id,
+        seenAt: 123,
+      }),
+    ]);
+    expect(listMessages(db, roomId).map((message) => [message.text, message.seenBy])).toEqual([
+      ['hi', ['claude']],
+      ['working', []],
+    ]);
   });
 });
