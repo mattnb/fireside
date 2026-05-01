@@ -1396,6 +1396,54 @@
   grid-column: 1 / -1;
 }
 
+.mission-view-tabs {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(116px, 1fr)) auto;
+  gap: 7px;
+  align-items: stretch;
+}
+
+.mission-view-tab {
+  display: grid;
+  align-content: center;
+  gap: 3px;
+  min-width: 0;
+  border: 1px solid var(--border-soft);
+  border-radius: 6px;
+  background: rgba(13, 17, 23, 0.3);
+  color: var(--text-secondary);
+  cursor: pointer;
+  font: inherit;
+  padding: 7px 8px;
+  text-align: left;
+}
+
+.mission-view-tab:hover,
+.mission-view-tab.is-active {
+  border-color: rgba(229, 169, 26, 0.38);
+  background: rgba(229, 169, 26, 0.075);
+  color: var(--text-primary);
+}
+
+.mission-view-tab strong {
+  color: inherit;
+  font-size: 12px;
+}
+
+.mission-view-tab span {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-muted);
+  font-size: 10.5px;
+  line-height: 1.25;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mission-view-tabs__briefing {
+  align-self: stretch;
+}
+
 .ops-board {
   display: grid;
   gap: 12px;
@@ -1984,16 +2032,129 @@
   overflow-wrap: anywhere;
 }
 
+.mission-board {
+  display: grid;
+  gap: 12px;
+  overflow: hidden;
+}
+
+.mission-board__table {
+  display: grid;
+  grid-template-columns: minmax(170px, 0.55fr) repeat(5, minmax(230px, 1fr));
+  gap: 8px;
+  min-width: 0;
+  overflow-x: auto;
+  padding-bottom: 4px;
+}
+
+.mission-board__corner,
+.mission-board__column-head,
+.mission-board__phase,
+.mission-board__cell {
+  min-width: 0;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-sm);
+  background: rgba(13, 17, 23, 0.28);
+}
+
+.mission-board__corner,
+.mission-board__column-head {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: rgba(23, 29, 38, 0.96);
+}
+
+.mission-board__corner {
+  display: flex;
+  align-items: center;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 900;
+  letter-spacing: 0.6px;
+  padding: 9px;
+  text-transform: uppercase;
+}
+
+.mission-board__column-head {
+  display: grid;
+  gap: 3px;
+  padding: 9px;
+}
+
+.mission-board__column-head strong {
+  color: var(--text-primary);
+  font-size: 12.5px;
+}
+
+.mission-board__column-head span,
+.mission-board__phase span,
+.mission-board__phase small {
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.mission-board__phase {
+  display: grid;
+  align-content: start;
+  gap: 5px;
+  padding: 9px;
+}
+
+.mission-board__phase strong {
+  color: var(--text-primary);
+  font-size: 12.5px;
+  line-height: 1.25;
+}
+
+.mission-board__phase p {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 11px;
+  line-height: 1.38;
+  overflow-wrap: anywhere;
+}
+
+.mission-board__cell {
+  display: grid;
+  align-content: start;
+  gap: 8px;
+  min-height: 96px;
+  padding: 8px;
+}
+
+.mission-board-card {
+  padding: 8px;
+}
+
+.mission-board__empty {
+  margin: 0;
+  color: var(--text-faint);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  text-transform: uppercase;
+}
+
 .panel--phases {
-  grid-column: auto;
+  grid-column: 1 / -1;
 }
 
 .panel--checklist {
-  grid-column: 1;
+  grid-column: 1 / -1;
 }
 
-.panel--collaboration {
-  grid-column: 2;
+.panel--plan,
+.panel--collaboration,
+.panel--evidence {
+  grid-column: 1 / -1;
+}
+
+.mission-pane .mission-card--focus:not(.mission-overview-card) {
+  grid-column: 1 / -1;
 }
 
 .mission-card--focus {
@@ -3682,6 +3843,14 @@
     grid-template-columns: 1fr;
   }
 
+  .mission-view-tabs {
+    grid-template-columns: 1fr;
+  }
+
+  .mission-board__table {
+    grid-template-columns: minmax(150px, 0.55fr) repeat(5, minmax(210px, 1fr));
+  }
+
   .ops-metrics,
   .ops-grid,
   .mission-graph__stats,
@@ -3741,6 +3910,14 @@
 
   .ops-metrics {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .mission-view-tabs {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .mission-view-tabs__briefing {
+    grid-column: 1 / -1;
   }
 
   .mission-graph__stats {

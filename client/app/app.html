@@ -644,6 +644,46 @@
     </section>
     } @else {
     <section class="mission-pane" aria-label="Mission Control">
+      <nav class="mission-view-tabs panel panel--wide" aria-label="Mission Control views">
+        @for (view of missionViews; track view.id) {
+        <button
+          type="button"
+          class="mission-view-tab"
+          [class.is-active]="selectedMissionView() === view.id"
+          (click)="selectMissionView(view.id)"
+        >
+          <strong>{{ view.label }}</strong>
+          <span>{{ view.summary }}</span>
+        </button>
+        }
+        <button
+          type="button"
+          class="control-btn control-btn--briefing mission-view-tabs__briefing"
+          [disabled]="!selectedRoomId() || briefingLoading()"
+          (click)="createMissionBriefing()"
+        >
+          <svg viewBox="0 0 20 20" aria-hidden="true">
+            <path
+              d="M5 3.5h8.4L16 6.1v10.4H5V3.5Z"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.5"
+              stroke-linejoin="round"
+            />
+            <path
+              d="M7.5 3.5v4h5v-4M7.5 13h5"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.5"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            />
+          </svg>
+          <span>save briefing</span>
+        </button>
+      </nav>
+
+      @if (selectedMissionView() === 'overview') {
       <section class="panel panel--wide ops-board">
         <header class="ops-board__head">
           <div>
@@ -767,6 +807,250 @@
         </div>
       </section>
 
+      <section class="mission-card mission-card--focus mission-overview-card">
+        <div class="mission-card__head">
+          <div class="section-label">mission brief</div>
+        </div>
+        @if (activeTask(); as task) {
+        <h2>{{ task.title }}</h2>
+        <p>{{ task.goal || 'No goal written yet.' }}</p>
+        <dl class="facts">
+          <div>
+            <dt>status</dt>
+            <dd>{{ task.status }}</dd>
+          </div>
+          <div>
+            <dt>profile</dt>
+            <dd>{{ task.capabilityProfile }}</dd>
+          </div>
+          <div>
+            <dt>phase</dt>
+            <dd>{{ taskControl()?.currentPhase?.title || 'not set' }}</dd>
+          </div>
+          <div>
+            <dt>path</dt>
+            <dd>{{ task.repoPath || 'not set' }}</dd>
+          </div>
+        </dl>
+        @if (task.acceptanceCriteria) {
+        <p class="panel-note">{{ task.acceptanceCriteria }}</p>
+        } } @else {
+        <h2>no active mission</h2>
+        <p>Create the mission brief in Setup; agents will receive it in future turns.</p>
+        }
+      </section>
+
+      <section class="panel panel--controls mission-actions">
+        <header class="mission-actions__head">
+          <div>
+            <div class="section-label">mission actions</div>
+            <h3>{{ missionActionDefinition(selectedMissionAction()).label }}</h3>
+          </div>
+          <span class="mission-actions__chip">posts to chat</span>
+        </header>
+
+        <div class="mission-actions__target">
+          <div class="mission-actions__target-head">
+            <span>send to</span>
+            <strong>{{ missionActionTargetLabel() }}</strong>
+          </div>
+          <div class="mission-action-scope" role="group" aria-label="Mission action target scope">
+            <button
+              type="button"
+              [class.is-active]="missionActionScope() === 'team'"
+              (click)="setMissionActionScope('team')"
+            >
+              Team
+            </button>
+            <button
+              type="button"
+              [class.is-active]="missionActionScope() === 'selected'"
+              (click)="setMissionActionScope('selected')"
+            >
+              Selected
+            </button>
+            <button
+              type="button"
+              [class.is-active]="missionActionScope() === 'single'"
+              (click)="setMissionActionScope('single')"
+            >
+              One Agent
+            </button>
+          </div>
+          @if (missionActionScope() === 'single') {
+          <select
+            class="mission-action-select"
+            [value]="missionActionAgent() || roomAgents()[0] || ''"
+            (change)="setMissionActionAgent($event)"
+          >
+            @for (agent of roomAgents(); track agent) {
+            <option [value]="agent">{{ agent }}</option>
+            }
+          </select>
+          } @if (missionActionScope() === 'selected') {
+          <div class="mission-action-agent-grid">
+            @for (agent of roomAgents(); track agent) {
+            <label>
+              <input
+                type="checkbox"
+                [checked]="isMissionActionAgentSelected(agent)"
+                (change)="toggleMissionActionAgent(agent, $event)"
+              />
+              {{ agent }}
+            </label>
+            }
+          </div>
+          }
+        </div>
+
+        <div class="mission-action-grid">
+          @for (action of missionActions; track action.id) {
+          <button
+            type="button"
+            class="mission-action-option"
+            [class.is-selected]="selectedMissionAction() === action.id"
+            (click)="selectMissionAction(action.id)"
+          >
+            <strong>{{ action.label }}</strong>
+            <span>{{ action.summary }}</span>
+          </button>
+          }
+        </div>
+
+        @if (selectedMissionAction() === 'execute') {
+        <label class="mission-action-field">
+          <span>work item</span>
+          <select
+            [value]="missionActionChecklistItemId()"
+            (change)="setMissionActionChecklistItem($event)"
+          >
+            <option value="">next unblocked item</option>
+            @for (item of missionActionWorkItems(); track item.id) {
+            <option [value]="item.id">{{ item.title }} / {{ item.status }}</option>
+            }
+          </select>
+        </label>
+        }
+
+        <div class="mission-action-preview">
+          <div class="mission-action-preview__head">
+            <span>chat prompt</span>
+            <button
+              type="button"
+              class="control-btn control-btn--primary"
+              [disabled]="!canPostMissionAction()"
+              (click)="dispatchMissionAction()"
+            >
+              post to chat
+            </button>
+          </div>
+          <pre>{{ missionActionPreview() }}</pre>
+        </div>
+      </section>
+      } @else if (selectedMissionView() === 'board') {
+      <section class="panel panel--wide mission-board">
+        <header class="mission-graph__head">
+          <div>
+            <div class="section-label">kanban board</div>
+            <h2>Status lanes by phase</h2>
+          </div>
+          @if (missionGraphSummary(); as graph) {
+          <div class="mission-graph__summary">
+            <span>{{ graph.ready }} ready</span>
+            <span>{{ graph.activeRuns }} running</span>
+            <span>{{ graph.blocked }} blocked</span>
+            <span>{{ graph.itemsDone }}/{{ graph.itemsTotal }} done</span>
+          </div>
+          }
+        </header>
+        @if (taskControl()) {
+        <div class="mission-board__table">
+          <div class="mission-board__corner">phase</div>
+          @for (column of missionBoardColumns; track column.id) {
+          <header class="mission-board__column-head">
+            <strong>{{ column.label }}</strong>
+            <span>{{ column.summary }}</span>
+          </header>
+          } @for (swimlane of missionBoardSwimlanes(); track swimlane.id) {
+          <aside class="mission-board__phase">
+            <span>{{ swimlane.status }}</span>
+            <strong>{{ swimlane.title }}</strong>
+            @if (swimlane.planLabel) {
+            <small>plan {{ swimlane.planLabel }}</small>
+            } @if (swimlane.gate) {
+            <p>{{ swimlane.gate }}</p>
+            }
+          </aside>
+          @for (column of missionBoardColumns; track column.id) {
+          <section class="mission-board__cell">
+            @for (card of swimlane.cardsByColumn[column.id]; track card.item.id) {
+            <article
+              [class]="'mission-graph-card mission-board-card ' + missionGraphCardClass(card)"
+              [class.is-selected]="missionActionChecklistItemId() === card.item.id"
+              (click)="focusMissionGraphItem(card.item)"
+            >
+              <header class="mission-graph-card__head">
+                <span class="mission-graph-card__status" aria-hidden="true"></span>
+                <strong>{{ card.item.title }}</strong>
+                <em>{{ card.item.status }}</em>
+              </header>
+              @if (card.item.detail) {
+              <p>{{ card.item.detail }}</p>
+              }
+              <div class="mission-graph-card__meta">
+                @if (card.item.ownerAgentId) {
+                <span class="mission-graph-owner" [title]="'Owner: ' + card.item.ownerAgentId">
+                  <span
+                    class="avatar avatar--sm"
+                    [class]="'avatar avatar--sm avatar--' + card.item.ownerAgentId"
+                  >
+                    @if (!isAgentOwner(card.item.ownerAgentId)) { {{ card.item.ownerAgentId.slice(0,
+                    1).toUpperCase() }} }
+                  </span>
+                </span>
+                } @else {
+                <span>unassigned</span>
+                }
+                <span>phase {{ swimlane.title }}</span>
+                @if (card.notesCount) {
+                <span>{{ card.notesCount }} notes</span>
+                } @if (card.evidenceCount) {
+                <span>{{ card.evidenceCount }} evidence</span>
+                }
+              </div>
+              @if (card.dependencies.length) {
+              <div class="mission-graph-links">
+                <span>after</span>
+                @for (dependency of card.dependencies; track dependency.id) {
+                <em [class.is-done]="dependency.done"
+                  >{{ dependency.title }} / {{ dependency.status }}</em
+                >
+                }
+              </div>
+              } @if (card.activeRun || card.latestRun) {
+              <button
+                type="button"
+                class="mission-graph-run"
+                [class.is-active]="card.activeRun"
+                (click)="openMissionGraphCardRun(card, $event)"
+              >
+                {{ missionGraphRunLabel(card) }}
+              </button>
+              } @if (missionGraphNotePreview(card)) {
+              <small class="mission-graph-card__note">{{ missionGraphNotePreview(card) }}</small>
+              }
+            </article>
+            } @empty {
+            <p class="mission-board__empty">none</p>
+            }
+          </section>
+          } }
+        </div>
+        } @else {
+        <p class="empty-copy">kanban board is waiting on an active mission</p>
+        }
+      </section>
+      } @else if (selectedMissionView() === 'roadmap') {
       <section class="panel panel--wide mission-graph">
         <header class="mission-graph__head">
           <div>
@@ -911,7 +1195,7 @@
         <p class="empty-copy">mission graph is waiting on an active mission</p>
         }
       </section>
-
+      } @if (selectedMissionView() === 'setup') {
       <section class="mission-card mission-card--focus">
         <div class="mission-card__head">
           <div class="section-label">mission</div>
@@ -1153,115 +1437,7 @@
         </form>
         }
       </section>
-
-      <section class="panel panel--controls mission-actions">
-        <header class="mission-actions__head">
-          <div>
-            <div class="section-label">mission actions</div>
-            <h3>{{ missionActionDefinition(selectedMissionAction()).label }}</h3>
-          </div>
-          <span class="mission-actions__chip">posts to chat</span>
-        </header>
-
-        <div class="mission-actions__target">
-          <div class="mission-actions__target-head">
-            <span>send to</span>
-            <strong>{{ missionActionTargetLabel() }}</strong>
-          </div>
-          <div class="mission-action-scope" role="group" aria-label="Mission action target scope">
-            <button
-              type="button"
-              [class.is-active]="missionActionScope() === 'team'"
-              (click)="setMissionActionScope('team')"
-            >
-              Team
-            </button>
-            <button
-              type="button"
-              [class.is-active]="missionActionScope() === 'selected'"
-              (click)="setMissionActionScope('selected')"
-            >
-              Selected
-            </button>
-            <button
-              type="button"
-              [class.is-active]="missionActionScope() === 'single'"
-              (click)="setMissionActionScope('single')"
-            >
-              One Agent
-            </button>
-          </div>
-          @if (missionActionScope() === 'single') {
-          <select
-            class="mission-action-select"
-            [value]="missionActionAgent() || roomAgents()[0] || ''"
-            (change)="setMissionActionAgent($event)"
-          >
-            @for (agent of roomAgents(); track agent) {
-            <option [value]="agent">{{ agent }}</option>
-            }
-          </select>
-          } @if (missionActionScope() === 'selected') {
-          <div class="mission-action-agent-grid">
-            @for (agent of roomAgents(); track agent) {
-            <label>
-              <input
-                type="checkbox"
-                [checked]="isMissionActionAgentSelected(agent)"
-                (change)="toggleMissionActionAgent(agent, $event)"
-              />
-              {{ agent }}
-            </label>
-            }
-          </div>
-          }
-        </div>
-
-        <div class="mission-action-grid">
-          @for (action of missionActions; track action.id) {
-          <button
-            type="button"
-            class="mission-action-option"
-            [class.is-selected]="selectedMissionAction() === action.id"
-            (click)="selectMissionAction(action.id)"
-          >
-            <strong>{{ action.label }}</strong>
-            <span>{{ action.summary }}</span>
-          </button>
-          }
-        </div>
-
-        @if (selectedMissionAction() === 'execute') {
-        <label class="mission-action-field">
-          <span>work item</span>
-          <select
-            [value]="missionActionChecklistItemId()"
-            (change)="setMissionActionChecklistItem($event)"
-          >
-            <option value="">next unblocked item</option>
-            @for (item of missionActionWorkItems(); track item.id) {
-            <option [value]="item.id">{{ item.title }} / {{ item.status }}</option>
-            }
-          </select>
-        </label>
-        }
-
-        <div class="mission-action-preview">
-          <div class="mission-action-preview__head">
-            <span>chat prompt</span>
-            <button
-              type="button"
-              class="control-btn control-btn--primary"
-              [disabled]="!canPostMissionAction()"
-              (click)="dispatchMissionAction()"
-            >
-              post to chat
-            </button>
-          </div>
-          <pre>{{ missionActionPreview() }}</pre>
-        </div>
-      </section>
-
+      } @if (selectedMissionView() === 'roadmap') {
       <section class="panel panel--phases">
         <div class="section-label">phase gates</div>
         @if (taskControl(); as control) {
@@ -1317,7 +1493,7 @@
         </form>
         }
       </section>
-
+      } @if (selectedMissionView() === 'plan') {
       <section class="panel panel--plan">
         <div class="section-label">active plan</div>
         @if (taskControl()?.activePlan; as plan) {
@@ -1335,7 +1511,7 @@
         </form>
         }
       </section>
-
+      } @if (selectedMissionView() === 'board') {
       <section class="panel panel--checklist">
         <div class="section-label">checklist</div>
         @if (taskControl(); as control) {
@@ -1455,7 +1631,7 @@
         </form>
         }
       </section>
-
+      } @if (selectedMissionView() === 'evidence') {
       <section class="panel panel--collaboration">
         <div class="section-label">collaboration</div>
         @if (hasCollaborationTrail()) { @for (action of missionReceiptActions(); track action.id) {
@@ -1481,6 +1657,60 @@
         <p class="empty-copy">no collaboration notes yet</p>
         }
       </section>
+
+      <section class="panel panel--evidence">
+        <div class="context-group__head">
+          <span class="section-label">artifacts</span>
+          <strong>{{ artifacts()?.files?.length || 0 }}</strong>
+        </div>
+        <div class="artifact-list">
+          @for (artifact of visibleArtifacts(); track artifact.path) {
+          <article class="artifact-row">
+            <header class="artifact-row__head">
+              <span class="artifact-row__kind">{{ artifact.kind }}</span>
+              @if (canRemoveArtifact(artifact)) {
+              <button
+                type="button"
+                class="artifact-row__remove"
+                title="Remove artifact"
+                [attr.aria-label]="'Remove ' + artifact.name"
+                (click)="removeArtifact(artifact)"
+              >
+                x
+              </button>
+              }
+            </header>
+            <div class="artifact-row__name">{{ artifact.name }}</div>
+            <div class="artifact-row__path">{{ artifact.path }}</div>
+            <div class="artifact-row__meta">
+              {{ formatBytes(artifact.size) }} / {{ formatShortTime(artifact.updatedAt) }}
+            </div>
+          </article>
+          } @empty {
+          <p class="empty-copy">no context artifacts yet</p>
+          }
+        </div>
+      </section>
+
+      <section class="panel panel--evidence">
+        <div class="context-group__head">
+          <span class="section-label">completed runs</span>
+          <strong>{{ completedRuns().length }}</strong>
+        </div>
+        <div class="run-list">
+          @for (run of completedRuns(); track run.id) {
+          <button class="run-row" type="button" (click)="openRunDetail(run.id)">
+            <span>{{ run.agentId }}</span>
+            <strong>{{ run.status }}</strong>
+            <p>{{ runMeta(run) }}</p>
+            <small>{{ runActionSignal(run) }}</small>
+          </button>
+          } @empty {
+          <p class="empty-copy">no completed runs yet</p>
+          }
+        </div>
+      </section>
+      }
     </section>
     }
   </main>

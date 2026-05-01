@@ -40,6 +40,7 @@ import { FiresideWs } from './ws.service';
 import { VfxSmokeAndEmbersComponent } from './vfx-smoke-and-embers/vfx-smoke-and-embers';
 
 type TabId = 'chat' | 'mission' | 'briefings';
+type MissionViewId = 'overview' | 'board' | 'roadmap' | 'plan' | 'evidence' | 'setup';
 type ChatTimelineItem = {
   id: string;
   kind: 'message' | 'permission' | 'activity';
@@ -146,6 +147,21 @@ type MissionGraphSummary = {
   artifacts: number;
   collaboration: number;
 };
+type MissionBoardColumnId = 'ready' | 'active' | 'blocked' | 'review' | 'done';
+type MissionBoardColumn = {
+  id: MissionBoardColumnId;
+  label: string;
+  summary: string;
+};
+type MissionBoardSwimlane = {
+  id: string;
+  title: string;
+  status: TaskPhaseStatus | 'backlog';
+  gate: string;
+  planLabel: string;
+  cardsByColumn: Record<MissionBoardColumnId, MissionGraphCard[]>;
+  totalCards: number;
+};
 type MissionActionKind = 'plan' | 'assign' | 'execute' | 'review' | 'sync' | 'verify';
 type MissionActionScope = 'team' | 'selected' | 'single';
 type MissionActionDefinition = {
@@ -177,8 +193,24 @@ export class App implements OnDestroy {
     { id: 'chat', label: 'Chat' },
     { id: 'mission', label: 'Mission Control' },
   ];
+  readonly missionViews: Array<{ id: MissionViewId; label: string; summary: string }> = [
+    { id: 'overview', label: 'Overview', summary: 'health, blockers, active work' },
+    { id: 'board', label: 'Board', summary: 'status lanes and phase swimlanes' },
+    { id: 'roadmap', label: 'Roadmap', summary: 'phase gates and dependencies' },
+    { id: 'plan', label: 'Plan', summary: 'team agreement and rationale' },
+    { id: 'evidence', label: 'Evidence', summary: 'runs, artifacts, receipts' },
+    { id: 'setup', label: 'Setup', summary: 'mission parameters' },
+  ];
+  readonly missionBoardColumns: MissionBoardColumn[] = [
+    { id: 'ready', label: 'Ready', summary: 'unblocked work agents can take' },
+    { id: 'active', label: 'In Progress', summary: 'active provider runs' },
+    { id: 'blocked', label: 'Blocked', summary: 'blocked or waiting on dependencies' },
+    { id: 'review', label: 'Review', summary: 'evidence exists but state is not closed' },
+    { id: 'done', label: 'Done', summary: 'completed or skipped work' },
+  ];
 
   readonly selectedTab = signal<TabId>('chat');
+  readonly selectedMissionView = signal<MissionViewId>('overview');
   readonly now = signal(Date.now());
   readonly authorName = signal(localStorage.getItem('fireside.author') || 'human');
   readonly creatingRoom = signal(false);
@@ -327,6 +359,7 @@ export class App implements OnDestroy {
   readonly providerCapacityRows = computed(() => this.buildProviderCapacityRows());
   readonly missionGraphLanes = computed(() => this.buildMissionGraphLanes());
   readonly missionGraphSummary = computed(() => this.buildMissionGraphSummary());
+  readonly missionBoardSwimlanes = computed(() => this.buildMissionBoardSwimlanes());
   readonly missionActivity = computed(() => this.buildMissionActivityEvents());
   readonly chatTimeline = computed(() => {
     const rawItems: ChatTimelineItem[] = [
@@ -1144,6 +1177,10 @@ export class App implements OnDestroy {
     void navigator.clipboard?.writeText(run.cliSessionId);
   }
 
+  selectMissionView(view: MissionViewId): void {
+    this.selectedMissionView.set(view);
+  }
+
   private buildMissionGraphSummary(): MissionGraphSummary {
     const control = this.taskControl();
     const lanes = this.missionGraphLanes();
@@ -1160,6 +1197,50 @@ export class App implements OnDestroy {
       artifacts: this.artifacts()?.files.length ?? 0,
       collaboration: this.collaboration().length,
     };
+  }
+
+  private buildMissionBoardSwimlanes(): MissionBoardSwimlane[] {
+    return this.missionGraphLanes().map((lane) => {
+      const cardsByColumn = this.emptyMissionBoardColumns();
+      for (const card of lane.cards) {
+        cardsByColumn[this.missionBoardColumnForCard(card)].push(card);
+      }
+      return {
+        id: lane.id,
+        title: lane.title,
+        status: lane.status,
+        gate: lane.gate,
+        planLabel: lane.planLabel,
+        cardsByColumn,
+        totalCards: lane.cards.length,
+      };
+    });
+  }
+
+  private emptyMissionBoardColumns(): Record<MissionBoardColumnId, MissionGraphCard[]> {
+    return {
+      ready: [],
+      active: [],
+      blocked: [],
+      review: [],
+      done: [],
+    };
+  }
+
+  private missionBoardColumnForCard(card: MissionGraphCard): MissionBoardColumnId {
+    if (card.item.status === 'done' || card.item.status === 'skipped') return 'done';
+    if (card.activeRun) return 'active';
+    if (card.item.status === 'blocked' || card.waiting) return 'blocked';
+    if (
+      card.latestRun &&
+      card.latestRun.status !== 'running' &&
+      (card.latestRun.status === 'completed' ||
+        card.latestRun.status === 'empty' ||
+        card.evidenceCount > 0)
+    ) {
+      return 'review';
+    }
+    return 'ready';
   }
 
   private buildMissionGraphLanes(): MissionGraphLane[] {
