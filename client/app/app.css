@@ -1648,6 +1648,59 @@
   opacity: 0.82;
 }
 
+.msg__actions,
+.msg__edit-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 7px;
+}
+
+.msg__actions button,
+.msg__edit-actions button {
+  border: 1px solid var(--border-soft);
+  border-radius: 999px;
+  padding: 3px 8px;
+  background: rgba(13, 17, 23, 0.46);
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  cursor: pointer;
+}
+
+.msg__actions button:hover,
+.msg__edit-actions button:hover {
+  color: var(--text-primary);
+  border-color: rgba(255, 255, 255, 0.24);
+}
+
+.msg__actions button.is-danger,
+.msg__edit-actions button.is-danger {
+  color: rgba(245, 139, 124, 0.9);
+  border-color: rgba(245, 139, 124, 0.22);
+}
+
+.msg__edit {
+  display: grid;
+  gap: 6px;
+}
+
+.msg__edit input {
+  width: min(100%, 720px);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-sm);
+  padding: 7px 9px;
+  background: rgba(13, 17, 23, 0.74);
+  color: var(--text-primary);
+  font: inherit;
+}
+
+.msg__edit-error {
+  color: rgba(245, 139, 124, 0.95);
+  font-family: var(--font-mono);
+  font-size: 10px;
+}
+
 :host ::ng-deep .msg__body code {
   font-family: var(--font-mono);
   font-size: 11px;

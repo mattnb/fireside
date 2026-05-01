@@ -123,6 +123,51 @@ export function updateMessageDeliveryStatus(
   return getMessage(db, id);
 }
 
+export function updateQueuedHumanMessageText(
+  db: Database,
+  input: { roomId: string; messageId: string; authorId: string; text: string },
+): Message | null {
+  const result = db
+    .prepare(
+      `UPDATE messages
+       SET text = ?
+       WHERE id = ?
+         AND room_id = ?
+         AND author_id = ?
+         AND author_kind = 'human'
+         AND delivery_status = 'queued'`,
+    )
+    .run(input.text, input.messageId, input.roomId, input.authorId);
+  return result.changes > 0 ? getMessage(db, input.messageId) : null;
+}
+
+export function deleteQueuedHumanMessage(
+  db: Database,
+  input: { roomId: string; messageId: string; authorId: string },
+): Message | null {
+  const existing = getMessage(db, input.messageId);
+  if (
+    !existing ||
+    existing.roomId !== input.roomId ||
+    existing.authorId !== input.authorId ||
+    existing.authorKind !== 'human' ||
+    existing.deliveryStatus !== 'queued'
+  ) {
+    return null;
+  }
+  const result = db
+    .prepare(
+      `DELETE FROM messages
+       WHERE id = ?
+         AND room_id = ?
+         AND author_id = ?
+         AND author_kind = 'human'
+         AND delivery_status = 'queued'`,
+    )
+    .run(input.messageId, input.roomId, input.authorId);
+  return result.changes > 0 ? existing : null;
+}
+
 export function listQueuedHumanMessages(db: Database, roomId: string): Message[] {
   const rows = db
     .prepare(

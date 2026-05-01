@@ -10,6 +10,7 @@ import {
   CollaborationItem,
   ConversationFixture,
   Message,
+  MessageRetractionUpdate,
   MissionBriefing,
   MissionBriefingSummary,
   PermissionRequest,
@@ -100,6 +101,12 @@ export class FiresideApi {
       this.http.post<Message>(`/api/rooms/${body.roomId}/messages`, {
         authorId: body.authorId,
         text: body.text,
+      }),
+    update: (roomId: string, messageId: string, body: { authorId: string; text: string }) =>
+      this.http.patch<Message>(`/api/rooms/${roomId}/messages/${messageId}`, body),
+    retract: (roomId: string, messageId: string, authorId: string) =>
+      this.http.delete<MessageRetractionUpdate>(`/api/rooms/${roomId}/messages/${messageId}`, {
+        body: { authorId },
       }),
   };
 

@@ -5,6 +5,7 @@ import type {
   Broker,
   MessageDeliveryUpdate,
   MessageReadReceiptUpdate,
+  MessageRetractionUpdate,
   YoloStatus,
 } from './broker.js';
 import type { Message } from './repos/messages.js';
@@ -109,6 +110,24 @@ export function attachWebSocketServer(httpServer: HttpServer, broker: Broker): W
     const payload = JSON.stringify({ type: 'taskUpdated', task });
     for (const [client, state] of clients.entries()) {
       if (client.readyState === client.OPEN && state.rooms.has(task.roomId)) {
+        client.send(payload);
+      }
+    }
+  });
+
+  broker.on('messageUpdated', (msg: Message) => {
+    const payload = JSON.stringify({ type: 'messageUpdated', message: msg });
+    for (const [client, state] of clients.entries()) {
+      if (client.readyState === client.OPEN && state.rooms.has(msg.roomId)) {
+        client.send(payload);
+      }
+    }
+  });
+
+  broker.on('messageRetracted', (update: MessageRetractionUpdate) => {
+    const payload = JSON.stringify({ type: 'messageRetracted', update });
+    for (const [client, state] of clients.entries()) {
+      if (client.readyState === client.OPEN && state.rooms.has(update.roomId)) {
         client.send(payload);
       }
     }

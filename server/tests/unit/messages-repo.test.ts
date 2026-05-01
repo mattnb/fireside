@@ -4,9 +4,11 @@ import { openDatabase } from '../../src/db.js';
 import { createRoom } from '../../src/repos/rooms.js';
 import {
   addMessage,
+  deleteQueuedHumanMessage,
   listMessages,
   listMessagesAfter,
   listQueuedHumanMessages,
+  updateQueuedHumanMessageText,
   updateMessageDeliveryStatus,
 } from '../../src/repos/messages.js';
 import { createAgentRun } from '../../src/repos/agent-runs.js';
@@ -72,6 +74,55 @@ describe('messages repo', () => {
       deliveryStatus: 'delivered',
     });
     expect(listQueuedHumanMessages(db, roomId)).toEqual([]);
+  });
+
+  it('edits and deletes only queued human messages owned by the author', () => {
+    const queued = addMessage(db, {
+      roomId,
+      authorId: 'human',
+      authorKind: 'human',
+      text: 'original',
+      deliveryStatus: 'queued',
+    });
+    const delivered = addMessage(db, {
+      roomId,
+      authorId: 'human',
+      authorKind: 'human',
+      text: 'delivered',
+    });
+
+    expect(
+      updateQueuedHumanMessageText(db, {
+        roomId,
+        messageId: queued.id,
+        authorId: 'other',
+        text: 'wrong author',
+      }),
+    ).toBeNull();
+    expect(
+      updateQueuedHumanMessageText(db, {
+        roomId,
+        messageId: delivered.id,
+        authorId: 'human',
+        text: 'too late',
+      }),
+    ).toBeNull();
+    expect(
+      updateQueuedHumanMessageText(db, {
+        roomId,
+        messageId: queued.id,
+        authorId: 'human',
+        text: 'edited',
+      }),
+    ).toMatchObject({ id: queued.id, text: 'edited', deliveryStatus: 'queued' });
+
+    expect(
+      deleteQueuedHumanMessage(db, { roomId, messageId: delivered.id, authorId: 'human' }),
+    ).toBeNull();
+    expect(
+      deleteQueuedHumanMessage(db, { roomId, messageId: queued.id, authorId: 'human' }),
+    ).toMatchObject({ id: queued.id, text: 'edited' });
+    expect(listMessages(db, roomId).map((message) => message.text)).toEqual(['delivered']);
   });
 
   it('attaches durable seen-by receipts to listed messages', () => {

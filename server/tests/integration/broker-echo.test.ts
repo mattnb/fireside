@@ -1433,6 +1433,73 @@ describe('Broker', () => {
     expect(runs).toHaveLength(2);
   });
 
+  it('edits and retracts queued human messages before they are delivered', async () => {
+    let releaseRun!: () => void;
+    let firstRunStarted!: () => void;
+    const releaseRunPromise = new Promise<void>((resolve) => {
+      releaseRun = resolve;
+    });
+    const firstRunStartedPromise = new Promise<void>((resolve) => {
+      firstRunStarted = resolve;
+    });
+    let runCount = 0;
+    const queueBroker = new Broker({
+      db,
+      maxAgentRepliesPerThread: 1,
+      runAgent: async (spec, prompt, sessionId) => {
+        runCount += 1;
+        runs.push({ agentId: spec.id, prompt, sessionId });
+        if (runCount === 1) {
+          firstRunStarted();
+          await releaseRunPromise;
+        }
+        return {
+          text: `${spec.id}-says-hello-${runCount}`,
+          sessionId: `${spec.id}-sess`,
+          raw: { stdout: '', stderr: '' },
+        };
+      },
+      getSpec: (id) => (id === 'claude' ? fakeSpec('claude', 'claude reply') : undefined),
+    });
+    const room = createRoom(db, { name: 'g', agents: ['claude'] });
+    const updatedMessages: string[] = [];
+    const retractedMessages: string[] = [];
+    queueBroker.on('messageUpdated', (message) => updatedMessages.push(message.text));
+    queueBroker.on('messageRetracted', (update) => retractedMessages.push(update.messageId));
+
+    const firstTurn = queueBroker.postHumanMessage(room.id, 'human', '@claude start slow');
+    await firstRunStartedPromise;
+    const queued = await queueBroker.postHumanMessage(room.id, 'human', '@claude original');
+    const retracted = await queueBroker.postHumanMessage(room.id, 'human', '@claude retract me');
+
+    const edited = queueBroker.editQueuedHumanMessage(
+      room.id,
+      queued.id,
+      'human',
+      '@claude edited context',
+    );
+    const retractUpdate = queueBroker.retractQueuedHumanMessage(room.id, retracted.id, 'human');
+
+    expect(edited).toMatchObject({ id: queued.id, text: '@claude edited context' });
+    expect(retractUpdate.messageId).toBe(retracted.id);
+    expect(updatedMessages).toEqual(['@claude edited context']);
+    expect(retractedMessages).toEqual([retracted.id]);
+
+    releaseRun();
+    await firstTurn;
+
+    expect(runs).toHaveLength(2);
+    expect(runs[1]!.prompt).toContain('@claude edited context');
+    expect(runs[1]!.prompt).not.toContain('@claude original');
+    expect(runs[1]!.prompt).not.toContain('@claude retract me');
+    expect(listMessages(db, room.id).map((message) => message.text)).toEqual([
+      '@claude start slow',
+      '@claude edited context',
+      'claude-says-hello-1',
+      'claude-says-hello-2',
+    ]);
+  });
+
   it('injects active mission context and records agent run visibility', async () => {
     const room = createRoom(db, { name: 'mission-room', agents: ['claude'] });
     const task = broker.createTask(room.id, {

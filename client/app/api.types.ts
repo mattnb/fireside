@@ -187,6 +187,13 @@ export interface Message {
   seenBy?: AgentId[];
 }
 
+export interface MessageRetractionUpdate {
+  roomId: string;
+  messageId: string;
+  authorId: string;
+  retractedAt: number;
+}
+
 export interface PermissionRequest {
   id: string;
   roomId: string;
@@ -471,6 +478,8 @@ export interface CollaborationItem {
 
 export type FiresideWsEvent =
   | { type: 'messageAppended'; message: Message }
+  | { type: 'messageUpdated'; message: Message }
+  | { type: 'messageRetracted'; update: MessageRetractionUpdate }
   | {
       type: 'messageDeliveryUpdated';
       update: {

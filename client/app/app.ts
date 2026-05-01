@@ -238,6 +238,8 @@ export class App implements OnDestroy {
   readonly selectedProjectId = signal<string | null>(null);
   readonly selectedRoomId = signal<string | null>(null);
   readonly messages = signal<Message[]>([]);
+  readonly editingQueuedMessageId = signal<string | null>(null);
+  readonly queuedMessageError = signal('');
   readonly permissionRequests = signal<PermissionRequest[]>([]);
   readonly tasks = signal<Task[]>([]);
   readonly creatingMissionDraft = signal(false);
@@ -508,6 +510,17 @@ export class App implements OnDestroy {
         const shouldStickToBottom = this.isChatNearBottom();
         this.messages.update((messages) => [...messages, event.message]);
         if (shouldStickToBottom) this.scheduleChatScrollToBottom();
+      }
+      if (event.type === 'messageUpdated' && event.message.roomId === roomId) {
+        this.messages.update((messages) => this.upsert(messages, event.message));
+      }
+      if (event.type === 'messageRetracted' && event.update.roomId === roomId) {
+        this.messages.update((messages) =>
+          messages.filter((message) => message.id !== event.update.messageId),
+        );
+        if (this.editingQueuedMessageId() === event.update.messageId) {
+          this.cancelQueuedMessageEdit();
+        }
       }
       if (event.type === 'messageDeliveryUpdated' && event.update.roomId === roomId) {
         this.messages.update((messages) =>
@@ -1017,6 +1030,64 @@ export class App implements OnDestroy {
     if (!roomId || !text) return;
     this.ws.postMessage(roomId, this.authorName(), text);
     input.value = '';
+  }
+
+  canManageQueuedMessage(message: Message): boolean {
+    return (
+      message.authorKind === 'human' &&
+      message.deliveryStatus === 'queued' &&
+      message.authorId === this.authorName()
+    );
+  }
+
+  isEditingQueuedMessage(message: Message): boolean {
+    return this.editingQueuedMessageId() === message.id;
+  }
+
+  beginQueuedMessageEdit(message: Message): void {
+    if (!this.canManageQueuedMessage(message)) return;
+    this.editingQueuedMessageId.set(message.id);
+    this.queuedMessageError.set('');
+  }
+
+  cancelQueuedMessageEdit(): void {
+    this.editingQueuedMessageId.set(null);
+    this.queuedMessageError.set('');
+  }
+
+  saveQueuedMessageEdit(message: Message, input: HTMLInputElement): void {
+    if (!this.canManageQueuedMessage(message)) return;
+    const text = input.value.trim();
+    if (!text) {
+      this.queuedMessageError.set('message text required');
+      return;
+    }
+    this.api.messages
+      .update(message.roomId, message.id, { authorId: this.authorName(), text })
+      .subscribe({
+        next: (updated) => {
+          this.messages.update((messages) => this.upsert(messages, updated));
+          this.cancelQueuedMessageEdit();
+        },
+        error: (err: unknown) => {
+          this.queuedMessageError.set(this.apiErrorText(err, 'failed to edit queued message'));
+        },
+      });
+  }
+
+  retractQueuedMessage(message: Message): void {
+    if (!this.canManageQueuedMessage(message)) return;
+    this.api.messages.retract(message.roomId, message.id, this.authorName()).subscribe({
+      next: (update) => {
+        this.messages.update((messages) =>
+          messages.filter((candidate) => candidate.id !== update.messageId),
+        );
+        if (this.editingQueuedMessageId() === update.messageId) this.cancelQueuedMessageEdit();
+      },
+      error: (err: unknown) => {
+        this.queuedMessageError.set(this.apiErrorText(err, 'failed to retract queued message'));
+      },
+    });
   }
 
   composerPlaceholder(): string {
@@ -3188,6 +3259,19 @@ export class App implements OnDestroy {
     const cursor = before.length + insert.length;
     input.focus();
     input.setSelectionRange(cursor, cursor);
+  }
+
+  private apiErrorText(err: unknown, fallback: string): string {
+    if (err instanceof Error && err.message) return err.message;
+    if (typeof err === 'object' && err !== null && 'error' in err) {
+      const wrapped = (err as { error?: unknown }).error;
+      if (typeof wrapped === 'string') return wrapped;
+      if (typeof wrapped === 'object' && wrapped !== null && 'error' in wrapped) {
+        const message = (wrapped as { error?: unknown }).error;
+        if (typeof message === 'string') return message;
+      }
+    }
+    return fallback;
   }
 
   private isHiddenSystemMessage(message: Message): boolean {

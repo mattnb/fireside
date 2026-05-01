@@ -529,7 +529,39 @@
               <span class="msg__time">{{ message.createdAt | date: 'shortTime' }}</span>
             </div>
             }
+            @if (isEditingQueuedMessage(message)) {
+            <form
+              class="msg__edit"
+              (submit)="$event.preventDefault(); saveQueuedMessageEdit(message, queuedEditInput)"
+            >
+              <input
+                #queuedEditInput
+                type="text"
+                [value]="message.text"
+                aria-label="Edit queued message"
+              />
+              <div class="msg__edit-actions">
+                <button type="submit">save</button>
+                <button type="button" (click)="cancelQueuedMessageEdit()">cancel</button>
+                <button type="button" class="is-danger" (click)="retractQueuedMessage(message)">
+                  retract
+                </button>
+              </div>
+              @if (queuedMessageError()) {
+              <span class="msg__edit-error">{{ queuedMessageError() }}</span>
+              }
+            </form>
+            } @else {
             <div class="msg__body" [innerHTML]="item.html"></div>
+            @if (canManageQueuedMessage(message)) {
+            <div class="msg__actions" aria-label="Queued message actions">
+              <button type="button" (click)="beginQueuedMessageEdit(message)">edit</button>
+              <button type="button" class="is-danger" (click)="retractQueuedMessage(message)">
+                retract
+              </button>
+            </div>
+            }
+            }
             @if (item.seenAgents; as seenAgents) {
             <div class="msg__seen" [class.is-empty]="seenAgents.length === 0">
               <span>Seen by</span>

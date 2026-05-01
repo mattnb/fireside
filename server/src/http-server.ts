@@ -12,7 +12,7 @@ import type { TaskChecklistParallelism, TaskChecklistStatus } from './repos/task
 import type { TaskPhaseStatus } from './repos/task-phases.js';
 import type { TaskPlanStatus } from './repos/task-plans.js';
 import type { PermissionMode } from './permissions.js';
-import type { Broker } from './broker.js';
+import { QueuedMessageMutationError, type Broker } from './broker.js';
 import { pickFile, pickFolder } from './folder-picker.js';
 import { logger } from './logger.js';
 import type { ConversationArtifactFile } from './context-files.js';
@@ -796,6 +796,40 @@ export function buildHttpServer(deps: HttpDeps) {
       return message;
     },
   );
+
+  app.patch<{
+    Params: { id: string; messageId: string };
+    Body: { authorId: string; text: string };
+  }>('/api/rooms/:id/messages/:messageId', async (req, reply) => {
+    const { authorId, text } = req.body ?? {};
+    if (!authorId || typeof text !== 'string') {
+      return reply.code(400).send({ error: 'authorId and text required' });
+    }
+    try {
+      return deps.broker.editQueuedHumanMessage(req.params.id, req.params.messageId, authorId, text);
+    } catch (err) {
+      if (err instanceof QueuedMessageMutationError) {
+        return reply.code(err.statusCode).send({ error: err.message });
+      }
+      throw err;
+    }
+  });
+
+  app.delete<{
+    Params: { id: string; messageId: string };
+    Body: { authorId: string };
+  }>('/api/rooms/:id/messages/:messageId', async (req, reply) => {
+    const { authorId } = req.body ?? {};
+    if (!authorId) return reply.code(400).send({ error: 'authorId required' });
+    try {
+      return deps.broker.retractQueuedHumanMessage(req.params.id, req.params.messageId, authorId);
+    } catch (err) {
+      if (err instanceof QueuedMessageMutationError) {
+        return reply.code(err.statusCode).send({ error: err.message });
+      }
+      throw err;
+    }
+  });
 
   return app;
 }

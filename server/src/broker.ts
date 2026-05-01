@@ -3,9 +3,11 @@ import { EventEmitter } from 'node:events';
 import type { Database } from 'better-sqlite3';
 import {
   addMessage,
+  deleteQueuedHumanMessage,
   getMessage,
   listQueuedHumanMessages,
   listMessages,
+  updateQueuedHumanMessageText,
   updateMessageDeliveryStatus,
   type Message,
   type AuthorKind,
@@ -288,6 +290,23 @@ export interface MessageReadReceiptUpdate {
   seenAt: number;
 }
 
+export interface MessageRetractionUpdate {
+  roomId: string;
+  messageId: string;
+  authorId: string;
+  retractedAt: number;
+}
+
+export class QueuedMessageMutationError extends Error {
+  constructor(
+    readonly statusCode: number,
+    message: string,
+  ) {
+    super(message);
+    this.name = 'QueuedMessageMutationError';
+  }
+}
+
 export interface AgentRunDetail {
   run: AgentRun;
   triggerMessage: Message | null;
@@ -497,6 +516,51 @@ export class Broker extends EventEmitter {
       );
     }
     return this.append(roomId, authorId, 'human', text);
+  }
+
+  editQueuedHumanMessage(
+    roomId: string,
+    messageId: string,
+    authorId: string,
+    text: string,
+  ): Message {
+    const room = getRoom(this.deps.db, roomId);
+    if (!room) throw new QueuedMessageMutationError(404, 'room not found');
+    const trimmed = text.trim();
+    if (!trimmed) throw new QueuedMessageMutationError(400, 'message text required');
+    this.assertQueuedHumanMessageMutable(roomId, messageId, authorId);
+    const updated = updateQueuedHumanMessageText(this.deps.db, {
+      roomId,
+      messageId,
+      authorId,
+      text: trimmed,
+    });
+    if (!updated) {
+      throw new QueuedMessageMutationError(409, 'queued message is no longer editable');
+    }
+    const message = this.withDeliveryStatus(roomId, updated);
+    this.emit('messageUpdated', message);
+    return message;
+  }
+
+  retractQueuedHumanMessage(
+    roomId: string,
+    messageId: string,
+    authorId: string,
+  ): MessageRetractionUpdate {
+    const room = getRoom(this.deps.db, roomId);
+    if (!room) throw new QueuedMessageMutationError(404, 'room not found');
+    this.assertQueuedHumanMessageMutable(roomId, messageId, authorId);
+    const deleted = deleteQueuedHumanMessage(this.deps.db, { roomId, messageId, authorId });
+    if (!deleted) {
+      throw new QueuedMessageMutationError(409, 'queued message is no longer retractable');
+    }
+    const queued = this.queuedHumanMessageIds.get(roomId);
+    queued?.delete(messageId);
+    if (queued?.size === 0) this.queuedHumanMessageIds.delete(roomId);
+    const update = { roomId, messageId, authorId, retractedAt: Date.now() };
+    this.emit('messageRetracted', update satisfies MessageRetractionUpdate);
+    return update;
   }
 
   stopRoomRuns(roomId: string, authorId: string): { stopped: number } {
@@ -4294,6 +4358,23 @@ export class Broker extends EventEmitter {
         deliveryStatus: 'delivered',
         deliveredAt,
       } satisfies MessageDeliveryUpdate);
+    }
+  }
+
+  private assertQueuedHumanMessageMutable(
+    roomId: string,
+    messageId: string,
+    authorId: string,
+  ): void {
+    const message = getMessage(this.deps.db, messageId);
+    if (!message || message.roomId !== roomId) {
+      throw new QueuedMessageMutationError(404, 'message not found');
+    }
+    if (message.authorKind !== 'human' || message.authorId !== authorId) {
+      throw new QueuedMessageMutationError(403, 'only the queued message author can change it');
+    }
+    if (message.deliveryStatus !== 'queued') {
+      throw new QueuedMessageMutationError(409, 'message has already been delivered');
     }
   }
 

@@ -5,6 +5,7 @@ import { WebSocket } from 'ws';
 import { AddressInfo } from 'node:net';
 import { openDatabase } from '../../src/db.js';
 import { createRoom } from '../../src/repos/rooms.js';
+import { addMessage } from '../../src/repos/messages.js';
 import { Broker } from '../../src/broker.js';
 import { attachWebSocketServer } from '../../src/ws-server.js';
 import type { AgentId, AgentSpec } from '../../src/agents/types.js';
@@ -137,6 +138,70 @@ describe('WebSocket fanout', () => {
     const receipt = received.find((r) => r.type === 'messageReadReceiptUpdated');
     expect(receipt?.update).toMatchObject({ agentId: 'claude', seenBy: ['claude'] });
     expect(receipt?.update?.messageId).toBeTruthy();
+    ws.close();
+  });
+
+  it('broadcasts queued message edits and retractions to subscribed clients', async () => {
+    const room = createRoom(db, { name: 'g', agents: [] });
+    const queued = addMessage(db, {
+      roomId: room.id,
+      authorId: 'human',
+      authorKind: 'human',
+      text: 'queued original',
+      deliveryStatus: 'queued',
+    });
+
+    const ws = new WebSocket(`ws://127.0.0.1:${port}/ws`);
+    await new Promise<void>((resolve, reject) => {
+      ws.once('open', () => resolve());
+      ws.once('error', reject);
+    });
+
+    const received: Array<{
+      type: string;
+      message?: { id: string; text: string };
+      update?: { messageId: string; authorId: string };
+    }> = [];
+
+    await new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error('subscribe timed out')), 5000);
+      const onSubscribed = (data: import('ws').RawData) => {
+        const msg = JSON.parse(data.toString()) as { type: string; roomId?: string };
+        if (msg.type === 'subscribed' && msg.roomId === room.id) {
+          clearTimeout(timer);
+          ws.off('message', onSubscribed);
+          resolve();
+        }
+      };
+      ws.on('message', onSubscribed);
+      ws.send(JSON.stringify({ type: 'subscribe', roomId: room.id }));
+    });
+
+    ws.on('message', (data) => received.push(JSON.parse(data.toString())));
+
+    broker.editQueuedHumanMessage(room.id, queued.id, 'human', 'queued edited');
+    broker.retractQueuedHumanMessage(room.id, queued.id, 'human');
+
+    await new Promise<void>((resolve) => {
+      const timer = setInterval(() => {
+        if (
+          received.some((r) => r.type === 'messageUpdated') &&
+          received.some((r) => r.type === 'messageRetracted')
+        ) {
+          clearInterval(timer);
+          resolve();
+        }
+      }, 25);
+    });
+
+    expect(received.find((r) => r.type === 'messageUpdated')?.message).toMatchObject({
+      id: queued.id,
+      text: 'queued edited',
+    });
+    expect(received.find((r) => r.type === 'messageRetracted')?.update).toMatchObject({
+      messageId: queued.id,
+      authorId: 'human',
+    });
     ws.close();
   });
 
