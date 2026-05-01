@@ -13,6 +13,7 @@ import {
 import { openDatabase } from '../../src/db.js';
 import { createRoom } from '../../src/repos/rooms.js';
 import { listMessages } from '../../src/repos/messages.js';
+import { listAgentJobsForRoom } from '../../src/repos/agent-jobs.js';
 import { listPermissionRequests } from '../../src/repos/permission-requests.js';
 import { createAgentRun, listAgentRuns } from '../../src/repos/agent-runs.js';
 import { listAgentRunActions } from '../../src/repos/run-actions.js';
@@ -136,6 +137,28 @@ describe('Broker', () => {
     expect(actions.find((action) => action.label === 'codex turn started')?.detail).toBe(
       'provider emitted a live signal',
     );
+  });
+
+  it('persists a durable agent job for each provider turn', async () => {
+    const room = createRoom(db, { name: 'durable-jobs', agents: ['codex'] });
+
+    await broker.postHumanMessage(room.id, 'human', '@codex do the work');
+
+    const [run] = listAgentRuns(db, room.id);
+    const [job] = listAgentJobsForRoom(db, room.id);
+    expect(run).toBeDefined();
+    expect(job).toMatchObject({
+      roomId: room.id,
+      agentId: 'codex',
+      runId: run!.id,
+      status: 'completed',
+      triggerMessageId: expect.any(String),
+    });
+    expect(run).toMatchObject({ agentJobId: job!.id });
+    expect(JSON.parse(job!.workPacketJson)).toMatchObject({
+      permission: { mode: 'plan' },
+      promptStats: { estimatedPromptTokens: expect.any(Number) },
+    });
   });
 
   it('suppresses low-signal provider stream events before storing run actions', async () => {

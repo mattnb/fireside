@@ -12,7 +12,7 @@ export interface Message {
   authorKind: AuthorKind;
   text: string;
   createdAt: number;
-  deliveryStatus?: MessageDeliveryStatus;
+  deliveryStatus: MessageDeliveryStatus;
 }
 
 interface MessageRow {
@@ -22,6 +22,7 @@ interface MessageRow {
   author_kind: AuthorKind;
   text: string;
   created_at: number;
+  delivery_status: MessageDeliveryStatus;
 }
 
 function rowToMessage(row: MessageRow): Message {
@@ -32,12 +33,19 @@ function rowToMessage(row: MessageRow): Message {
     authorKind: row.author_kind,
     text: row.text,
     createdAt: row.created_at,
+    deliveryStatus: row.delivery_status ?? 'delivered',
   };
 }
 
 export function addMessage(
   db: Database,
-  input: { roomId: string; authorId: string; authorKind: AuthorKind; text: string },
+  input: {
+    roomId: string;
+    authorId: string;
+    authorKind: AuthorKind;
+    text: string;
+    deliveryStatus?: MessageDeliveryStatus;
+  },
 ): Message {
   const id = nanoid(16);
   // Ensure created_at is strictly monotonic within a room so ordering and
@@ -50,10 +58,13 @@ export function addMessage(
     .get(input.roomId) as { created_at: number } | undefined;
   const now = Date.now();
   const createdAt = lastRow ? Math.max(now, lastRow.created_at + 1) : now;
+  const deliveryStatus = input.deliveryStatus ?? 'delivered';
   db.prepare(
-    `INSERT INTO messages (id, room_id, author_id, author_kind, text, created_at) VALUES (?, ?, ?, ?, ?, ?)`,
-  ).run(id, input.roomId, input.authorId, input.authorKind, input.text, createdAt);
-  return { id, ...input, createdAt };
+    `INSERT INTO messages (
+      id, room_id, author_id, author_kind, text, created_at, delivery_status
+    ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+  ).run(id, input.roomId, input.authorId, input.authorKind, input.text, createdAt, deliveryStatus);
+  return { id, ...input, deliveryStatus, createdAt };
 }
 
 export function listMessages(
@@ -82,6 +93,26 @@ export function getMessage(db: Database, id: string): Message | null {
     | MessageRow
     | undefined;
   return row ? rowToMessage(row) : null;
+}
+
+export function updateMessageDeliveryStatus(
+  db: Database,
+  id: string,
+  deliveryStatus: MessageDeliveryStatus,
+): Message | null {
+  db.prepare(`UPDATE messages SET delivery_status = ? WHERE id = ?`).run(deliveryStatus, id);
+  return getMessage(db, id);
+}
+
+export function listQueuedHumanMessages(db: Database, roomId: string): Message[] {
+  const rows = db
+    .prepare(
+      `SELECT * FROM messages
+       WHERE room_id = ? AND author_kind = 'human' AND delivery_status = 'queued'
+       ORDER BY created_at ASC, id ASC`,
+    )
+    .all(roomId) as MessageRow[];
+  return rows.map(rowToMessage);
 }
 
 export function listMessagesAfter(db: Database, roomId: string, afterMs: number): Message[] {

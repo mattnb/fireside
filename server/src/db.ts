@@ -28,7 +28,8 @@ CREATE TABLE IF NOT EXISTS messages (
   author_id TEXT NOT NULL,
   author_kind TEXT NOT NULL CHECK (author_kind IN ('human', 'agent', 'system')),
   text TEXT NOT NULL,
-  created_at INTEGER NOT NULL
+  created_at INTEGER NOT NULL,
+  delivery_status TEXT NOT NULL DEFAULT 'delivered' CHECK (delivery_status IN ('queued', 'delivered'))
 );
 
 CREATE INDEX IF NOT EXISTS idx_messages_room_created ON messages(room_id, created_at);
@@ -152,6 +153,7 @@ CREATE INDEX IF NOT EXISTS idx_task_plans_task_status_updated
 
 CREATE TABLE IF NOT EXISTS agent_runs (
   id TEXT PRIMARY KEY,
+  agent_job_id TEXT NOT NULL DEFAULT '',
   room_id TEXT NOT NULL REFERENCES rooms(id) ON DELETE CASCADE,
   task_id TEXT REFERENCES tasks(id) ON DELETE SET NULL,
   trigger_message_id TEXT NOT NULL,
@@ -199,6 +201,33 @@ CREATE INDEX IF NOT EXISTS idx_agent_runs_room_started
 
 CREATE INDEX IF NOT EXISTS idx_agent_runs_task_started
   ON agent_runs(task_id, started_at);
+
+CREATE TABLE IF NOT EXISTS agent_jobs (
+  id TEXT PRIMARY KEY,
+  room_id TEXT NOT NULL REFERENCES rooms(id) ON DELETE CASCADE,
+  task_id TEXT REFERENCES tasks(id) ON DELETE SET NULL,
+  checklist_item_id TEXT REFERENCES task_checklist_items(id) ON DELETE SET NULL,
+  agent_id TEXT NOT NULL,
+  trigger_message_id TEXT NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+  run_id TEXT REFERENCES agent_runs(id) ON DELETE SET NULL,
+  status TEXT NOT NULL CHECK (status IN ('queued', 'leased', 'running', 'completed', 'failed', 'canceled', 'superseded')),
+  work_packet_json TEXT NOT NULL DEFAULT '{}',
+  permission_json TEXT NOT NULL DEFAULT '{}',
+  lease_owner TEXT NOT NULL DEFAULT '',
+  lease_expires_at INTEGER NOT NULL DEFAULT 0,
+  attempt INTEGER NOT NULL DEFAULT 1,
+  max_attempts INTEGER NOT NULL DEFAULT 3,
+  error TEXT NOT NULL DEFAULT '',
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  completed_at INTEGER
+);
+
+CREATE INDEX IF NOT EXISTS idx_agent_jobs_room_status_updated
+  ON agent_jobs(room_id, status, updated_at);
+
+CREATE INDEX IF NOT EXISTS idx_agent_jobs_run
+  ON agent_jobs(run_id);
 
 CREATE TABLE IF NOT EXISTS collaboration_items (
   id TEXT PRIMARY KEY,
@@ -300,9 +329,19 @@ function ensureRoomColumns(db: DbType): void {
   ).run();
 }
 
+function ensureMessageColumns(db: DbType): void {
+  const columns = columnNames(db, 'messages');
+  if (!columns.has('delivery_status')) {
+    db.prepare(
+      `ALTER TABLE messages ADD COLUMN delivery_status TEXT NOT NULL DEFAULT 'delivered'`,
+    ).run();
+  }
+}
+
 function ensureAgentRunColumns(db: DbType): void {
   const columns = columnNames(db, 'agent_runs');
   const additions: Array<[string, string]> = [
+    ['agent_job_id', "TEXT NOT NULL DEFAULT ''"],
     ['prompt_text', "TEXT NOT NULL DEFAULT ''"],
     ['stdout', "TEXT NOT NULL DEFAULT ''"],
     ['stderr', "TEXT NOT NULL DEFAULT ''"],
@@ -336,6 +375,37 @@ function ensureAgentRunColumns(db: DbType): void {
       db.prepare(`ALTER TABLE agent_runs ADD COLUMN ${name} ${definition}`).run();
     }
   }
+}
+
+function ensureAgentJobTables(db: DbType): void {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS agent_jobs (
+      id TEXT PRIMARY KEY,
+      room_id TEXT NOT NULL REFERENCES rooms(id) ON DELETE CASCADE,
+      task_id TEXT REFERENCES tasks(id) ON DELETE SET NULL,
+      checklist_item_id TEXT REFERENCES task_checklist_items(id) ON DELETE SET NULL,
+      agent_id TEXT NOT NULL,
+      trigger_message_id TEXT NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+      run_id TEXT REFERENCES agent_runs(id) ON DELETE SET NULL,
+      status TEXT NOT NULL CHECK (status IN ('queued', 'leased', 'running', 'completed', 'failed', 'canceled', 'superseded')),
+      work_packet_json TEXT NOT NULL DEFAULT '{}',
+      permission_json TEXT NOT NULL DEFAULT '{}',
+      lease_owner TEXT NOT NULL DEFAULT '',
+      lease_expires_at INTEGER NOT NULL DEFAULT 0,
+      attempt INTEGER NOT NULL DEFAULT 1,
+      max_attempts INTEGER NOT NULL DEFAULT 3,
+      error TEXT NOT NULL DEFAULT '',
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL,
+      completed_at INTEGER
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_agent_jobs_room_status_updated
+      ON agent_jobs(room_id, status, updated_at);
+
+    CREATE INDEX IF NOT EXISTS idx_agent_jobs_run
+      ON agent_jobs(run_id);
+  `);
 }
 
 function ensureAgentRunActionColumns(db: DbType): void {
@@ -812,12 +882,14 @@ export function openDatabase(filename: string): DbType {
   db.exec(SCHEMA);
   ensureProjects(db);
   ensureRoomColumns(db);
+  ensureMessageColumns(db);
   ensurePermissionRequestColumns(db);
   ensureTaskColumns(db);
   ensureTaskIndexes(db);
   ensureMissionControlTables(db);
   ensureTaskChecklistColumns(db);
   ensureAgentRunColumns(db);
+  ensureAgentJobTables(db);
   ensureAgentRunActionColumns(db);
   ensureCollaborationStatusConstraint(db);
   ensureCollaborationSubjectColumns(db);

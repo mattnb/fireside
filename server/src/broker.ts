@@ -4,7 +4,9 @@ import type { Database } from 'better-sqlite3';
 import {
   addMessage,
   getMessage,
+  listQueuedHumanMessages,
   listMessages,
+  updateMessageDeliveryStatus,
   type Message,
   type AuthorKind,
   type MessageDeliveryStatus,
@@ -12,6 +14,7 @@ import {
 import {
   getRoom,
   deleteRoom as deleteRoomRepo,
+  listRooms,
   setRoomAgents as setRoomAgentsRepo,
   type Room,
 } from './repos/rooms.js';
@@ -66,6 +69,17 @@ import {
   type AgentRunLifecycleState,
   type AgentRunSummary,
 } from './repos/agent-runs.js';
+import {
+  attachAgentJobRun,
+  cancelAgentJob,
+  completeAgentJob,
+  createAgentJob,
+  failAgentJob,
+  leaseAgentJob,
+  listActiveAgentJobsForRoom,
+  recoverInterruptedAgentJobs,
+  renewAgentJobLease,
+} from './repos/agent-jobs.js';
 import {
   createCollaborationItem,
   listCollaborationItems as listCollaborationItemsRepo,
@@ -187,6 +201,7 @@ const RUN_HEARTBEAT_MS = 10_000;
 const RUN_STALL_AFTER_MS = 5 * 60 * 1000;
 const RUN_SIGNAL_UPDATE_THROTTLE_MS = 2_500;
 const STREAM_MESSAGE_THROTTLE_MS = 1_000;
+const AGENT_JOB_LEASE_MS = 15 * 60 * 1000;
 const COMPACT_PROMPT = '/compact';
 const COMPACTABLE_AGENT_IDS = new Set<AgentId>(['claude', 'codex']);
 
@@ -422,6 +437,12 @@ export class Broker extends EventEmitter {
   constructor(private deps: BrokerDeps) {
     super();
     this.recoverInterruptedRuns();
+    this.recoverInterruptedJobs();
+    queueMicrotask(() => {
+      for (const room of listRooms(this.deps.db)) {
+        void this.drainQueuedHumanMessages(room.id);
+      }
+    });
   }
 
   async postHumanMessage(roomId: string, authorId: string, text: string): Promise<Message> {
@@ -1607,7 +1628,33 @@ export class Broker extends EventEmitter {
       'agent prompt context',
     );
 
+    const agentJob = createAgentJob(this.deps.db, {
+      roomId,
+      taskId: activeTask?.id ?? null,
+      checklistItemId: workLane?.item.id ?? null,
+      agentId,
+      triggerMessageId: trigger.id,
+      workPacketJson: JSON.stringify(
+        this.buildAgentJobWorkPacket({
+          task: activeTask ?? null,
+          taskContext,
+          workLane,
+          permission: effectivePermission,
+          discussion,
+          promptStats: promptResult.stats,
+        }),
+      ),
+      permissionJson: JSON.stringify(effectivePermission ?? null),
+      attempt,
+      maxAttempts: discussion?.mode === 'yolo' ? 3 : 1,
+    });
+    leaseAgentJob(this.deps.db, agentJob.id, {
+      leaseOwner: this.agentJobLeaseOwner(),
+      leaseMs: AGENT_JOB_LEASE_MS,
+    });
+
     const run = createAgentRun(this.deps.db, {
+      agentJobId: agentJob.id,
       roomId,
       taskId: activeTask?.id ?? null,
       triggerMessageId: trigger.id,
@@ -1640,6 +1687,10 @@ export class Broker extends EventEmitter {
         '',
       attempt,
       retryOfRunId,
+    });
+    attachAgentJobRun(this.deps.db, agentJob.id, run.id, {
+      leaseOwner: this.agentJobLeaseOwner(),
+      leaseMs: AGENT_JOB_LEASE_MS,
     });
     this.emit('agentRunUpdated', run);
     this.recordRunAction({
@@ -1709,6 +1760,7 @@ export class Broker extends EventEmitter {
       roomId,
       taskId: activeTask?.id ?? null,
       runId: run.id,
+      agentJobId: agentJob.id,
       agentId,
       startedAt: run.startedAt,
       latestProviderSignalAt: () => lastProviderSignalAt,
@@ -1761,6 +1813,11 @@ export class Broker extends EventEmitter {
         label: canceled ? 'run canceled' : 'run failed',
         detail: errMsg,
       });
+      if (canceled) {
+        cancelAgentJob(this.deps.db, agentJob.id, errMsg);
+      } else {
+        failAgentJob(this.deps.db, agentJob.id, errMsg);
+      }
       const retryDecision =
         !canceled && discussion?.mode === 'yolo'
           ? decideRunRetry({ state: 'failed', attempt }, { maxAttempts: 3 })
@@ -1971,6 +2028,7 @@ export class Broker extends EventEmitter {
             ? 'mission control updates stored without visible chat text'
             : 'agent declined to add a chat message',
       });
+      completeAgentJob(this.deps.db, agentJob.id);
       return {
         message: null,
         progressed: hiddenMissionUpdateCount > 0 || extractedDrafts.drafts.length > 0,
@@ -2028,6 +2086,7 @@ export class Broker extends EventEmitter {
           label: `${permissionRequest.mode} permission auto-approved in YOLO`,
           detail: `${permissionRequest.target}: ${permissionRequest.reason}`,
         });
+        completeAgentJob(this.deps.db, agentJob.id);
         if (yoloPermissionAutoApprovals >= YOLO_PERMISSION_AUTO_APPROVAL_LIMIT) {
           this.recordRunAction({
             roomId,
@@ -2091,6 +2150,7 @@ export class Broker extends EventEmitter {
         detail: `${permissionRequest.target}: ${permissionRequest.reason}`,
       });
       this.emit('permissionRequestCreated', request);
+      completeAgentJob(this.deps.db, agentJob.id);
       return { message: null, progressed: false, runId: run.id };
     }
     if (
@@ -2139,6 +2199,7 @@ export class Broker extends EventEmitter {
       label: message ? 'message emitted' : 'ledger-only reply',
       detail: message ? message.text : 'collaboration note stored without visible chat text',
     });
+    completeAgentJob(this.deps.db, agentJob.id);
     return {
       message,
       progressed: Boolean(message) || extracted.notes.length > 0 || reconciliation.applied > 0,
@@ -2277,6 +2338,68 @@ export class Broker extends EventEmitter {
     const action = createAgentRunAction(this.deps.db, input);
     this.emit('agentRunActionCreated', action);
     return action;
+  }
+
+  private agentJobLeaseOwner(): string {
+    return `fireside:${process.pid}`;
+  }
+
+  private buildAgentJobWorkPacket(input: {
+    task: Task | null;
+    taskContext: unknown;
+    workLane: WorkLaneAssignment | undefined;
+    permission: PermissionGrant | undefined;
+    discussion: DiscussionTurn | undefined;
+    promptStats: {
+      promptChars: number;
+      estimatedPromptTokens: number;
+      historyMessagesIncluded: number;
+      historyMessagesDroppedByCount: number;
+      historyMessagesDroppedByBudget: number;
+      latestMessageChars: number;
+      maxPromptChars: number | null;
+      latestMessageTruncated: boolean;
+    };
+  }): unknown {
+    return {
+      mission: input.task
+        ? {
+            id: input.task.id,
+            title: input.task.title,
+            status: input.task.status,
+            repoPath: input.task.repoPath,
+            capabilityProfile: input.task.capabilityProfile,
+          }
+        : null,
+      taskContext: input.taskContext,
+      assignedItem: input.workLane
+        ? {
+            id: input.workLane.item.id,
+            title: input.workLane.item.title,
+            status: input.workLane.item.status,
+            phaseId: input.workLane.item.phaseId,
+            planId: input.workLane.item.planId,
+            ownerAgentId: input.workLane.item.ownerAgentId,
+            dependencyIds: input.workLane.item.dependencyIds,
+          }
+        : null,
+      permission: input.permission
+        ? {
+            mode: input.permission.mode,
+            source: input.permission.source ?? 'explicit',
+            target: input.permission.target,
+            capabilities: input.permission.capabilities ?? [],
+            filesystemScope: input.permission.filesystemScope ?? '',
+            web: input.permission.web === true,
+          }
+        : { mode: 'plan', source: 'default', capabilities: ['read'] },
+      discussion: input.discussion ?? null,
+      promptStats: input.promptStats,
+      expected: [
+        'provider run should either emit a visible message or an empty/no-op reply',
+        'mission state changes should reconcile into checklist, phase, plan, receipt, or collaboration records',
+      ],
+    };
   }
 
   private recordMissionWorkPacket(input: {
@@ -2818,6 +2941,23 @@ export class Broker extends EventEmitter {
     }
   }
 
+  private recoverInterruptedJobs(): void {
+    const recovered = recoverInterruptedAgentJobs(this.deps.db);
+    for (const job of recovered) {
+      if (!job.runId) continue;
+      createAgentRunAction(this.deps.db, {
+        roomId: job.roomId,
+        taskId: job.taskId,
+        runId: job.runId,
+        agentId: job.agentId,
+        kind: 'error',
+        status: 'failed',
+        label: 'job lease recovered',
+        detail: 'Fireside restarted before this durable agent job completed.',
+      });
+    }
+  }
+
   private buildProviderSignalRecorder(input: {
     roomId: string;
     taskId: string | null;
@@ -2889,6 +3029,7 @@ export class Broker extends EventEmitter {
     roomId: string;
     taskId: string | null;
     runId: string;
+    agentJobId?: string;
     agentId: AgentId;
     startedAt: number;
     latestProviderSignalAt: () => number;
@@ -2912,6 +3053,12 @@ export class Broker extends EventEmitter {
           runId: input.runId,
           state: 'stalled',
           reason: detail,
+        });
+      }
+      if (input.agentJobId) {
+        renewAgentJobLease(this.deps.db, input.agentJobId, {
+          leaseOwner: this.agentJobLeaseOwner(),
+          leaseMs: AGENT_JOB_LEASE_MS,
         });
       }
       this.recordRunAction({
@@ -3652,17 +3799,23 @@ export class Broker extends EventEmitter {
   }
 
   private appendQueuedHumanMessage(roomId: string, authorId: string, text: string): Message {
-    const message = addMessage(this.deps.db, { roomId, authorId, authorKind: 'human', text });
+    const message = addMessage(this.deps.db, {
+      roomId,
+      authorId,
+      authorKind: 'human',
+      text,
+      deliveryStatus: 'queued',
+    });
     const queued = this.queuedHumanMessageIds.get(roomId) ?? new Set<string>();
     queued.add(message.id);
     this.queuedHumanMessageIds.set(roomId, queued);
-    const queuedMessage: Message = { ...message, deliveryStatus: 'queued' };
-    this.emit('messageAppended', queuedMessage);
-    return queuedMessage;
+    this.emit('messageAppended', message);
+    return message;
   }
 
   private roomHasActiveWork(roomId: string): boolean {
     if (listRunningAgentRunsForRoom(this.deps.db, roomId).length > 0) return true;
+    if (listActiveAgentJobsForRoom(this.deps.db, roomId).length > 0) return true;
     for (const active of this.activeRunAbortControllers.values()) {
       if (active.roomId === roomId && !active.controller.signal.aborted) return true;
     }
@@ -3670,11 +3823,14 @@ export class Broker extends EventEmitter {
   }
 
   private markQueuedMessagesDelivered(roomId: string, messages: Message[]): void {
-    const queued = this.queuedHumanMessageIds.get(roomId);
-    if (!queued) return;
+    const queued = this.queuedHumanMessageIds.get(roomId) ?? new Set<string>();
     const deliveredIds: string[] = [];
     for (const message of messages) {
-      if (queued.delete(message.id)) deliveredIds.push(message.id);
+      const wasQueuedInMemory = queued.delete(message.id);
+      if (wasQueuedInMemory || message.deliveryStatus === 'queued') {
+        updateMessageDeliveryStatus(this.deps.db, message.id, 'delivered');
+        deliveredIds.push(message.id);
+      }
     }
     if (queued.size === 0) this.queuedHumanMessageIds.delete(roomId);
     const deliveredAt = Date.now();
@@ -3691,29 +3847,23 @@ export class Broker extends EventEmitter {
   private withDeliveryStatus(roomId: string, message: Message): Message {
     if (
       message.authorKind === 'human' &&
-      this.queuedHumanMessageIds.get(roomId)?.has(message.id)
+      (message.deliveryStatus === 'queued' || this.queuedHumanMessageIds.get(roomId)?.has(message.id))
     ) {
       return { ...message, deliveryStatus: 'queued' };
     }
-    return message;
+    return { ...message, deliveryStatus: 'delivered' };
   }
 
   private latestQueuedHumanMessage(roomId: string): Message | null {
-    const queued = this.queuedHumanMessageIds.get(roomId);
-    if (!queued || queued.size === 0) return null;
-    const messages = listMessages(this.deps.db, roomId);
-    for (let index = messages.length - 1; index >= 0; index--) {
-      const message = messages[index];
-      if (message && queued.has(message.id) && message.authorKind === 'human') return message;
-    }
-    return null;
+    const queuedMessages = listQueuedHumanMessages(this.deps.db, roomId);
+    return queuedMessages.at(-1) ?? null;
   }
 
   private async drainQueuedHumanMessages(roomId: string): Promise<void> {
     if (this.drainingQueuedRooms.has(roomId) || this.roomHasActiveWork(roomId)) return;
     this.drainingQueuedRooms.add(roomId);
     try {
-      const maxQueuedDrains = this.queuedHumanMessageIds.get(roomId)?.size ?? 0;
+      const maxQueuedDrains = listQueuedHumanMessages(this.deps.db, roomId).length;
       for (let drained = 0; drained < maxQueuedDrains && !this.roomHasActiveWork(roomId); drained += 1) {
         const message = this.latestQueuedHumanMessage(roomId);
         if (!message) return;

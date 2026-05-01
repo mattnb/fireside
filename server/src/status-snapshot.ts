@@ -118,6 +118,7 @@ export interface StatusSnapshotTask {
 
 export interface StatusSnapshotRun {
   id: string;
+  agentJobId: string;
   roomId: string;
   taskId: string | null;
   triggerMessageId: string;
@@ -369,6 +370,7 @@ function toTaskSummary(task: Task): StatusSnapshotTask {
 function toRunSummary(run: AgentRun): StatusSnapshotRun {
   return {
     id: run.id,
+    agentJobId: run.agentJobId,
     roomId: run.roomId,
     taskId: run.taskId,
     triggerMessageId: run.triggerMessageId,

@@ -2,7 +2,13 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { openDatabase } from '../../src/db.js';
 import { createRoom } from '../../src/repos/rooms.js';
-import { addMessage, listMessages, listMessagesAfter } from '../../src/repos/messages.js';
+import {
+  addMessage,
+  listMessages,
+  listMessagesAfter,
+  listQueuedHumanMessages,
+  updateMessageDeliveryStatus,
+} from '../../src/repos/messages.js';
 
 describe('messages repo', () => {
   let db: ReturnType<typeof openDatabase>;
@@ -36,5 +42,30 @@ describe('messages repo', () => {
     addMessage(db, { roomId, authorId: 'x', authorKind: 'human', text: 'c' });
     const after = listMessagesAfter(db, roomId, a.createdAt);
     expect(after.map((m) => m.text)).toEqual(['b', 'c']);
+  });
+
+  it('persists queued human-message delivery state', () => {
+    const queued = addMessage(db, {
+      roomId,
+      authorId: 'human',
+      authorKind: 'human',
+      text: 'hold this until the agents are idle',
+      deliveryStatus: 'queued',
+    });
+    addMessage(db, {
+      roomId,
+      authorId: 'claude',
+      authorKind: 'agent',
+      text: 'working',
+      deliveryStatus: 'queued',
+    });
+
+    expect(listQueuedHumanMessages(db, roomId).map((message) => message.id)).toEqual([queued.id]);
+    expect(listMessages(db, roomId)[0]).toMatchObject({ deliveryStatus: 'queued' });
+    expect(updateMessageDeliveryStatus(db, queued.id, 'delivered')).toMatchObject({
+      id: queued.id,
+      deliveryStatus: 'delivered',
+    });
+    expect(listQueuedHumanMessages(db, roomId)).toEqual([]);
   });
 });

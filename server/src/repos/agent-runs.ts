@@ -22,6 +22,7 @@ export type AgentRunLifecycleState =
 
 export interface AgentRun {
   id: string;
+  agentJobId: string;
   roomId: string;
   taskId: string | null;
   triggerMessageId: string;
@@ -75,6 +76,7 @@ export type AgentRunSummary = Omit<
 
 interface AgentRunRow {
   id: string;
+  agent_job_id: string;
   room_id: string;
   task_id: string | null;
   trigger_message_id: string;
@@ -118,6 +120,7 @@ interface AgentRunRow {
 }
 
 export interface CreateAgentRunInput {
+  agentJobId?: string;
   roomId: string;
   taskId?: string | null;
   triggerMessageId: string;
@@ -193,6 +196,7 @@ function parseCapabilities(json: string): PermissionCapability[] {
 function rowToAgentRun(row: AgentRunRow): AgentRun {
   return {
     id: row.id,
+    agentJobId: row.agent_job_id ?? '',
     roomId: row.room_id,
     taskId: row.task_id,
     triggerMessageId: row.trigger_message_id,
@@ -240,6 +244,7 @@ function rowToAgentRun(row: AgentRunRow): AgentRun {
 function toAgentRunSummary(run: AgentRun): AgentRunSummary {
   return {
     id: run.id,
+    agentJobId: run.agentJobId,
     roomId: run.roomId,
     taskId: run.taskId,
     triggerMessageId: run.triggerMessageId,
@@ -283,7 +288,7 @@ export function createAgentRun(db: Database, input: CreateAgentRunInput): AgentR
   const now = Date.now();
   db.prepare(
     `INSERT INTO agent_runs (
-      id, room_id, task_id, trigger_message_id, reply_message_id, agent_id, status, permission_mode,
+      id, agent_job_id, room_id, task_id, trigger_message_id, reply_message_id, agent_id, status, permission_mode,
       prompt_chars, estimated_prompt_tokens, live_messages, context_artifacts, started_at, completed_at, error,
       prompt_text, stdout, stderr, reply_text, cli_session_id, permission_source, permission_target,
       permission_reason, permission_filesystem_scope, permission_web, permission_capabilities_json,
@@ -291,9 +296,10 @@ export function createAgentRun(db: Database, input: CreateAgentRunInput): AgentR
       permission_target_checked_at, permission_provider_profile, lifecycle_state, lifecycle_reason,
       lifecycle_updated_at, last_signal_at, attempt, continuation_turn, max_turns, workspace_path,
       retry_of_run_id, retry_after
-    ) VALUES (?, ?, ?, ?, NULL, ?, 'running', ?, ?, ?, ?, ?, ?, NULL, '', ?, '', '', '', NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ) VALUES (?, ?, ?, ?, ?, NULL, ?, 'running', ?, ?, ?, ?, ?, ?, NULL, '', ?, '', '', '', NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     id,
+    input.agentJobId ?? '',
     input.roomId,
     input.taskId ?? null,
     input.triggerMessageId,

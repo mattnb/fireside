@@ -18,6 +18,7 @@ describe('openDatabase', () => {
     expect(names).toContain('sessions');
     expect(names).toContain('collaboration_items');
     expect(names).toContain('agent_run_actions');
+    expect(names).toContain('agent_jobs');
     expect(names).toContain('task_phases');
     expect(names).toContain('task_checklist_items');
     expect(names).toContain('task_plans');
@@ -157,7 +158,11 @@ describe('openDatabase', () => {
       expect.arrayContaining(['requested_mode', 'capabilities_json', 'provider_profile']),
     );
     expect(runColumns.map((row) => row.name)).toEqual(
-      expect.arrayContaining(['permission_capabilities_json', 'permission_provider_profile']),
+      expect.arrayContaining([
+        'agent_job_id',
+        'permission_capabilities_json',
+        'permission_provider_profile',
+      ]),
     );
     db.close();
   });

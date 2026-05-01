@@ -297,6 +297,7 @@ export interface MissionBriefing extends MissionBriefingSummary {
 
 export interface AgentRun {
   id: string;
+  agentJobId?: string;
   roomId: string;
   taskId?: string | null;
   triggerMessageId?: string;
