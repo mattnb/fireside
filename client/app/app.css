@@ -290,6 +290,22 @@
   background: transparent;
 }
 
+.rail-agent--ready {
+  border-color: rgba(94, 196, 144, 0.18);
+  background: rgba(94, 196, 144, 0.055);
+}
+
+.rail-agent--waiting {
+  border-color: rgba(229, 169, 26, 0.2);
+  background: rgba(229, 169, 26, 0.055);
+}
+
+.rail-agent--blocked,
+.rail-agent--stale {
+  border-color: rgba(255, 123, 114, 0.24);
+  background: rgba(255, 123, 114, 0.055);
+}
+
 .rail-agent__glyph {
   grid-row: 1;
   grid-column: 1;
@@ -341,6 +357,19 @@
   color: var(--rail-agent-bar);
 }
 
+.rail-agent--ready .rail-agent__status {
+  color: var(--accent);
+}
+
+.rail-agent--waiting .rail-agent__status {
+  color: var(--accent-warning);
+}
+
+.rail-agent--blocked .rail-agent__status,
+.rail-agent--stale .rail-agent__status {
+  color: #ff7b72;
+}
+
 .rail-agent__pulse {
   margin-left: auto;
   width: 7px;
@@ -358,6 +387,20 @@
 .rail-agent--yolo .rail-agent__pulse {
   background: var(--accent-warning);
   box-shadow: 0 0 6px rgba(229, 169, 26, 0.6);
+}
+
+.rail-agent--ready .rail-agent__pulse {
+  background: var(--accent);
+}
+
+.rail-agent--waiting .rail-agent__pulse {
+  background: var(--accent-warning);
+}
+
+.rail-agent--blocked .rail-agent__pulse,
+.rail-agent--stale .rail-agent__pulse {
+  background: #ff7b72;
+  box-shadow: 0 0 6px rgba(255, 123, 114, 0.55);
 }
 
 .rail-agent__bar-row {

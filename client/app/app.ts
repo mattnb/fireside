@@ -29,6 +29,7 @@ import {
   Room,
   Project,
   StatusSnapshot,
+  StatusSnapshotAgentState,
   StatusSnapshotRoom,
   Task,
   TaskChecklistItem,
@@ -327,6 +328,10 @@ export class App implements OnDestroy {
     const snapshot = this.stateSnapshot();
     const roomIds = new Set(this.selectedProjectRooms().map((room) => room.id));
     return snapshot?.rooms.filter((room) => roomIds.has(room.id)) ?? [];
+  });
+  readonly selectedRoomSnapshot = computed(() => {
+    const roomId = this.selectedRoomId();
+    return this.stateSnapshot()?.rooms.find((room) => room.id === roomId) ?? null;
   });
   readonly projectDashboardSummary = computed(() =>
     this.buildProjectDashboardSummary(this.selectedProjectRoomSnapshots()),
@@ -808,14 +813,36 @@ export class App implements OnDestroy {
     return agentId === 'claude' || agentId === 'codex';
   }
 
+  agentWorkflowState(agentId: AgentId): StatusSnapshotAgentState | null {
+    return (
+      this.selectedRoomSnapshot()?.agentStates.find((state) => state.agentId === agentId) ?? null
+    );
+  }
+
   agentRailStatus(agentId: AgentId): string {
     if (this.compactingAgent() === agentId) return 'compacting';
+    const state = this.agentWorkflowState(agentId);
+    if (state) return state.label;
     if (this.isAgentRunning(agentId)) return 'working';
     if (this.isRoomYoloAgent(agentId)) return 'yolo';
     return 'idle';
   }
 
-  agentRailKind(agentId: AgentId): 'running' | 'yolo' | 'idle' {
+  agentRailDetail(agentId: AgentId): string {
+    const state = this.agentWorkflowState(agentId);
+    return state?.detail ?? this.agentRailStatus(agentId);
+  }
+
+  agentRailKind(
+    agentId: AgentId,
+  ): 'running' | 'yolo' | 'idle' | 'ready' | 'waiting' | 'blocked' | 'stale' {
+    const state = this.agentWorkflowState(agentId);
+    if (state?.state === 'working') return 'running';
+    if (state?.state === 'stale') return 'stale';
+    if (state?.state === 'blocked') return 'blocked';
+    if (state?.state === 'waiting_on_human' || state?.state === 'waiting_on_agent')
+      return 'waiting';
+    if (state?.state === 'idle_ready') return 'ready';
     if (this.isAgentRunning(agentId)) return 'running';
     if (this.isRoomYoloAgent(agentId)) return 'yolo';
     return 'idle';
@@ -3140,7 +3167,10 @@ export class App implements OnDestroy {
     return (
       /^Permission (approved|denied) for /i.test(message.text) ||
       /^\([a-z]+ started approved /i.test(message.text) ||
-      /^\([a-z]+ finished the .* follow-up without a visible chat message\.\)$/i.test(message.text)
+      /^\([a-z]+ finished the .* follow-up without a visible chat message\.\)$/i.test(
+        message.text,
+      ) ||
+      /^\(fireside workflow contract repair for /i.test(message.text)
     );
   }
 

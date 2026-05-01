@@ -4,6 +4,7 @@ import type { AgentRunStatus } from '../../src/repos/agent-runs.js';
 import { createAgentRunAction } from '../../src/repos/run-actions.js';
 import { createRoom } from '../../src/repos/rooms.js';
 import { createTask } from '../../src/repos/tasks.js';
+import { createTaskChecklistItem } from '../../src/repos/task-checklist.js';
 import { buildStatusSnapshot } from '../../src/status-snapshot.js';
 
 let runSequence = 0;
@@ -245,5 +246,55 @@ describe('status snapshot', () => {
       usage: { provider: 'codex', model: 'gpt-5.5', usedTokens: 123 },
     });
     expect(snapshot.rooms[0]?.contextUsage.byAgent).toHaveLength(1);
+  });
+
+  it('projects per-agent workflow state from runs, permissions, and checklist ownership', () => {
+    const room = createRoom(db, { name: 'ops', agents: ['codex', 'claude', 'gemini'] });
+    const task = createTask(db, {
+      roomId: room.id,
+      title: 'Coordinate mission',
+      agents: ['codex', 'claude', 'gemini'],
+    });
+    const codexItem = createTaskChecklistItem(db, {
+      taskId: task.id,
+      title: 'Ready lane',
+      ownerAgentId: 'codex',
+      status: 'open',
+    });
+    createTaskChecklistItem(db, {
+      taskId: task.id,
+      title: 'Needs council',
+      ownerAgentId: 'claude',
+      status: 'blocked',
+      blockedReason: 'Waiting for Matt to choose an option.',
+      councilRequired: true,
+    });
+    const geminiRun = insertRun(db, {
+      roomId: room.id,
+      taskId: task.id,
+      triggerMessageId: 'msg-gemini',
+      agentId: 'gemini',
+      startedAt: 1_800_000_000_000,
+    });
+
+    const snapshot = buildStatusSnapshot({ db });
+    const states = new Map(snapshot.rooms[0]!.agentStates.map((state) => [state.agentId, state]));
+
+    expect(states.get('gemini')).toMatchObject({
+      state: 'working',
+      label: 'working',
+      runId: geminiRun.id,
+    });
+    expect(states.get('claude')).toMatchObject({
+      state: 'waiting_on_human',
+      label: 'waiting',
+      severity: 'warn',
+    });
+    expect(states.get('codex')).toMatchObject({
+      state: 'idle_ready',
+      label: 'ready',
+      checklistItemId: codexItem.id,
+    });
+    expect(snapshot.agentStates).toHaveLength(3);
   });
 });

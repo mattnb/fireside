@@ -227,7 +227,10 @@
           </div>
         </div>
         } @for (agent of roomAgents(); track agent) {
-        <div [class]="'rail-agent rail-agent--' + agent + ' rail-agent--' + agentRailKind(agent)">
+        <div
+          [class]="'rail-agent rail-agent--' + agent + ' rail-agent--' + agentRailKind(agent)"
+          [title]="agentRailDetail(agent)"
+        >
           <span
             class="avatar avatar--sm rail-agent__glyph"
             [class]="'avatar avatar--sm avatar--' + agent + ' rail-agent__glyph'"

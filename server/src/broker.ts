@@ -295,6 +295,11 @@ interface MissionReconciliationResult {
   laneUpdates: number;
 }
 
+interface WorkflowContractValidation {
+  violations: string[];
+  repairPrompt: string;
+}
+
 export interface TaskControl {
   task: Task;
   phases: TaskPhase[];
@@ -385,6 +390,16 @@ function cleanVisibleAgentMessage(agentId: AgentId, text: string): string {
   return text
     .replace(new RegExp(`(?:\\n\\s*)+(?:[*_~\\s]*)${escaped}(?:[*_~\\s]*)(?::|,)?\\s*$`, 'i'), '')
     .trim();
+}
+
+function isBrokerInternalSystemMessage(message: Message): boolean {
+  if (message.authorKind !== 'system') return false;
+  return (
+    /^Permission (approved|denied) for /i.test(message.text) ||
+    /^\([a-z]+ started approved /i.test(message.text) ||
+    /^\([a-z]+ finished the .* follow-up without a visible chat message\.\)$/i.test(message.text) ||
+    /^\(fireside workflow contract repair for /i.test(message.text)
+  );
 }
 
 function providerCompactionWarning(agentId: AgentId, stderr: string): string | null {
@@ -1625,6 +1640,7 @@ export class Broker extends EventEmitter {
     workLane?: WorkLaneAssignment,
     attempt = 1,
     retryOfRunId = '',
+    workflowRepair = false,
   ): Promise<AgentTurnResult> {
     if (cancelSignal?.aborted) return { message: null, progressed: false };
     const spec = this.deps.getSpec(agentId);
@@ -2043,6 +2059,7 @@ export class Broker extends EventEmitter {
           workLane,
           retryDecision.nextAttempt,
           run.id,
+          workflowRepair,
         );
       }
       this.appendDirect(
@@ -2220,9 +2237,31 @@ export class Broker extends EventEmitter {
             : 'agent declined to add a chat message',
       });
       completeAgentJob(this.deps.db, agentJob.id);
+      const repairResult = await this.maybeRunWorkflowContractRepair({
+        roomId,
+        agentId,
+        trigger,
+        discussion,
+        permission,
+        cancelSignal,
+        yoloPermissionAutoApprovals,
+        workLane,
+        attempt,
+        retryOfRunId,
+        workflowRepair,
+        runId: run.id,
+        task: missionTask,
+        missionStateUpdateCount,
+        missionReceiptCount,
+        reconciliation,
+        visibleText: textAfterMissionReceipts,
+      });
       return {
         message: null,
-        progressed: hiddenMissionUpdateCount > 0 || extractedDrafts.drafts.length > 0,
+        progressed:
+          hiddenMissionUpdateCount > 0 ||
+          extractedDrafts.drafts.length > 0 ||
+          repairResult?.progressed === true,
         runId: run.id,
       };
     }
@@ -2314,6 +2353,7 @@ export class Broker extends EventEmitter {
           workLane,
           attempt,
           retryOfRunId,
+          workflowRepair,
         );
       }
       const request = addPermissionRequest(this.deps.db, {
@@ -2346,19 +2386,6 @@ export class Broker extends EventEmitter {
       this.emit('permissionRequestCreated', request);
       completeAgentJob(this.deps.db, agentJob.id);
       return { message: null, progressed: false, runId: run.id };
-    }
-    if (
-      missionTask &&
-      missionStateUpdateCount === 0 &&
-      missionReceiptCount === 0 &&
-      reconciliation.applied === 0
-    ) {
-      this.recordMissingMissionReceipt({
-        roomId,
-        task: missionTask,
-        runId: run.id,
-        agentId,
-      });
     }
     const extracted = extractCollaborationNotes(textAfterMissionReceipts);
     const visibleText = cleanVisibleAgentMessage(agentId, extracted.visibleText);
@@ -2396,9 +2423,32 @@ export class Broker extends EventEmitter {
       detail: message ? message.text : 'collaboration note stored without visible chat text',
     });
     completeAgentJob(this.deps.db, agentJob.id);
+    const repairResult = await this.maybeRunWorkflowContractRepair({
+      roomId,
+      agentId,
+      trigger,
+      discussion,
+      permission,
+      cancelSignal,
+      yoloPermissionAutoApprovals,
+      workLane,
+      attempt,
+      retryOfRunId,
+      workflowRepair,
+      runId: run.id,
+      task: missionTask,
+      missionStateUpdateCount,
+      missionReceiptCount,
+      reconciliation,
+      visibleText,
+    });
     return {
       message,
-      progressed: Boolean(message) || extracted.notes.length > 0 || reconciliation.applied > 0,
+      progressed:
+        Boolean(message) ||
+        extracted.notes.length > 0 ||
+        reconciliation.applied > 0 ||
+        repairResult?.progressed === true,
       runId: run.id,
     };
   }
@@ -3105,6 +3155,171 @@ export class Broker extends EventEmitter {
         status: 'missing',
       }),
     });
+  }
+
+  private validateWorkflowContract(input: {
+    task: Task | null;
+    agentId: AgentId;
+    runId: string;
+    missionStateUpdateCount: number;
+    missionReceiptCount: number;
+    reconciliation: MissionReconciliationResult;
+    visibleText: string;
+    workLane: WorkLaneAssignment | undefined;
+  }): WorkflowContractValidation | null {
+    if (!input.task) return null;
+    if (
+      input.missionStateUpdateCount > 0 ||
+      input.missionReceiptCount > 0 ||
+      input.reconciliation.applied > 0
+    ) {
+      return null;
+    }
+    if (!input.workLane && input.visibleText.trim().length === 0) return null;
+
+    const violations = [
+      'active mission turn produced no mission receipt, checklist update, phase update, plan update, or reconciled state',
+    ];
+    const currentLaneItem = input.workLane
+      ? getTaskChecklistItem(this.deps.db, input.workLane.item.id)
+      : null;
+    if (currentLaneItem && !['done', 'blocked', 'skipped'].includes(currentLaneItem.status)) {
+      violations.push('assigned checklist lane is still open after the turn');
+    }
+    if (input.visibleText.trim().length === 0) {
+      violations.push('agent returned an empty visible message during an active mission');
+    } else if (this.workLaneSignal(input.visibleText) !== 'none') {
+      violations.push(
+        'visible text implies work completed or blocked but Mission Control was not updated',
+      );
+    }
+
+    return {
+      violations,
+      repairPrompt: this.workflowContractRepairPrompt({
+        task: input.task,
+        agentId: input.agentId,
+        runId: input.runId,
+        violations,
+        visibleText: input.visibleText,
+        workLaneItem: currentLaneItem ?? input.workLane?.item ?? null,
+      }),
+    };
+  }
+
+  private workflowContractRepairPrompt(input: {
+    task: Task;
+    agentId: AgentId;
+    runId: string;
+    violations: string[];
+    visibleText: string;
+    workLaneItem: TaskChecklistItem | null;
+  }): string {
+    const lines = [
+      `(fireside workflow contract repair for ${input.agentId}: run ${input.runId})`,
+      '',
+      `Mission Control needs a state receipt for mission "${input.task.title}".`,
+      'Emit only the missing hidden Mission Control block(s). No visible prose.',
+      '',
+      'Required options:',
+      '- If assigned checklist work completed or blocked, emit /mission-task with action: update, id, status, and note.',
+      '- If no checklist state changed, emit /mission-receipt with status: no_update or continuing and a concise summary.',
+      '',
+      'Examples:',
+      '/mission-task',
+      'action: update',
+      'id: <checklist-item-id>',
+      'status: done',
+      'note: <evidence or completion summary>',
+      '/end-mission-task',
+      '',
+      '/mission-receipt',
+      'status: continuing',
+      'summary: <what changed, or why no Mission Control state changed>',
+      '/end-mission-receipt',
+      '',
+      `Violations: ${input.violations.join('; ')}`,
+    ];
+    if (input.workLaneItem) {
+      lines.push(
+        `Assigned item: ${input.workLaneItem.title} [id=${input.workLaneItem.id}, status=${input.workLaneItem.status}]`,
+      );
+    }
+    const previous = oneLine(input.visibleText, 1200);
+    if (previous) lines.push(`Previous visible text: ${previous}`);
+    return lines.join('\n');
+  }
+
+  private async maybeRunWorkflowContractRepair(input: {
+    roomId: string;
+    agentId: AgentId;
+    trigger: Message;
+    discussion: DiscussionTurn | undefined;
+    permission: PermissionGrant | undefined;
+    cancelSignal: AbortSignal | undefined;
+    yoloPermissionAutoApprovals: number;
+    workLane: WorkLaneAssignment | undefined;
+    attempt: number;
+    retryOfRunId: string;
+    workflowRepair: boolean;
+    runId: string;
+    task: Task | null;
+    missionStateUpdateCount: number;
+    missionReceiptCount: number;
+    reconciliation: MissionReconciliationResult;
+    visibleText: string;
+  }): Promise<AgentTurnResult | null> {
+    if (input.workflowRepair || input.cancelSignal?.aborted) return null;
+    const validation = this.validateWorkflowContract({
+      task: input.task,
+      agentId: input.agentId,
+      runId: input.runId,
+      missionStateUpdateCount: input.missionStateUpdateCount,
+      missionReceiptCount: input.missionReceiptCount,
+      reconciliation: input.reconciliation,
+      visibleText: input.visibleText,
+      workLane: input.workLane,
+    });
+    if (!validation) return null;
+
+    if (input.task) {
+      this.recordMissingMissionReceipt({
+        roomId: input.roomId,
+        task: input.task,
+        runId: input.runId,
+        agentId: input.agentId,
+      });
+    }
+    this.recordRunAction({
+      roomId: input.roomId,
+      taskId: input.task?.id ?? null,
+      runId: input.runId,
+      agentId: input.agentId,
+      kind: 'ledger',
+      status: 'info',
+      label: 'workflow contract repair requested',
+      detail: JSON.stringify({ violations: validation.violations }),
+    });
+
+    const repairTrigger = this.appendDirect(
+      input.roomId,
+      'system',
+      'system',
+      validation.repairPrompt,
+    );
+    return this.runAgentReply(
+      input.roomId,
+      input.agentId,
+      repairTrigger,
+      input.discussion,
+      input.permission,
+      input.cancelSignal,
+      input.yoloPermissionAutoApprovals,
+      input.workLane,
+      input.attempt,
+      input.retryOfRunId,
+      true,
+    );
   }
 
   private missionReceiptDetail(
@@ -4142,7 +4357,12 @@ export class Broker extends EventEmitter {
 
   private latestMessage(roomId: string, fallback: Message): Message {
     const messages = listMessages(this.deps.db, roomId);
-    return messages[messages.length - 1] ?? fallback;
+    for (let index = messages.length - 1; index >= 0; index -= 1) {
+      const message = messages[index]!;
+      if (isBrokerInternalSystemMessage(message)) continue;
+      return message;
+    }
+    return fallback;
   }
 
   private async runDiscussionThread(

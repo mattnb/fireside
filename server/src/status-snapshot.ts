@@ -2,6 +2,7 @@ import type { Database } from 'better-sqlite3';
 import type { AgentId } from './agents/types.js';
 import type { AgentContextUsage } from './context-usage.js';
 import { listAllAgentRunsForRoom, type AgentRun, type AgentRunStatus } from './repos/agent-runs.js';
+import { listActiveAgentJobsForRoom, type AgentJob } from './repos/agent-jobs.js';
 import {
   listAgentRunActionsForRoom,
   type AgentRunAction,
@@ -10,6 +11,7 @@ import {
 } from './repos/run-actions.js';
 import { getRoom, listRooms, type Room } from './repos/rooms.js';
 import { listTasks, type Task, type TaskStatus } from './repos/tasks.js';
+import { listTaskChecklistItems, type TaskChecklistItem } from './repos/task-checklist.js';
 
 const TASK_STATUSES = [
   'active',
@@ -44,6 +46,7 @@ const ACTION_KINDS = [
 ] as const satisfies readonly AgentRunActionKind[];
 
 const DEFAULT_RECENT_LIMIT = 10;
+const STALE_RUN_MS = 5 * 60 * 1000;
 
 export interface BuildStatusSnapshotInput {
   db: Database;
@@ -173,6 +176,27 @@ export interface StatusSnapshotContextUsage {
   byAgent: StatusSnapshotAgentContextUsage[];
 }
 
+export type StatusSnapshotAgentWorkflowState =
+  | 'working'
+  | 'stale'
+  | 'waiting_on_human'
+  | 'waiting_on_agent'
+  | 'blocked'
+  | 'idle_ready'
+  | 'idle';
+
+export interface StatusSnapshotAgentState {
+  agentId: AgentId;
+  state: StatusSnapshotAgentWorkflowState;
+  label: string;
+  detail: string;
+  severity: 'good' | 'info' | 'warn' | 'danger' | 'muted';
+  since: number;
+  runId: string | null;
+  taskId: string | null;
+  checklistItemId: string | null;
+}
+
 export interface StatusSnapshotRoom {
   id: string;
   projectId: string;
@@ -186,6 +210,7 @@ export interface StatusSnapshotRoom {
   lastRun: StatusSnapshotRun | null;
   lastAction: StatusSnapshotRunAction | null;
   contextUsage: StatusSnapshotContextUsage;
+  agentStates: StatusSnapshotAgentState[];
 }
 
 export interface StatusSnapshot {
@@ -210,6 +235,7 @@ export interface StatusSnapshot {
     summary: StatusSnapshotRunActionCounts;
   };
   contextUsage: StatusSnapshotContextUsage;
+  agentStates: StatusSnapshotAgentState[];
 }
 
 function zeroTaskCounts(): StatusSnapshotTaskCounts {
@@ -429,6 +455,10 @@ function compareActionsDesc(a: StatusSnapshotRunAction, b: StatusSnapshotRunActi
   return timeDiff !== 0 ? timeDiff : b.id.localeCompare(a.id);
 }
 
+function latestForAgent<T extends { agentId: AgentId }>(values: T[], agentId: AgentId): T | null {
+  return values.find((value) => value.agentId === agentId) ?? null;
+}
+
 function contextUsageEntry(
   action: StatusSnapshotRunAction,
 ): StatusSnapshotAgentContextUsage | null {
@@ -455,6 +485,156 @@ function buildContextUsage(actions: StatusSnapshotRunAction[]): StatusSnapshotCo
   return { latest, byAgent: Array.from(byAgent.values()) };
 }
 
+function checklistItemsForTasks(db: Database, tasks: Task[]): TaskChecklistItem[] {
+  return tasks.flatMap((task) => listTaskChecklistItems(db, task.id));
+}
+
+function dependenciesAreClosed(
+  item: TaskChecklistItem,
+  byId: Map<string, TaskChecklistItem>,
+): boolean {
+  if (item.dependencyIds.length === 0) return true;
+  return item.dependencyIds.every((id) => {
+    const dependency = byId.get(id);
+    return dependency?.status === 'done' || dependency?.status === 'skipped';
+  });
+}
+
+function buildAgentStates(input: {
+  room: Room;
+  activeTasks: Task[];
+  runs: StatusSnapshotRun[];
+  actions: StatusSnapshotRunAction[];
+  activeJobs: AgentJob[];
+  checklistItems: TaskChecklistItem[];
+  now: number;
+}): StatusSnapshotAgentState[] {
+  const runsDesc = [...input.runs].sort(compareRunsDesc);
+  const actionsDesc = [...input.actions].sort(compareActionsDesc);
+  const checklistById = new Map(input.checklistItems.map((item) => [item.id, item]));
+  const activeTaskIds = new Set(input.activeTasks.map((task) => task.id));
+  const activeMissionAgents = new Set(input.activeTasks.flatMap((task) => task.agents));
+
+  return input.room.agents.map((agentId) => {
+    const runningRun = input.runs
+      .filter((run) => run.agentId === agentId && run.status === 'running')
+      .sort(compareRunsDesc)[0];
+    if (runningRun) {
+      const lastActivityAt =
+        runningRun.lastSignalAt || runningRun.lifecycleUpdatedAt || runningRun.startedAt;
+      const stale = input.now - lastActivityAt >= STALE_RUN_MS;
+      return {
+        agentId,
+        state: stale ? 'stale' : 'working',
+        label: stale ? 'stale' : 'working',
+        detail: stale
+          ? `No provider signal for ${Math.round((input.now - lastActivityAt) / 1000)}s.`
+          : runningRun.lifecycleReason || 'Provider run is active.',
+        severity: stale ? 'warn' : 'good',
+        since: runningRun.startedAt,
+        runId: runningRun.id,
+        taskId: runningRun.taskId,
+        checklistItemId: null,
+      };
+    }
+
+    const activeJob = input.activeJobs.find((job) => job.agentId === agentId);
+    if (activeJob) {
+      return {
+        agentId,
+        state: 'working',
+        label: activeJob.status === 'queued' ? 'queued' : 'working',
+        detail: `Agent job is ${activeJob.status}.`,
+        severity: 'good',
+        since: activeJob.createdAt,
+        runId: activeJob.runId,
+        taskId: activeJob.taskId,
+        checklistItemId: activeJob.checklistItemId,
+      };
+    }
+
+    const latestRun = latestForAgent(runsDesc, agentId);
+    if (latestRun?.status === 'permission-requested') {
+      return {
+        agentId,
+        state: 'waiting_on_human',
+        label: 'waiting',
+        detail: latestRun.lifecycleReason || 'Waiting for a human permission decision.',
+        severity: 'warn',
+        since: latestRun.completedAt ?? latestRun.startedAt,
+        runId: latestRun.id,
+        taskId: latestRun.taskId,
+        checklistItemId: null,
+      };
+    }
+
+    const assignedItems = input.checklistItems
+      .filter((item) => activeTaskIds.has(item.taskId) && item.ownerAgentId === agentId)
+      .sort((a, b) => a.sortOrder - b.sortOrder || a.updatedAt - b.updatedAt);
+    const blockedItem = assignedItems.find((item) => item.status === 'blocked');
+    if (blockedItem) {
+      return {
+        agentId,
+        state: blockedItem.councilRequired ? 'waiting_on_human' : 'blocked',
+        label: blockedItem.councilRequired ? 'waiting' : 'blocked',
+        detail:
+          blockedItem.blockedReason ||
+          `${blockedItem.title} is blocked${blockedItem.councilRequired ? ' and needs council' : ''}.`,
+        severity: blockedItem.councilRequired ? 'warn' : 'danger',
+        since: blockedItem.updatedAt,
+        runId: latestRun?.id ?? null,
+        taskId: blockedItem.taskId,
+        checklistItemId: blockedItem.id,
+      };
+    }
+
+    const openItem = assignedItems.find((item) => item.status === 'open');
+    if (openItem) {
+      const ready = dependenciesAreClosed(openItem, checklistById);
+      return {
+        agentId,
+        state: ready ? 'idle_ready' : 'waiting_on_agent',
+        label: ready ? 'ready' : 'waiting',
+        detail: ready
+          ? `Ready to pick up ${openItem.title}.`
+          : `Waiting for dependencies before ${openItem.title}.`,
+        severity: ready ? 'info' : 'warn',
+        since: openItem.updatedAt,
+        runId: latestRun?.id ?? null,
+        taskId: openItem.taskId,
+        checklistItemId: openItem.id,
+      };
+    }
+
+    const latestAction = latestForAgent(actionsDesc, agentId);
+    if (activeMissionAgents.has(agentId)) {
+      return {
+        agentId,
+        state: 'idle_ready',
+        label: input.room.yoloAgents.includes(agentId) ? 'yolo ready' : 'available',
+        detail: 'Active mission has no assigned open lane for this agent.',
+        severity: 'info',
+        since: latestRun?.completedAt ?? latestAction?.createdAt ?? input.now,
+        runId: latestRun?.id ?? null,
+        taskId: input.activeTasks[0]?.id ?? null,
+        checklistItemId: null,
+      };
+    }
+
+    return {
+      agentId,
+      state: 'idle',
+      label: input.room.yoloAgents.includes(agentId) ? 'yolo' : 'idle',
+      detail: latestRun ? `Last run: ${latestRun.status}.` : 'No active work.',
+      severity: 'muted',
+      since: latestRun?.completedAt ?? latestAction?.createdAt ?? input.now,
+      runId: latestRun?.id ?? null,
+      taskId: latestRun?.taskId ?? null,
+      checklistItemId: null,
+    };
+  });
+}
+
 function selectedRooms(db: Database, roomId: string | undefined): Room[] {
   if (roomId) {
     const room = getRoom(db, roomId);
@@ -472,6 +652,7 @@ function boundedRecentLimit(value: number | undefined): number {
 export function buildStatusSnapshot(input: BuildStatusSnapshotInput): StatusSnapshot {
   const rooms = selectedRooms(input.db, input.roomId);
   const recentLimit = boundedRecentLimit(input.recentLimit);
+  const now = Date.now();
   const agents = new Set<AgentId>();
   const taskCounts = zeroTaskCounts();
   const runCounts = zeroRunCounts();
@@ -479,6 +660,7 @@ export function buildStatusSnapshot(input: BuildStatusSnapshotInput): StatusSnap
   const activeTasks: StatusSnapshotTask[] = [];
   const allRuns: StatusSnapshotRun[] = [];
   const allActions: StatusSnapshotRunAction[] = [];
+  const allAgentStates: StatusSnapshotAgentState[] = [];
 
   const roomSnapshots = rooms.map((room) => {
     for (const agent of room.agents) agents.add(agent);
@@ -489,6 +671,7 @@ export function buildStatusSnapshot(input: BuildStatusSnapshotInput): StatusSnap
     const roomTasks = listTasks(input.db, room.id);
     const roomRuns = listAllAgentRunsForRoom(input.db, room.id);
     const roomActions = listAgentRunActionsForRoom(input.db, room.id);
+    const roomActiveJobs = listActiveAgentJobsForRoom(input.db, room.id);
 
     const roomActiveTasks = roomTasks
       .filter((task) => ACTIVE_TASK_STATUSES.has(task.status))
@@ -512,6 +695,17 @@ export function buildStatusSnapshot(input: BuildStatusSnapshotInput): StatusSnap
 
     const roomSortedRuns = [...roomRunSummaries].sort(compareRunsDesc);
     const roomSortedActions = [...roomActionSummaries].sort(compareActionsDesc);
+    const activeTaskRecords = roomTasks.filter((task) => ACTIVE_TASK_STATUSES.has(task.status));
+    const roomAgentStates = buildAgentStates({
+      room,
+      activeTasks: activeTaskRecords,
+      runs: roomRunSummaries,
+      actions: roomActionSummaries,
+      activeJobs: roomActiveJobs,
+      checklistItems: checklistItemsForTasks(input.db, activeTaskRecords),
+      now,
+    });
+    allAgentStates.push(...roomAgentStates);
     const counts: StatusSnapshotRoomCounts = {
       agents: room.agents.length,
       activeMissions: roomTaskCounts.activeLike,
@@ -533,6 +727,7 @@ export function buildStatusSnapshot(input: BuildStatusSnapshotInput): StatusSnap
       lastRun: roomSortedRuns[0] ?? null,
       lastAction: roomSortedActions[0] ?? null,
       contextUsage: buildContextUsage(roomActionSummaries),
+      agentStates: roomAgentStates,
     } satisfies StatusSnapshotRoom;
   });
 
@@ -572,5 +767,6 @@ export function buildStatusSnapshot(input: BuildStatusSnapshotInput): StatusSnap
       summary: actionCounts,
     },
     contextUsage: buildContextUsage(allActions),
+    agentStates: allAgentStates,
   };
 }

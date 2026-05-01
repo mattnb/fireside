@@ -17,6 +17,7 @@
     "dev:server": "tsx watch server/src/index.ts",
     "dev:ui": "ng serve --configuration development --proxy-config client/proxy.conf.json",
     "test": "vitest run",
+    "test:providers": "vitest run server/tests/unit/provider-conformance.test.ts",
     "test:watch": "vitest",
     "lint": "eslint .",
     "format": "prettier --write .",

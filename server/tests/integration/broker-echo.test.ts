@@ -1393,16 +1393,23 @@ describe('Broker', () => {
     expect(runs[0]!.prompt).toContain('Mission goal: Add task execution controls');
     expect(runs[0]!.prompt).toContain('Mission summary: Task shell is ready for implementation.');
 
+    expect(runs[1]!.prompt).toContain('workflow contract repair');
     const agentRuns = listAgentRuns(db, room.id);
-    expect(agentRuns).toHaveLength(1);
-    expect(agentRuns[0]).toMatchObject({
-      agentId: 'claude',
-      status: 'completed',
-      taskId: task!.id,
-      permissionMode: 'plan',
-    });
-    expect(agentRuns[0]!.promptChars).toBeGreaterThan(0);
-    expect(agentRuns[0]!.estimatedPromptTokens).toBeGreaterThan(0);
+    expect(agentRuns).toHaveLength(2);
+    for (const run of agentRuns) {
+      expect(run).toMatchObject({
+        agentId: 'claude',
+        status: 'completed',
+        taskId: task!.id,
+        permissionMode: 'plan',
+      });
+      expect(run.promptChars).toBeGreaterThan(0);
+      expect(run.estimatedPromptTokens).toBeGreaterThan(0);
+    }
+    const actionLabels = agentRuns.flatMap((run) =>
+      listAgentRunActions(db, run.id).map((action) => action.label),
+    );
+    expect(actionLabels).toContain('workflow contract repair requested');
   });
 
   it('stores hidden mission plan, phase, and checklist updates from agent replies', async () => {
@@ -1784,13 +1791,23 @@ describe('Broker', () => {
   });
 
   it('flags active-mission replies that do not reconcile mission state', async () => {
+    let turn = 0;
     const missingReceiptBroker = new Broker({
       db,
       maxAgentRepliesPerThread: 1,
       runAgent: async (spec, prompt, sessionId) => {
+        turn += 1;
         runs.push({ agentId: spec.id, prompt, sessionId });
         return {
-          text: 'I finished the work described above.',
+          text:
+            turn === 1
+              ? 'I finished the work described above.'
+              : [
+                  '/mission-receipt',
+                  'status: no_update',
+                  'summary: Repair turn acknowledged the missing mission receipt.',
+                  '/end-mission-receipt',
+                ].join('\n'),
           sessionId: `${spec.id}-sess`,
           raw: { stdout: '', stderr: '' },
         };
@@ -1810,15 +1827,19 @@ describe('Broker', () => {
 
     await missingReceiptBroker.postHumanMessage(room.id, 'human', '@claude execute the next item');
 
-    const [run] = listAgentRuns(db, room.id);
-    const missing = listAgentRunActions(db, run!.id).find(
-      (action) => action.label === 'mission receipt missing',
-    );
+    expect(runs).toHaveLength(2);
+    expect(runs[1]!.prompt).toContain('workflow contract repair');
+    const runActions = listAgentRuns(db, room.id).flatMap((run) => listAgentRunActions(db, run.id));
+    const missing = runActions.find((action) => action.label === 'mission receipt missing');
     expect(missing).toMatchObject({
       taskId: task!.id,
       status: 'failed',
     });
     expect(missing!.detail).toContain('without a /mission-receipt');
+    expect(runActions.map((action) => action.label)).toContain(
+      'workflow contract repair requested',
+    );
+    expect(runActions.map((action) => action.label)).toContain('mission receipt: no_update');
   });
 
   it('retroactively associates existing checklist items with a new plan and phase', async () => {

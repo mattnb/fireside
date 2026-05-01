@@ -113,6 +113,27 @@ export interface StatusSnapshotRunCounts {
   permissionRequested: number;
 }
 
+export type StatusSnapshotAgentWorkflowState =
+  | 'working'
+  | 'stale'
+  | 'waiting_on_human'
+  | 'waiting_on_agent'
+  | 'blocked'
+  | 'idle_ready'
+  | 'idle';
+
+export interface StatusSnapshotAgentState {
+  agentId: AgentId;
+  state: StatusSnapshotAgentWorkflowState;
+  label: string;
+  detail: string;
+  severity: 'good' | 'info' | 'warn' | 'danger' | 'muted';
+  since: number;
+  runId: string | null;
+  taskId: string | null;
+  checklistItemId: string | null;
+}
+
 export interface StatusSnapshotRoom {
   id: string;
   projectId: string;
@@ -138,6 +159,7 @@ export interface StatusSnapshotRoom {
   }>;
   lastRun: AgentRun | null;
   lastAction: AgentRunAction | null;
+  agentStates: StatusSnapshotAgentState[];
 }
 
 export interface StatusSnapshot {
@@ -151,6 +173,7 @@ export interface StatusSnapshot {
     runs: StatusSnapshotRunCounts;
   };
   rooms: StatusSnapshotRoom[];
+  agentStates: StatusSnapshotAgentState[];
 }
 
 export interface Message {
