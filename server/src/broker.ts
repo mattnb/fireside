@@ -277,6 +277,12 @@ interface AgentTurnResult {
   runId?: string;
 }
 
+interface MissionReconciliationResult {
+  applied: number;
+  receiptUpdates: number;
+  laneUpdates: number;
+}
+
 export interface TaskControl {
   task: Task;
   phases: TaskPhase[];
@@ -380,6 +386,12 @@ function providerCompactionWarning(agentId: AgentId, stderr: string): string | n
     return 'Codex CLI returned success, but stderr reported that it failed to record rollout items for the resumed thread. The local rollout may not fully reflect the compaction turn.';
   }
   return null;
+}
+
+function oneLine(text: string, maxChars = 280): string {
+  const cleaned = text.replace(/\s+/g, ' ').trim();
+  if (cleaned.length <= maxChars) return cleaned;
+  return `${cleaned.slice(0, maxChars - 1)}...`;
 }
 
 function waitForRetryDelay(delayMs: number, signal?: AbortSignal): Promise<boolean> {
@@ -1664,6 +1676,15 @@ export class Broker extends EventEmitter {
         detail: `${workLane.item.title} [id=${workLane.item.id}]`,
       });
     }
+    this.recordMissionWorkPacket({
+      roomId,
+      task: activeTask ?? null,
+      runId: run.id,
+      agentId,
+      permission: effectivePermission,
+      workLane,
+      discussion,
+    });
     this.recordRunAction({
       roomId,
       taskId: activeTask?.id ?? null,
@@ -1909,8 +1930,19 @@ export class Broker extends EventEmitter {
       extractedMissionTasks.updates.length;
     const missionReceiptCount = extractedMissionReceipts.receipts.length;
     const textAfterMissionReceipts = extractedMissionReceipts.visibleText;
+    const reconciliation = this.reconcileMissionState({
+      roomId,
+      task: missionTask,
+      runId: run.id,
+      agentId,
+      receipts: extractedMissionReceipts.receipts,
+      visibleText: textAfterMissionReceipts,
+      workLane,
+      explicitMissionUpdates: missionStateUpdateCount,
+    });
     if (textAfterMissionReceipts.length === 0) {
-      const hiddenMissionUpdateCount = missionStateUpdateCount + missionReceiptCount;
+      const hiddenMissionUpdateCount =
+        missionStateUpdateCount + missionReceiptCount + reconciliation.applied;
       const status = hiddenMissionUpdateCount > 0 ? 'completed' : 'empty';
       const emptyRun = updateAgentRun(this.deps.db, run.id, {
         status,
@@ -1941,7 +1973,7 @@ export class Broker extends EventEmitter {
       });
       return {
         message: null,
-        progressed: missionStateUpdateCount > 0 || extractedDrafts.drafts.length > 0,
+        progressed: hiddenMissionUpdateCount > 0 || extractedDrafts.drafts.length > 0,
         runId: run.id,
       };
     }
@@ -2007,7 +2039,11 @@ export class Broker extends EventEmitter {
             label: 'YOLO auto-approval limit reached',
             detail: `Stopped auto-following permission requests after ${YOLO_PERMISSION_AUTO_APPROVAL_LIMIT} consecutive YOLO approvals for this turn.`,
           });
-          return { message, progressed: Boolean(message), runId: run.id };
+          return {
+            message,
+            progressed: Boolean(message) || reconciliation.applied > 0,
+            runId: run.id,
+          };
         }
         const autoPermission = this.buildYoloAutoApprovedPermissionGrant(
           agentId,
@@ -2057,7 +2093,12 @@ export class Broker extends EventEmitter {
       this.emit('permissionRequestCreated', request);
       return { message: null, progressed: false, runId: run.id };
     }
-    if (missionTask && missionStateUpdateCount === 0 && missionReceiptCount === 0) {
+    if (
+      missionTask &&
+      missionStateUpdateCount === 0 &&
+      missionReceiptCount === 0 &&
+      reconciliation.applied === 0
+    ) {
       this.recordMissingMissionReceipt({
         roomId,
         task: missionTask,
@@ -2098,7 +2139,11 @@ export class Broker extends EventEmitter {
       label: message ? 'message emitted' : 'ledger-only reply',
       detail: message ? message.text : 'collaboration note stored without visible chat text',
     });
-    return { message, progressed: Boolean(message) || extracted.notes.length > 0, runId: run.id };
+    return {
+      message,
+      progressed: Boolean(message) || extracted.notes.length > 0 || reconciliation.applied > 0,
+      runId: run.id,
+    };
   }
 
   private async runAgentCompaction(input: {
@@ -2234,6 +2279,72 @@ export class Broker extends EventEmitter {
     return action;
   }
 
+  private recordMissionWorkPacket(input: {
+    roomId: string;
+    task: Task | null;
+    runId: string;
+    agentId: AgentId;
+    permission: PermissionGrant | undefined;
+    workLane: WorkLaneAssignment | undefined;
+    discussion: DiscussionTurn | undefined;
+  }): void {
+    if (!input.task) return;
+    const control = this.buildTaskControl(input.task);
+    this.recordRunAction({
+      roomId: input.roomId,
+      taskId: input.task.id,
+      runId: input.runId,
+      agentId: input.agentId,
+      kind: 'ledger',
+      status: 'info',
+      label: 'mission work packet',
+      detail: JSON.stringify({
+        mission: {
+          id: input.task.id,
+          title: input.task.title,
+          status: input.task.status,
+        },
+        phase: control.currentPhase
+          ? {
+              id: control.currentPhase.id,
+              title: control.currentPhase.title,
+              status: control.currentPhase.status,
+            }
+          : null,
+        assignedItem: input.workLane
+          ? {
+              id: input.workLane.item.id,
+              title: input.workLane.item.title,
+              status: input.workLane.item.status,
+            }
+          : null,
+        permission: input.permission
+          ? {
+              mode: input.permission.mode,
+              source: input.permission.source ?? 'explicit',
+              capabilities: input.permission.capabilities ?? [],
+              target: input.permission.target,
+            }
+          : { mode: 'plan', source: 'default', capabilities: ['read'] },
+        turn: input.discussion
+          ? {
+              mode: input.discussion.mode ?? 'normal',
+              round: input.discussion.round,
+              maxRounds: input.discussion.maxRounds,
+              repliesUsed: input.discussion.repliesUsed,
+              maxRepliesPerAgent: input.discussion.maxRepliesPerAgent,
+              totalRepliesUsed: input.discussion.totalRepliesUsed ?? 0,
+              maxTotalReplies: input.discussion.maxTotalReplies ?? input.discussion.maxRepliesPerAgent,
+            }
+          : null,
+        expected: [
+          'send a visible status when useful work occurred',
+          'update Mission Control when checklist, phase, blocker, or plan state changes',
+        ],
+      }),
+    });
+  }
+
   private updateRunLifecycle(input: {
     runId: string;
     state: AgentRunLifecycleState;
@@ -2294,6 +2405,355 @@ export class Broker extends EventEmitter {
         detail: this.missionReceiptDetail(receipt),
       });
     }
+  }
+
+  private reconcileMissionState(input: {
+    roomId: string;
+    task: Task | null;
+    runId: string;
+    agentId: AgentId;
+    receipts: ParsedMissionReceipt[];
+    visibleText: string;
+    workLane: WorkLaneAssignment | undefined;
+    explicitMissionUpdates: number;
+  }): MissionReconciliationResult {
+    const result: MissionReconciliationResult = {
+      applied: 0,
+      receiptUpdates: 0,
+      laneUpdates: 0,
+    };
+    if (!input.task) return result;
+    const task = input.task;
+
+    const receiptTouchedItems = new Set<string>();
+    for (const receipt of input.receipts) {
+      const item = this.resolveReceiptChecklistItem(task, receipt, input.workLane);
+      if (item) {
+        const updated = this.reconcileChecklistItemFromReceipt({
+          roomId: input.roomId,
+          task,
+          runId: input.runId,
+          agentId: input.agentId,
+          item,
+          receipt,
+        });
+        if (updated > 0) {
+          result.applied += updated;
+          result.receiptUpdates += updated;
+          receiptTouchedItems.add(item.id);
+        }
+      }
+
+      const phase = receipt.phaseRef
+        ? this.resolvePhase(listTaskPhases(this.deps.db, task.id), receipt.phaseRef)
+        : null;
+      if (phase) {
+        const updated = this.reconcilePhaseFromReceipt({
+          roomId: input.roomId,
+          task,
+          runId: input.runId,
+          agentId: input.agentId,
+          phase,
+          receipt,
+        });
+        if (updated > 0) {
+          result.applied += updated;
+          result.receiptUpdates += updated;
+        }
+      }
+    }
+
+    if (
+      input.workLane &&
+      input.explicitMissionUpdates === 0 &&
+      !receiptTouchedItems.has(input.workLane.item.id)
+    ) {
+      const updated = this.reconcileWorkLaneFromVisibleText(input);
+      if (updated > 0) {
+        result.applied += updated;
+        result.laneUpdates += updated;
+      }
+    }
+
+    const phaseUpdates = this.reconcilePhasesFromChecklist(input);
+    if (phaseUpdates > 0) {
+      result.applied += phaseUpdates;
+      result.receiptUpdates += phaseUpdates;
+    }
+
+    if (result.applied > 0) {
+      this.recordRunAction({
+        roomId: input.roomId,
+        taskId: task.id,
+        runId: input.runId,
+        agentId: input.agentId,
+        kind: 'ledger',
+        status: 'completed',
+        label: 'mission state reconciled',
+        detail: JSON.stringify(result),
+      });
+      const updatedTask = getTask(this.deps.db, task.id);
+      if (updatedTask) this.emit('taskUpdated', updatedTask);
+    }
+
+    return result;
+  }
+
+  private resolveReceiptChecklistItem(
+    task: Task,
+    receipt: ParsedMissionReceipt,
+    workLane: WorkLaneAssignment | undefined,
+  ): TaskChecklistItem | null {
+    const items = listTaskChecklistItems(this.deps.db, task.id);
+    if (receipt.itemRef) return this.resolveChecklistItem(items, receipt.itemRef);
+    const canUseAssignedLane =
+      workLane &&
+      !receipt.phaseRef &&
+      !receipt.planRef &&
+      ['completed', 'blocked', 'needs_review', 'continuing'].includes(receipt.status);
+    if (!canUseAssignedLane) return null;
+    return getTaskChecklistItem(this.deps.db, workLane.item.id);
+  }
+
+  private reconcileChecklistItemFromReceipt(input: {
+    roomId: string;
+    task: Task;
+    runId: string;
+    agentId: AgentId;
+    receipt: ParsedMissionReceipt;
+    item: TaskChecklistItem;
+  }): number {
+    const note = this.missionReceiptPlainNote(input.receipt);
+    const patch: UpdateTaskChecklistItemInput = { updatedBy: input.agentId };
+    let noteKind: 'status' | 'completion' | 'blocker' | 'council' = 'status';
+    let label = '';
+
+    if (input.receipt.status === 'completed') {
+      if (input.item.status === 'done') return 0;
+      patch.status = 'done';
+      patch.statusNote = note || `${input.item.title}: completed`;
+      patch.blockedReason = '';
+      patch.councilRequired = false;
+      noteKind = 'completion';
+      label = 'reconciled checklist completion';
+    } else if (input.receipt.status === 'blocked') {
+      if (input.item.status === 'blocked' && !note) return 0;
+      patch.status = 'blocked';
+      patch.blockedReason = note || `${input.item.title}: blocked`;
+      patch.councilRequired = this.receiptNeedsCouncil(input.receipt);
+      noteKind = patch.councilRequired ? 'council' : 'blocker';
+      label = 'reconciled checklist blocker';
+    } else if (input.receipt.status === 'continuing' || input.receipt.status === 'needs_review') {
+      if (!note && input.item.ownerAgentId) return 0;
+      if (!input.item.ownerAgentId) patch.ownerAgentId = input.agentId;
+      if (note) patch.statusNote = note;
+      noteKind = 'status';
+      label =
+        input.receipt.status === 'needs_review'
+          ? 'reconciled checklist review note'
+          : 'reconciled checklist status note';
+    } else {
+      return 0;
+    }
+
+    const updated = updateTaskChecklistItem(this.deps.db, input.item.id, patch);
+    if (!updated) return 0;
+    if (note || input.receipt.status === 'completed' || input.receipt.status === 'blocked') {
+      createTaskChecklistNote(this.deps.db, {
+        taskId: input.task.id,
+        itemId: updated.id,
+        authorId: input.agentId,
+        kind: noteKind,
+        body: (note || `${updated.title}: ${updated.status}`).slice(0, 4000),
+      });
+    }
+    this.recordRunAction({
+      roomId: input.roomId,
+      taskId: input.task.id,
+      runId: input.runId,
+      agentId: input.agentId,
+      kind: 'ledger',
+      status: input.receipt.status === 'blocked' ? 'failed' : 'completed',
+      label,
+      detail: `${updated.title} (${updated.status})`,
+    });
+    return 1;
+  }
+
+  private reconcilePhaseFromReceipt(input: {
+    roomId: string;
+    task: Task;
+    runId: string;
+    agentId: AgentId;
+    receipt: ParsedMissionReceipt;
+    phase: TaskPhase;
+  }): number {
+    const status =
+      input.receipt.status === 'completed'
+        ? 'done'
+        : input.receipt.status === 'blocked'
+          ? 'blocked'
+          : null;
+    if (!status || input.phase.status === status) return 0;
+    const updated = updateTaskPhase(this.deps.db, input.phase.id, { status });
+    if (!updated) return 0;
+    this.recordRunAction({
+      roomId: input.roomId,
+      taskId: input.task.id,
+      runId: input.runId,
+      agentId: input.agentId,
+      kind: 'ledger',
+      status: status === 'blocked' ? 'failed' : 'completed',
+      label: status === 'done' ? 'reconciled phase completion' : 'reconciled phase blocker',
+      detail: `${updated.title} (${updated.status})`,
+    });
+    if (status === 'done') {
+      this.autoAdvancePhase({
+        roomId: input.roomId,
+        task: input.task,
+        runId: input.runId,
+        agentId: input.agentId,
+        completedPhase: updated,
+      });
+    }
+    return 1;
+  }
+
+  private reconcileWorkLaneFromVisibleText(input: {
+    roomId: string;
+    task: Task | null;
+    runId: string;
+    agentId: AgentId;
+    visibleText: string;
+    workLane: WorkLaneAssignment | undefined;
+  }): number {
+    if (!input.task || !input.workLane) return 0;
+    const item = getTaskChecklistItem(this.deps.db, input.workLane.item.id);
+    if (!item || item.status === 'done' || item.status === 'skipped') return 0;
+    const signal = this.workLaneSignal(input.visibleText);
+    if (signal === 'none') return 0;
+    const note = oneLine(input.visibleText || `${item.title}: ${signal}`, 500);
+    const patch: UpdateTaskChecklistItemInput = {
+      updatedBy: input.agentId,
+      ownerAgentId: item.ownerAgentId || input.agentId,
+    };
+    if (signal === 'done') {
+      patch.status = 'done';
+      patch.statusNote = note || `${item.title}: completed`;
+      patch.blockedReason = '';
+      patch.councilRequired = false;
+    } else {
+      patch.status = 'blocked';
+      patch.blockedReason = note || `${item.title}: blocked`;
+      patch.councilRequired = /\b(human|council|decision|intervene|intervention|approval|permission)\b/i.test(
+        input.visibleText,
+      );
+    }
+    const updated = updateTaskChecklistItem(this.deps.db, item.id, patch);
+    if (!updated) return 0;
+    createTaskChecklistNote(this.deps.db, {
+      taskId: input.task.id,
+      itemId: updated.id,
+      authorId: input.agentId,
+      kind: signal === 'done' ? 'completion' : patch.councilRequired ? 'council' : 'blocker',
+      body: (note || `${updated.title}: ${updated.status}`).slice(0, 4000),
+    });
+    this.recordRunAction({
+      roomId: input.roomId,
+      taskId: input.task.id,
+      runId: input.runId,
+      agentId: input.agentId,
+      kind: 'ledger',
+      status: signal === 'done' ? 'completed' : 'failed',
+      label: signal === 'done' ? 'reconciled lane completion' : 'reconciled lane blocker',
+      detail: `${updated.title} (${updated.status})`,
+    });
+    return 1;
+  }
+
+  private reconcilePhasesFromChecklist(input: {
+    roomId: string;
+    task: Task | null;
+    runId: string;
+    agentId: AgentId;
+  }): number {
+    if (!input.task) return 0;
+    const phases = listTaskPhases(this.deps.db, input.task.id);
+    const items = listTaskChecklistItems(this.deps.db, input.task.id);
+    let applied = 0;
+    for (const phase of phases) {
+      if (phase.status === 'done' || phase.status === 'planned') continue;
+      const phaseItems = items.filter((item) => item.phaseId === phase.id);
+      if (phaseItems.length === 0) continue;
+      if (!phaseItems.every((item) => item.status === 'done' || item.status === 'skipped')) {
+        continue;
+      }
+      const updated = updateTaskPhase(this.deps.db, phase.id, { status: 'done' });
+      if (!updated) continue;
+      applied += 1;
+      this.recordRunAction({
+        roomId: input.roomId,
+        taskId: input.task.id,
+        runId: input.runId,
+        agentId: input.agentId,
+        kind: 'ledger',
+        status: 'completed',
+        label: 'reconciled phase from checklist',
+        detail: `${updated.title} done; all ${phaseItems.length} checklist item(s) are closed`,
+      });
+      this.autoAdvancePhase({
+        roomId: input.roomId,
+        task: input.task,
+        runId: input.runId,
+        agentId: input.agentId,
+        completedPhase: updated,
+      });
+    }
+    return applied;
+  }
+
+  private missionReceiptPlainNote(receipt: ParsedMissionReceipt): string {
+    return [
+      receipt.summary,
+      receipt.evidence ? `Evidence: ${receipt.evidence}` : '',
+      receipt.next ? `Next: ${receipt.next}` : '',
+    ]
+      .filter(Boolean)
+      .join('\n')
+      .trim();
+  }
+
+  private receiptNeedsCouncil(receipt: ParsedMissionReceipt): boolean {
+    return /\b(human|council|decision|intervene|intervention|approval|permission|blocked by matt|waiting for matt)\b/i.test(
+      [receipt.summary, receipt.evidence, receipt.next].filter(Boolean).join(' '),
+    );
+  }
+
+  private workLaneSignal(text: string): 'done' | 'blocked' | 'none' {
+    const normalized = text.toLowerCase();
+    if (!normalized.trim()) return 'none';
+    if (
+      /\b(blocked|stuck|unable|can't|cannot|could not|failed|failing|waiting on|waiting for|needs human|need human|requires human|requires council|permission denied)\b/.test(
+        normalized,
+      )
+    ) {
+      return 'blocked';
+    }
+    if (
+      /\b(not done|not complete|not completed|incomplete|still pending|still open|remaining|remains|needs work|will continue|continuing next)\b/.test(
+        normalized,
+      )
+    ) {
+      return 'none';
+    }
+    if (
+      /\b(done|complete|completed|finished|resolved|accepted|settled|merged|landed|implemented|verified|tests? pass(?:ed)?|green)\b/.test(
+        normalized,
+      )
+    ) {
+      return 'done';
+    }
+    return 'none';
   }
 
   private recordMissingMissionReceipt(input: {

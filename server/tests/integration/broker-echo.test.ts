@@ -1537,6 +1537,131 @@ describe('Broker', () => {
     });
   });
 
+  it('reconciles receipt-only completion into checklist and phase state', async () => {
+    const receiptBroker = new Broker({
+      db,
+      maxAgentRepliesPerThread: 1,
+      runAgent: async (spec, prompt, sessionId) => {
+        runs.push({ agentId: spec.id, prompt, sessionId });
+        return {
+          text: [
+            'The implementation gate is complete.',
+            '',
+            '/mission-receipt',
+            'status: completed',
+            'item: Wire backend reconciler',
+            'phase: Implementation',
+            'summary: Reconciler landed and tests passed.',
+            'evidence: test:npm test',
+            '/end-mission-receipt',
+          ].join('\n'),
+          sessionId: `${spec.id}-sess`,
+          raw: { stdout: '', stderr: '' },
+        };
+      },
+      getSpec: (id) => {
+        const map: Record<string, AgentSpec> = {
+          claude: fakeSpec('claude', 'claude reply'),
+          codex: fakeSpec('codex', 'codex reply'),
+          gemini: fakeSpec('gemini', 'gemini reply'),
+          echo: fakeSpec('echo', 'echo reply'),
+        };
+        return map[id];
+      },
+    });
+    const room = createRoom(db, { name: 'receipt-reconciliation', agents: ['codex'] });
+    const task = receiptBroker.createTask(room.id, { title: 'Reconcile receipts' });
+    const phase = receiptBroker.createTaskPhase(room.id, task!.id, {
+      title: 'Implementation',
+      status: 'active',
+      sortOrder: 1,
+    });
+    receiptBroker.createTaskChecklistItem(room.id, task!.id, {
+      title: 'Wire backend reconciler',
+      phaseId: phase!.id,
+      status: 'open',
+    });
+
+    await receiptBroker.postHumanMessage(room.id, 'human', '@codex report status');
+
+    expect(listTaskChecklistItems(db, task!.id)).toMatchObject([
+      {
+        title: 'Wire backend reconciler',
+        status: 'done',
+        statusNote: expect.stringContaining('Reconciler landed'),
+        updatedBy: 'codex',
+      },
+    ]);
+    expect(listTaskPhases(db, task!.id)).toMatchObject([
+      { title: 'Implementation', status: 'done' },
+    ]);
+    const [run] = listAgentRuns(db, room.id);
+    const labels = listAgentRunActions(db, run!.id).map((action) => action.label);
+    expect(labels).toEqual(
+      expect.arrayContaining([
+        'reconciled checklist completion',
+        'reconciled phase completion',
+        'mission state reconciled',
+      ]),
+    );
+  });
+
+  it('infers a completed YOLO lane from the assigned work packet and final message', async () => {
+    let turn = 0;
+    const yoloBroker = new Broker({
+      db,
+      runAgent: async (spec, prompt, sessionId, permission) => {
+        turn += 1;
+        runs.push({
+          agentId: spec.id,
+          prompt,
+          sessionId,
+          ...(permission !== undefined ? { permission } : {}),
+        });
+        return {
+          text: turn === 1 ? 'Implemented and verified the assigned lane.' : '',
+          sessionId: `${spec.id}-sess`,
+          raw: { stdout: '', stderr: '' },
+        };
+      },
+      getSpec: (id) => {
+        const map: Record<string, AgentSpec> = {
+          claude: fakeSpec('claude', 'claude reply'),
+          codex: fakeSpec('codex', 'codex reply'),
+          gemini: fakeSpec('gemini', 'gemini reply'),
+          echo: fakeSpec('echo', 'echo reply'),
+        };
+        return map[id];
+      },
+    });
+    const room = createRoom(db, { name: 'lane-reconciliation', agents: ['codex'] });
+    const task = yoloBroker.createTask(room.id, { title: 'Infer lane completion' });
+    yoloBroker.createTaskChecklistItem(room.id, task!.id, {
+      title: 'Implement isolated lane',
+      status: 'open',
+    });
+
+    await yoloBroker.startYoloDiscussion(room.id, 'human', {
+      mode: 'edit',
+      filesystemScope: 'task',
+    });
+
+    expect(listTaskChecklistItems(db, task!.id)).toMatchObject([
+      {
+        title: 'Implement isolated lane',
+        status: 'done',
+        ownerAgentId: 'codex',
+        updatedBy: 'codex',
+      },
+    ]);
+    const labels = listAgentRuns(db, room.id).flatMap((run) =>
+      listAgentRunActions(db, run.id).map((action) => action.label),
+    );
+    expect(labels).toContain('mission work packet');
+    expect(labels).toContain('reconciled lane completion');
+    expect(labels).not.toContain('mission receipt missing');
+  });
+
   it('flags active-mission replies that do not reconcile mission state', async () => {
     const missingReceiptBroker = new Broker({
       db,
