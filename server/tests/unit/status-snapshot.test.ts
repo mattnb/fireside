@@ -249,11 +249,11 @@ describe('status snapshot', () => {
   });
 
   it('projects per-agent workflow state from runs, permissions, and checklist ownership', () => {
-    const room = createRoom(db, { name: 'ops', agents: ['codex', 'claude', 'gemini'] });
+    const room = createRoom(db, { name: 'ops', agents: ['codex', 'claude', 'gemini', 'echo'] });
     const task = createTask(db, {
       roomId: room.id,
       title: 'Coordinate mission',
-      agents: ['codex', 'claude', 'gemini'],
+      agents: ['codex', 'claude', 'gemini', 'echo'],
     });
     const codexItem = createTaskChecklistItem(db, {
       taskId: task.id,
@@ -268,6 +268,14 @@ describe('status snapshot', () => {
       status: 'blocked',
       blockedReason: 'Waiting for Matt to choose an option.',
       councilRequired: true,
+    });
+    createTaskChecklistItem(db, {
+      taskId: task.id,
+      title: 'Known technical blocker',
+      ownerAgentId: 'echo',
+      status: 'blocked',
+      blockedReason: 'A non-council technical blocker is recorded.',
+      councilRequired: false,
     });
     const geminiRun = insertRun(db, {
       roomId: room.id,
@@ -295,6 +303,11 @@ describe('status snapshot', () => {
       label: 'ready',
       checklistItemId: codexItem.id,
     });
-    expect(snapshot.agentStates).toHaveLength(3);
+    expect(states.get('echo')).toMatchObject({
+      state: 'blocked',
+      label: 'has blocker',
+      severity: 'warn',
+    });
+    expect(snapshot.agentStates).toHaveLength(4);
   });
 });

@@ -573,14 +573,15 @@ function buildAgentStates(input: {
       .sort((a, b) => a.sortOrder - b.sortOrder || a.updatedAt - b.updatedAt);
     const blockedItem = assignedItems.find((item) => item.status === 'blocked');
     if (blockedItem) {
+      const needsHuman = blockedItem.councilRequired;
       return {
         agentId,
-        state: blockedItem.councilRequired ? 'waiting_on_human' : 'blocked',
-        label: blockedItem.councilRequired ? 'waiting' : 'blocked',
+        state: needsHuman ? 'waiting_on_human' : 'blocked',
+        label: needsHuman ? 'waiting' : 'has blocker',
         detail:
           blockedItem.blockedReason ||
-          `${blockedItem.title} is blocked${blockedItem.councilRequired ? ' and needs council' : ''}.`,
-        severity: blockedItem.councilRequired ? 'warn' : 'danger',
+          `${blockedItem.title} is blocked${needsHuman ? ' and needs council' : ''}.`,
+        severity: 'warn',
         since: blockedItem.updatedAt,
         runId: latestRun?.id ?? null,
         taskId: blockedItem.taskId,

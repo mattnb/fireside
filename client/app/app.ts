@@ -839,7 +839,7 @@ export class App implements OnDestroy {
     const state = this.agentWorkflowState(agentId);
     if (state?.state === 'working') return 'running';
     if (state?.state === 'stale') return 'stale';
-    if (state?.state === 'blocked') return 'blocked';
+    if (state?.state === 'blocked') return state.severity === 'danger' ? 'blocked' : 'waiting';
     if (state?.state === 'waiting_on_human' || state?.state === 'waiting_on_agent')
       return 'waiting';
     if (state?.state === 'idle_ready') return 'ready';

@@ -205,6 +205,11 @@
             >
             <span class="rail-agent__pulse" aria-hidden="true"></span>
           </div>
+          <div class="rail-agent__status-line">
+            <span class="rail-agent__status"
+              >{{ selectedProjectYoloAgents().includes(agent) ? 'yolo' : 'project' }}</span
+            >
+          </div>
         </div>
         } @empty {
         <p class="empty-copy">no project agents yet</p>
@@ -256,6 +261,9 @@
               </svg>
             </button>
             }
+          </div>
+          <div class="rail-agent__status-line">
+            <span class="rail-agent__status">{{ agentRailStatus(agent) }}</span>
           </div>
           @if (agentContextUsage(agent); as usage) {
           <div
