@@ -19,7 +19,7 @@ export interface ExtractedCollaborationNotes {
   notes: ParsedCollaborationNote[];
 }
 
-const NOTE_RE = /(^|\n)\/collab-note\s*\n([\s\S]*?)\n\/end-collab-note(?=\s|$)/gi;
+const NOTE_RE = /(^|\n)\/collab-note\s*\n([\s\S]*?)\n[/@]end-collab-note(?=\s|$)/gi;
 const KINDS: ReadonlySet<string> = new Set([
   'proposal',
   'challenge',

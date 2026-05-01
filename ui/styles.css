@@ -40,8 +40,8 @@
 
   /* per-author colors */
   --user-claude: #d6b760;
-  --user-codex: #5ec490;
-  --user-gemini: #6ba2ff;
+  --user-codex: #ffffff;
+  --user-gemini: #4285f4;
   --user-system: #6b7580;
   --user-self: #a78bfa;
 
@@ -367,8 +367,8 @@ body::after {
 }
 .avatar--sm { width: 22px; height: 22px; border-radius: 5px; font-size: 10px; }
 .avatar--claude { background: rgba(229, 169, 26, 0.12); border-color: rgba(229, 169, 26, 0.28); color: var(--user-claude); }
-.avatar--codex  { background: rgba(94, 196, 144, 0.12); border-color: rgba(94, 196, 144, 0.28); color: var(--user-codex); }
-.avatar--gemini { background: rgba(107, 162, 255, 0.12); border-color: rgba(107, 162, 255, 0.28); color: var(--user-gemini); }
+.avatar--codex  { background: rgba(0, 0, 0, 0.75); border-color: rgba(255, 255, 255, 1); color: var(--user-codex); }
+.avatar--gemini { background: rgba(26, 27, 31, 0.58); border-color: var(--user-gemini); color: var(--user-gemini); }
 .avatar--system { background: rgba(107, 117, 128, 0.12); border-color: rgba(107, 117, 128, 0.26); color: var(--text-muted); }
 .avatar--me { background: rgba(167, 139, 250, 0.13); border-color: rgba(167, 139, 250, 0.32); color: var(--user-self); }
 .avatar--agent {
@@ -579,6 +579,16 @@ body::after {
   border-radius: 3px;
   font-weight: 500;
   border: 1px solid rgba(94, 196, 144, 0.22);
+}
+.msg__body .mention.mention--codex {
+  background: rgba(0, 0, 0, 0.75);
+  border-color: rgba(255, 255, 255, 1);
+  color: rgba(255, 255, 255, 1);
+}
+.msg__body .mention.mention--gemini {
+  background: rgba(26, 27, 31, 0.58);
+  border-color: var(--user-gemini);
+  color: var(--user-gemini);
 }
 .msg__body .file-mention {
   display: inline-flex;

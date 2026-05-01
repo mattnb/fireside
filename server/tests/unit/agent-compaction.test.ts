@@ -77,6 +77,50 @@ describe('manual agent compaction', () => {
     );
   });
 
+  it('surfaces Codex rollout persistence stderr as a compaction warning', async () => {
+    const db = openDatabase(':memory:');
+    const room = createRoom(db, { name: 'camp', agents: ['codex'] });
+    addMessage(db, {
+      roomId: room.id,
+      authorId: 'human',
+      authorKind: 'human',
+      text: '@codex keep this session healthy',
+    });
+    upsertCliSessionId(db, room.id, 'codex', 'session-1');
+
+    const broker = new Broker({
+      db,
+      resumeCliSessions: true,
+      getSpec: (id) => (id === 'codex' ? fakeSpec('codex') : undefined),
+      runAgent: async () => ({
+        text: 'Compacted.',
+        sessionId: 'session-1',
+        raw: {
+          stdout: '{"ok":true}',
+          stderr:
+            '2026-04-30T23:21:27Z ERROR codex_core::session: failed to record rollout items: thread session-1 not found\n',
+        },
+      }),
+    });
+
+    const result = broker.startAgentCompaction(room.id, 'codex', 'human');
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.error);
+
+    await new Promise<void>((resolve) => setImmediate(resolve));
+
+    const actions = listAgentRunActions(db, result.run.id);
+    expect(actions).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: 'run',
+          status: 'completed',
+          label: 'context compacted with provider warning',
+        }),
+      ]),
+    );
+  });
+
   it('recovers a resumable session from recent agent runs when the session table is empty', async () => {
     const db = openDatabase(':memory:');
     const room = createRoom(db, { name: 'camp', agents: ['claude'] });

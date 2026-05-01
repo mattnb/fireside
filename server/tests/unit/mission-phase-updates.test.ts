@@ -73,4 +73,24 @@ status: complete
       },
     ]);
   });
+
+  it('accepts accidental @ end markers', () => {
+    const extracted = extractMissionPhaseUpdates(`Gate closed.
+
+/mission-phase
+action: update
+name: Memo-first Live Verification
+status: done
+note: Evidence recorded.
+@end-mission-phase`);
+
+    expect(extracted.visibleText).toBe('Gate closed.');
+    expect(extracted.updates).toMatchObject([
+      {
+        action: 'update',
+        title: 'Memo-first Live Verification',
+        status: 'done',
+      },
+    ]);
+  });
 });

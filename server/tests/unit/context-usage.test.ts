@@ -7,6 +7,7 @@ import {
   codexContextUsage,
   codexContextWindowForModel,
   readCodexConfig,
+  readLatestCodexRolloutTokenUsage,
 } from '../../src/context-usage.js';
 
 const ORIGINAL_ENV = {
@@ -122,6 +123,73 @@ describe('context usage telemetry', () => {
       contextWindow: 400_000,
     });
     expect(usage?.percentUsed).toBeCloseTo(54.38, 1);
+  });
+
+  it('prefers Codex local rollout last-token usage over cumulative JSONL totals', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fireside-codex-rollout-'));
+    const threadId = '019ddf41-f38c-7100-91fd-f18b3a712da9';
+    const rolloutDir = path.join(dir, 'sessions', '2026', '04', '30');
+    fs.mkdirSync(rolloutDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(rolloutDir, `rollout-2026-04-30T13-38-54-${threadId}.jsonl`),
+      [
+        JSON.stringify({
+          type: 'event_msg',
+          payload: {
+            type: 'token_count',
+            info: {
+              total_token_usage: {
+                input_tokens: 30_877_128,
+                cached_input_tokens: 29_767_424,
+                output_tokens: 135_176,
+                reasoning_output_tokens: 56_290,
+                total_tokens: 31_012_304,
+              },
+              last_token_usage: {
+                input_tokens: 206_185,
+                cached_input_tokens: 205_696,
+                output_tokens: 1_420,
+                reasoning_output_tokens: 0,
+                total_tokens: 207_605,
+              },
+              model_context_window: 258_400,
+            },
+          },
+        }),
+      ].join('\n'),
+    );
+    process.env.CODEX_HOME = dir;
+    process.env.FIRESIDE_CODEX_MODEL = 'gpt-5.5';
+    process.env.FIRESIDE_CODEX_REASONING_EFFORT = 'xhigh';
+
+    expect(readLatestCodexRolloutTokenUsage(threadId, dir)).toMatchObject({
+      totalTokens: 207_605,
+      contextWindow: 258_400,
+    });
+
+    const usage = codexContextUsage(
+      {
+        input_tokens: 30_877_128,
+        cached_input_tokens: 29_767_424,
+        output_tokens: 135_176,
+        reasoning_output_tokens: 56_290,
+      },
+      { threadId, codexHome: dir },
+    );
+
+    expect(usage).toMatchObject({
+      provider: 'codex',
+      model: 'gpt-5.5',
+      reasoningEffort: 'xhigh',
+      usedTokens: 207_605,
+      reportedUsedTokens: 31_012_304,
+      inputTokens: 206_185,
+      cachedInputTokens: 205_696,
+      outputTokens: 1_420,
+      contextWindow: 258_400,
+    });
+    expect(usage?.estimated).toBeUndefined();
+    expect(usage?.percentUsed).toBeCloseTo(80.34, 1);
   });
 
   it('builds Claude usage from modelUsage result metadata', () => {

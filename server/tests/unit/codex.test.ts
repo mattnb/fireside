@@ -4,6 +4,7 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import fs from 'node:fs';
+import os from 'node:os';
 import { codexSpec, _resetSchemaPathForTests } from '../../src/agents/codex.js';
 import { AgentParseError } from '../../src/agents/types.js';
 
@@ -151,6 +152,59 @@ describe('codex adapter', () => {
         detail: '{"message":"pong"}',
       },
     ]);
+  });
+
+  it('uses the resumed thread rollout for Codex context telemetry when available', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fireside-codex-stream-'));
+    const threadId = 'thread-for-rollout-usage';
+    const rolloutDir = path.join(dir, 'sessions');
+    fs.mkdirSync(rolloutDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(rolloutDir, `rollout-test-${threadId}.jsonl`),
+      JSON.stringify({
+        type: 'event_msg',
+        payload: {
+          type: 'token_count',
+          info: {
+            last_token_usage: {
+              input_tokens: 100,
+              cached_input_tokens: 40,
+              output_tokens: 20,
+              total_tokens: 120,
+            },
+            model_context_window: 300,
+          },
+        },
+      }),
+    );
+    const previousHome = process.env.CODEX_HOME;
+    process.env.CODEX_HOME = dir;
+    try {
+      const events = codexSpec.parseStreamLine?.(
+        JSON.stringify({
+          type: 'turn.completed',
+          usage: {
+            input_tokens: 10_000,
+            cached_input_tokens: 9_000,
+            output_tokens: 500,
+          },
+        }),
+        'stdout',
+        threadId,
+      );
+      expect(events?.[0]?.contextUsage).toMatchObject({
+        provider: 'codex',
+        usedTokens: 120,
+        reportedUsedTokens: 10_500,
+        contextWindow: 300,
+      });
+    } finally {
+      if (previousHome === undefined) {
+        delete process.env.CODEX_HOME;
+      } else {
+        process.env.CODEX_HOME = previousHome;
+      }
+    }
   });
 
   it('falls back to raw text when JSON in agent_message.text lacks required message field', () => {

@@ -1,0 +1,249 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { openDatabase } from '../../src/db.js';
+import type { AgentRunStatus } from '../../src/repos/agent-runs.js';
+import { createAgentRunAction } from '../../src/repos/run-actions.js';
+import { createRoom } from '../../src/repos/rooms.js';
+import { createTask } from '../../src/repos/tasks.js';
+import { buildStatusSnapshot } from '../../src/status-snapshot.js';
+
+let runSequence = 0;
+
+function insertRun(
+  db: ReturnType<typeof openDatabase>,
+  input: {
+    roomId: string;
+    taskId?: string | null;
+    triggerMessageId: string;
+    replyMessageId?: string | null;
+    agentId: 'claude' | 'codex' | 'gemini' | 'echo';
+    status?: AgentRunStatus;
+    permissionMode?: 'plan' | 'edit' | 'full-auto';
+    promptChars?: number;
+    estimatedPromptTokens?: number;
+    liveMessages?: number;
+    contextArtifacts?: number;
+    startedAt?: number;
+    completedAt?: number | null;
+    error?: string;
+    cliSessionId?: string | null;
+  },
+): { id: string } {
+  const id = `run-${++runSequence}`;
+  db.prepare(
+    `INSERT INTO agent_runs (
+      id, room_id, task_id, trigger_message_id, reply_message_id, agent_id, status,
+      permission_mode, prompt_chars, estimated_prompt_tokens, live_messages, context_artifacts,
+      started_at, completed_at, error, cli_session_id
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    id,
+    input.roomId,
+    input.taskId ?? null,
+    input.triggerMessageId,
+    input.replyMessageId ?? null,
+    input.agentId,
+    input.status ?? 'running',
+    input.permissionMode ?? 'plan',
+    input.promptChars ?? 0,
+    input.estimatedPromptTokens ?? 0,
+    input.liveMessages ?? 0,
+    input.contextArtifacts ?? 0,
+    input.startedAt ?? Date.now(),
+    input.completedAt ?? null,
+    input.error ?? '',
+    input.cliSessionId ?? null,
+  );
+  return { id };
+}
+
+describe('status snapshot', () => {
+  let db: ReturnType<typeof openDatabase>;
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(1_800_000_000_000));
+    runSequence = 0;
+    db = openDatabase(':memory:');
+  });
+
+  afterEach(() => {
+    db.close();
+    vi.useRealTimers();
+  });
+
+  it('returns a safe empty snapshot when no rooms exist', () => {
+    const snapshot = buildStatusSnapshot({ db });
+
+    expect(snapshot).toMatchObject({
+      version: 1,
+      generatedAt: 1_800_000_000_000,
+      scope: { roomId: null },
+      counts: {
+        rooms: 0,
+        agents: 0,
+        activeMissions: 0,
+        tasks: { total: 0, activeLike: 0 },
+        runs: { total: 0, running: 0, retrying: 0, completed: 0 },
+        runActions: { total: 0, withContextUsage: 0 },
+      },
+      rooms: [],
+      activeMissions: [],
+      activeTasks: [],
+      runs: { last: null, running: [], retrying: [], completed: [] },
+      runActions: { last: null, recent: [] },
+      contextUsage: { latest: null, byAgent: [] },
+    });
+  });
+
+  it('scopes the snapshot to a single room', () => {
+    const alpha = createRoom(db, { name: 'alpha', agents: ['codex'] });
+    const beta = createRoom(db, { name: 'beta', agents: ['claude', 'gemini'] });
+    createTask(db, { roomId: alpha.id, title: 'Alpha mission', agents: ['codex'] });
+    createTask(db, { roomId: beta.id, title: 'Beta mission', agents: ['claude'] });
+
+    const snapshot = buildStatusSnapshot({ db, roomId: alpha.id });
+
+    expect(snapshot.scope.roomId).toBe(alpha.id);
+    expect(snapshot.counts.rooms).toBe(1);
+    expect(snapshot.counts.agents).toBe(1);
+    expect(snapshot.counts.tasks.total).toBe(1);
+    expect(snapshot.counts.activeMissions).toBe(1);
+    expect(snapshot.rooms.map((room) => room.id)).toEqual([alpha.id]);
+    expect(snapshot.activeTasks.map((task) => task.title)).toEqual(['Alpha mission']);
+  });
+
+  it('counts active missions and running/completed runs', () => {
+    const room = createRoom(db, { name: 'ops', agents: ['codex'] });
+    const task = createTask(db, { roomId: room.id, title: 'Ship state API', agents: ['codex'] });
+    vi.setSystemTime(new Date(1_800_000_000_100));
+    const runningRun = insertRun(db, {
+      roomId: room.id,
+      taskId: task.id,
+      triggerMessageId: 'msg-running',
+      agentId: 'codex',
+      permissionMode: 'edit',
+      promptChars: 200,
+      estimatedPromptTokens: 50,
+      liveMessages: 3,
+      contextArtifacts: 1,
+    });
+    vi.setSystemTime(new Date(1_800_000_000_200));
+    const completedRun = insertRun(db, {
+      roomId: room.id,
+      taskId: task.id,
+      triggerMessageId: 'msg-completed',
+      agentId: 'codex',
+      status: 'completed',
+      permissionMode: 'edit',
+      promptChars: 120,
+      estimatedPromptTokens: 30,
+      liveMessages: 2,
+      contextArtifacts: 0,
+      startedAt: 1_800_000_000_200,
+      completedAt: 1_800_000_000_250,
+      replyMessageId: 'reply-completed',
+    });
+
+    const snapshot = buildStatusSnapshot({ db });
+
+    expect(snapshot.counts.activeMissions).toBe(1);
+    expect(snapshot.counts.tasks.active).toBe(1);
+    expect(snapshot.counts.runs).toMatchObject({
+      total: 2,
+      running: 1,
+      retrying: 0,
+      completed: 1,
+    });
+    expect(snapshot.runs.running.map((run) => run.id)).toEqual([runningRun.id]);
+    expect(snapshot.runs.completed.map((run) => run.id)).toEqual([completedRun.id]);
+  });
+
+  it('includes the latest run, action summary, and context usage', () => {
+    const room = createRoom(db, { name: 'ops', agents: ['codex', 'claude'] });
+    const task = createTask(db, { roomId: room.id, title: 'Summarize state' });
+    vi.setSystemTime(new Date(1_800_000_000_100));
+    const firstRun = insertRun(db, {
+      roomId: room.id,
+      taskId: task.id,
+      triggerMessageId: 'msg-1',
+      agentId: 'claude',
+      permissionMode: 'plan',
+      promptChars: 80,
+      estimatedPromptTokens: 20,
+      liveMessages: 1,
+      contextArtifacts: 0,
+    });
+    createAgentRunAction(db, {
+      roomId: room.id,
+      taskId: task.id,
+      runId: firstRun.id,
+      agentId: 'claude',
+      kind: 'run',
+      status: 'running',
+      label: 'claude started',
+    });
+
+    vi.setSystemTime(new Date(1_800_000_000_300));
+    const latestRun = insertRun(db, {
+      roomId: room.id,
+      taskId: task.id,
+      triggerMessageId: 'msg-2',
+      agentId: 'codex',
+      permissionMode: 'edit',
+      promptChars: 160,
+      estimatedPromptTokens: 40,
+      liveMessages: 2,
+      contextArtifacts: 1,
+    });
+    const latestAction = createAgentRunAction(db, {
+      roomId: room.id,
+      taskId: task.id,
+      runId: latestRun.id,
+      agentId: 'codex',
+      kind: 'diagnostic',
+      status: 'completed',
+      label: 'context usage captured',
+      detail: 'codex used 123 tokens',
+      contextUsage: {
+        provider: 'codex',
+        model: 'gpt-5.5',
+        usedTokens: 123,
+        contextWindow: 400_000,
+        remainingTokens: 399_877,
+        percentUsed: 0.03075,
+        source: 'test',
+      },
+    });
+
+    const snapshot = buildStatusSnapshot({ db });
+
+    expect(snapshot.runs.last).toMatchObject({
+      id: latestRun.id,
+      roomId: room.id,
+      taskId: task.id,
+      agentId: 'codex',
+      status: 'running',
+    });
+    expect(snapshot.rooms[0]?.lastRun?.id).toBe(latestRun.id);
+    expect(snapshot.runActions.last).toMatchObject({
+      id: latestAction.id,
+      runId: latestRun.id,
+      kind: 'diagnostic',
+      status: 'completed',
+      label: 'context usage captured',
+    });
+    expect(snapshot.runActions.summary).toMatchObject({
+      total: 2,
+      running: 1,
+      completed: 1,
+      withContextUsage: 1,
+    });
+    expect(snapshot.runActions.summary.byKind.diagnostic).toBe(1);
+    expect(snapshot.contextUsage.latest).toMatchObject({
+      agentId: 'codex',
+      actionId: latestAction.id,
+      usage: { provider: 'codex', model: 'gpt-5.5', usedTokens: 123 },
+    });
+    expect(snapshot.rooms[0]?.contextUsage.byAgent).toHaveLength(1);
+  });
+});

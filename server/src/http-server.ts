@@ -4,7 +4,6 @@ import fastifyStatic from '@fastify/static';
 import type { Database } from 'better-sqlite3';
 import path from 'node:path';
 import { createRoom, getRoom, listRooms } from './repos/rooms.js';
-import { listMessages } from './repos/messages.js';
 import { getPermissionRequest, listPermissionRequests } from './repos/permission-requests.js';
 import type { AgentId } from './agents/types.js';
 import type { TaskStatus } from './repos/tasks.js';
@@ -16,6 +15,7 @@ import type { Broker } from './broker.js';
 import { pickFile, pickFolder } from './folder-picker.js';
 import { logger } from './logger.js';
 import type { ConversationArtifactFile } from './context-files.js';
+import { buildStatusSnapshot } from './status-snapshot.js';
 
 export interface HttpDeps {
   db: Database;
@@ -72,6 +72,10 @@ export function buildHttpServer(deps: HttpDeps) {
     return listRooms(deps.db);
   });
 
+  app.get('/api/state', async () => {
+    return buildStatusSnapshot({ db: deps.db });
+  });
+
   app.post<{ Body: { initialPath?: string } }>('/api/system/folder-picker', async (req, reply) => {
     if (req.headers['x-fireside-request'] !== '1') {
       return reply.code(403).send({ error: 'missing Fireside request header' });
@@ -111,6 +115,12 @@ export function buildHttpServer(deps: HttpDeps) {
     const room = getRoom(deps.db, req.params.id);
     if (!room) return reply.code(404).send({ error: 'not found' });
     return room;
+  });
+
+  app.get<{ Params: { id: string } }>('/api/rooms/:id/state', async (req, reply) => {
+    const room = getRoom(deps.db, req.params.id);
+    if (!room) return reply.code(404).send({ error: 'not found' });
+    return buildStatusSnapshot({ db: deps.db, roomId: req.params.id });
   });
 
   app.get<{ Querystring: { limit?: string } }>('/api/briefings', async (req) => {
@@ -153,7 +163,7 @@ export function buildHttpServer(deps: HttpDeps) {
       const room = getRoom(deps.db, req.params.id);
       if (!room) return reply.code(404).send({ error: 'not found' });
       const limit = req.query.limit ? Number(req.query.limit) : undefined;
-      return listMessages(deps.db, req.params.id, limit ? { limit } : {});
+      return deps.broker.listMessages(req.params.id, limit ? { limit } : {});
     },
   );
 

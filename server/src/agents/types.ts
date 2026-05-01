@@ -30,7 +30,11 @@ export interface AgentSpec {
    *  goes via the CLI's argv (per the CLI's contract). */
   buildStdin?: (prompt: string, sessionId: string | null, context?: AgentRunContext) => string;
   /** Converts live stdout/stderr lines into provider-neutral progress events. */
-  parseStreamLine?: (line: string, stream: AgentStreamName) => AgentStreamEvent[];
+  parseStreamLine?: (
+    line: string,
+    stream: AgentStreamName,
+    sessionId?: string | null,
+  ) => AgentStreamEvent[];
   /** Parses the stdout (and optionally stderr) into a reply. */
   parseOutput(stdout: string, stderr: string): AgentReply;
   /** Default per-turn timeout in ms. */

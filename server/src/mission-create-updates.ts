@@ -16,7 +16,8 @@ export interface ExtractedMissionCreateUpdates {
   updates: ParsedMissionCreateUpdate[];
 }
 
-const CREATE_RE = /(^|\n)\/mission-create\s*\n([\s\S]*?)\n\/end-(?:mission-create|collab-note)(?=\s|$)/gi;
+const CREATE_RE =
+  /(^|\n)\/mission-create\s*\n([\s\S]*?)\n[/@]end-(?:mission-create|collab-note)(?=\s|$)/gi;
 
 function parseFields(block: string): Map<string, string[]> {
   const fields = new Map<string, string[]>();

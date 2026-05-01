@@ -1,7 +1,4 @@
-import type {
-  TaskChecklistNoteKind,
-  TaskChecklistStatus,
-} from './repos/task-checklist.js';
+import type { TaskChecklistNoteKind, TaskChecklistStatus } from './repos/task-checklist.js';
 
 export type MissionTaskAction = 'create' | 'update' | 'note';
 
@@ -27,7 +24,8 @@ export interface ExtractedMissionTaskUpdates {
   updates: ParsedMissionTaskUpdate[];
 }
 
-const TASK_RE = /(^|\n)\/mission-task\s*\n([\s\S]*?)\n\/end-(?:mission-task|collab-note)(?=\s|$)/gi;
+const TASK_RE =
+  /(^|\n)\/mission-task\s*\n([\s\S]*?)\n[/@]end-(?:mission-task|collab-note)(?=\s|$)/gi;
 const ACTIONS = new Set(['create', 'update', 'note']);
 const STATUSES = new Set(['open', 'blocked', 'done', 'skipped']);
 const STATUS_ALIASES = new Map<string, TaskChecklistStatus>([
@@ -75,7 +73,10 @@ function first(fields: Map<string, string[]>, ...keys: string[]): string {
 }
 
 function all(fields: Map<string, string[]>, ...keys: string[]): string[] {
-  return keys.flatMap((key) => fields.get(key) ?? []).map((value) => value.trim()).filter(Boolean);
+  return keys
+    .flatMap((key) => fields.get(key) ?? [])
+    .map((value) => value.trim())
+    .filter(Boolean);
 }
 
 function normalizeAction(value: string): MissionTaskAction {
@@ -87,10 +88,13 @@ function normalizeStatus(value: string): TaskChecklistStatus | null {
   const normalized = value.trim().toLowerCase();
   return STATUSES.has(normalized)
     ? (normalized as TaskChecklistStatus)
-    : STATUS_ALIASES.get(normalized) ?? null;
+    : (STATUS_ALIASES.get(normalized) ?? null);
 }
 
-function normalizeNoteKind(value: string, status: TaskChecklistStatus | null): TaskChecklistNoteKind {
+function normalizeNoteKind(
+  value: string,
+  status: TaskChecklistStatus | null,
+): TaskChecklistNoteKind {
   const normalized = value.trim().toLowerCase();
   if (NOTE_KINDS.has(normalized)) return normalized as TaskChecklistNoteKind;
   if (status === 'done') return 'completion';
@@ -125,7 +129,9 @@ function parseBlock(block: string): ParsedMissionTaskUpdate | null {
   const status = normalizeStatus(first(fields, 'status', 'state'));
   const statusNote = all(fields, 'status_note', 'note', 'summary').join('\n').trim();
   const blockedReason = all(fields, 'blocked_reason', 'blocker', 'reason').join('\n').trim();
-  const councilRequired = parseBoolean(first(fields, 'council', 'council_required', 'needs_council'));
+  const councilRequired = parseBoolean(
+    first(fields, 'council', 'council_required', 'needs_council'),
+  );
   const note = all(fields, 'note', 'status_note', 'blocked_reason', 'blocker').join('\n').trim();
 
   if (action !== 'create' && !id && !title) return null;

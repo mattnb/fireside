@@ -1,7 +1,7 @@
 // server/src/ws-server.ts
 import { WebSocketServer, type WebSocket } from 'ws';
 import type { Server as HttpServer } from 'node:http';
-import type { Broker, YoloStatus } from './broker.js';
+import type { Broker, MessageDeliveryUpdate, YoloStatus } from './broker.js';
 import type { Message } from './repos/messages.js';
 import type { Room } from './repos/rooms.js';
 import type { PermissionRequest, YoloPermissionProfile } from './permissions.js';
@@ -104,6 +104,15 @@ export function attachWebSocketServer(httpServer: HttpServer, broker: Broker): W
     const payload = JSON.stringify({ type: 'taskUpdated', task });
     for (const [client, state] of clients.entries()) {
       if (client.readyState === client.OPEN && state.rooms.has(task.roomId)) {
+        client.send(payload);
+      }
+    }
+  });
+
+  broker.on('messageDeliveryUpdated', (update: MessageDeliveryUpdate) => {
+    const payload = JSON.stringify({ type: 'messageDeliveryUpdated', update });
+    for (const [client, state] of clients.entries()) {
+      if (client.readyState === client.OPEN && state.rooms.has(update.roomId)) {
         client.send(payload);
       }
     }

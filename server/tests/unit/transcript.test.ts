@@ -1,6 +1,6 @@
 // server/tests/unit/transcript.test.ts
 import { describe, it, expect } from 'vitest';
-import { buildTurnPrompt } from '../../src/transcript.js';
+import { buildTurnPrompt, buildTurnPromptResult } from '../../src/transcript.js';
 
 describe('buildTurnPrompt', () => {
   it('formats empty history with the new message as the last transcript line', () => {
@@ -188,6 +188,125 @@ describe('buildTurnPrompt', () => {
     expect(prompt).toContain('Prompt budget:');
     expect(prompt).not.toContain('large-history-0');
     expect(prompt).toContain('final');
+  });
+
+  it('keeps the collaboration note terminator visible in compact prompts', () => {
+    const prompt = buildTurnPrompt({
+      agentId: 'codex',
+      roomName: 'general',
+      history: Array.from({ length: 8 }, (_, i) => ({
+        authorId: 'human',
+        authorKind: 'human' as const,
+        text: `large-history-${i} ${'x'.repeat(700)}`,
+      })),
+      newMessage: { authorId: 'human', authorKind: 'human', text: 'final' },
+      maxHistory: 8,
+      maxPromptChars: 3_200,
+      collaboration: [
+        {
+          kind: 'proposal',
+          status: 'open',
+          title: 'Keep collaboration visible',
+          agentId: 'claude',
+          body: 'Long ledger details '.repeat(50),
+        },
+      ],
+    });
+
+    expect(prompt).toContain('Prompt budget:');
+    expect(prompt).toContain('/collab-note');
+    expect(prompt).toContain('/end-collab-note exactly');
+    expect(prompt).not.toContain('@end-collab-note');
+  });
+
+  it('compresses boilerplate before truncating a short latest message', () => {
+    const latest = [
+      'Q1. single memo file only',
+      'Q2. keep a short rolling buffer',
+      'Q3. use VAD by default',
+      'Q4. consider Krisp-style noise reduction',
+    ].join('\n');
+    const result = buildTurnPromptResult({
+      agentId: 'claude',
+      roomName: 'general',
+      history: [],
+      newMessage: { authorId: 'human', authorKind: 'human', text: latest },
+      maxPromptChars: 4_500,
+      task: {
+        id: 'task-1',
+        title: 'Verbose mission',
+        status: 'active',
+        goal: 'Keep the transcript complete while mission protocols exist.',
+        repoPath: 'C:/repo',
+        acceptanceCriteria: 'The latest human message remains intact.',
+        assignedAgents: ['claude', 'codex'],
+        capabilityProfile: 'edit',
+        summary: 'A mission with enough state to force prompt compression.',
+        recentActivity: Array.from(
+          { length: 8 },
+          (_, i) => `activity ${i}: ${'detail '.repeat(18)}`,
+        ),
+        missionControl: {
+          currentPhase: {
+            id: 'phase-1',
+            taskId: 'task-1',
+            planId: 'plan-1',
+            title: 'Planning',
+            description: '',
+            status: 'active',
+            gate: 'All short human replies are delivered intact.',
+            sortOrder: 1,
+            createdAt: 1,
+            updatedAt: 1,
+          },
+          openChecklistItems: Array.from({ length: 12 }, (_, i) => ({
+            id: `item-${i}`,
+            taskId: 'task-1',
+            planId: 'plan-1',
+            phaseId: 'phase-1',
+            title: `Checklist item ${i}`,
+            detail:
+              'Detailed checklist text that adds enough prompt pressure to require compression.',
+            status: 'open',
+            dependencyIds: [],
+            ownerAgentId: i % 2 === 0 ? 'claude' : 'codex',
+            statusNote: 'Status note that would otherwise consume prompt budget.',
+            blockedReason: '',
+            councilRequired: false,
+            updatedBy: '',
+            completedAt: null,
+            sortOrder: i,
+            createdAt: 1,
+            updatedAt: 1,
+          })),
+          blockedChecklistItems: [],
+          activePlan: {
+            id: 'plan-1',
+            taskId: 'task-1',
+            title: 'Verbose plan',
+            body: 'Plan detail. '.repeat(300),
+            status: 'active',
+            createdAt: 1,
+            updatedAt: 1,
+          },
+        },
+      },
+      collaboration: Array.from({ length: 8 }, (_, i) => ({
+        kind: 'proposal',
+        status: 'open',
+        title: `Proposal ${i}`,
+        agentId: 'codex',
+        body: 'Ledger body detail '.repeat(20),
+      })),
+    });
+
+    expect(result.prompt).toContain('Prompt budget:');
+    expect(result.prompt).toContain('Q1. single memo file only');
+    expect(result.prompt).toContain('Q2. keep a short rolling buffer');
+    expect(result.prompt).toContain('Q3. use VAD by default');
+    expect(result.prompt).toContain('Q4. consider Krisp-style noise reduction');
+    expect(result.prompt).not.toContain('omitted to fit the live prompt budget');
+    expect(result.stats.latestMessageTruncated).toBe(false);
   });
 
   it('includes permission request protocol by default and approved grants when supplied', () => {

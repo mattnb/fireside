@@ -48,7 +48,7 @@ function codexUsageDetail(usage: unknown): string {
   return parts.join(', ');
 }
 
-function codexStreamEvents(line: string): AgentStreamEvent[] {
+function codexStreamEvents(line: string, sessionId?: string | null): AgentStreamEvent[] {
   const trimmed = line.trim();
   if (!trimmed) return [];
   let event: Record<string, unknown>;
@@ -74,7 +74,10 @@ function codexStreamEvents(line: string): AgentStreamEvent[] {
     return [{ kind: 'event', status: 'running', label: 'codex turn started' }];
   }
   if (type === 'turn.completed') {
-    const contextUsage = codexContextUsage(event.usage);
+    const contextUsage = codexContextUsage(
+      event.usage,
+      sessionId ? { threadId: sessionId } : {},
+    );
     return [
       {
         kind: 'usage',
@@ -250,9 +253,9 @@ export const codexSpec: AgentSpec = {
   buildStdin(prompt) {
     return prompt;
   },
-  parseStreamLine(line, stream): AgentStreamEvent[] {
+  parseStreamLine(line, stream, sessionId): AgentStreamEvent[] {
     if (stream === 'stderr') return [];
-    return codexStreamEvents(line);
+    return codexStreamEvents(line, sessionId);
   },
   parseOutput(stdout, stderr): AgentReply {
     const events = parseJsonl(stdout);

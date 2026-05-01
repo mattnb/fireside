@@ -58,4 +58,25 @@ Revise the current plan after review.
       },
     ]);
   });
+
+  it('accepts accidental @ end markers', () => {
+    const extracted = extractMissionPlanUpdates(`Visible reply.
+
+/mission-plan
+action: update
+title: Current plan
+status: active
+body:
+Keep the team moving.
+@end-mission-plan`);
+
+    expect(extracted.visibleText).toBe('Visible reply.');
+    expect(extracted.updates).toMatchObject([
+      {
+        action: 'update',
+        title: 'Current plan',
+        body: 'Keep the team moving.',
+      },
+    ]);
+  });
 });

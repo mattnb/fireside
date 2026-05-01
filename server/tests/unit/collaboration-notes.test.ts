@@ -41,4 +41,23 @@ title: Use a broker-owned action timeline
       title: 'Use a broker-owned action timeline',
     });
   });
+
+  it('accepts the accidental @end-collab-note terminator and still strips the block', () => {
+    const result = extractCollaborationNotes(`Visible handoff.
+
+/collab-note
+kind: proposal
+title: Keep the hidden ledger hidden
+body: The compact prompt must not teach a malformed terminator.
+@end-collab-note`);
+
+    expect(result.visibleText).toBe('Visible handoff.');
+    expect(result.notes).toHaveLength(1);
+    expect(result.notes[0]).toMatchObject({
+      kind: 'proposal',
+      status: 'open',
+      title: 'Keep the hidden ledger hidden',
+      body: 'The compact prompt must not teach a malformed terminator.',
+    });
+  });
 });

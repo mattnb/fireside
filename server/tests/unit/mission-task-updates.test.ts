@@ -25,7 +25,8 @@ note: Audit merge accepted by both agents.
   });
 
   it('extracts embedded task blocks when agents accidentally use the collab-note end marker', () => {
-    const extracted = extractMissionTaskUpdates(`Configure-mode Project Memory audit + revert surface is landed.
+    const extracted =
+      extractMissionTaskUpdates(`Configure-mode Project Memory audit + revert surface is landed.
 
 /mission-task
 action: update
@@ -49,7 +50,9 @@ owner: claude
 note: Picking up next.
 /end-collab-note`);
 
-    expect(extracted.visibleText).toBe('Configure-mode Project Memory audit + revert surface is landed.');
+    expect(extracted.visibleText).toBe(
+      'Configure-mode Project Memory audit + revert surface is landed.',
+    );
     expect(extracted.updates).toMatchObject([
       {
         id: 'ujw-xyLEmsP3h6',
@@ -66,6 +69,27 @@ note: Picking up next.
         status: 'open',
         ownerAgentId: 'claude',
         note: 'Picking up next.',
+      },
+    ]);
+  });
+
+  it('accepts accidental @ end markers', () => {
+    const extracted = extractMissionTaskUpdates(`Task closed.
+
+/mission-task
+action: update
+id: Gu3ICTLUNKStqb
+status: done
+note: Closed as non-blocking/superseded for mission acceptance.
+@end-mission-task`);
+
+    expect(extracted.visibleText).toBe('Task closed.');
+    expect(extracted.updates).toMatchObject([
+      {
+        id: 'Gu3ICTLUNKStqb',
+        status: 'done',
+        note: 'Closed as non-blocking/superseded for mission acceptance.',
+        noteKind: 'completion',
       },
     ]);
   });

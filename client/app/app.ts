@@ -1,5 +1,15 @@
 import { DatePipe } from '@angular/common';
-import { Component, ElementRef, ViewChild, computed, effect, inject, signal, untracked } from '@angular/core';
+import {
+  Component,
+  ElementRef,
+  OnDestroy,
+  ViewChild,
+  computed,
+  effect,
+  inject,
+  signal,
+  untracked,
+} from '@angular/core';
 
 import { FiresideApi } from './api.service';
 import {
@@ -19,7 +29,9 @@ import {
   Room,
   Task,
   TaskChecklistItem,
+  TaskChecklistNote,
   TaskControl,
+  TaskPhase,
   TaskPhaseStatus,
   TaskStatus,
   YoloStatus,
@@ -30,13 +42,109 @@ import { VfxSmokeAndEmbersComponent } from './vfx-smoke-and-embers/vfx-smoke-and
 type TabId = 'chat' | 'mission' | 'briefings';
 type ChatTimelineItem = {
   id: string;
-  kind: 'message' | 'permission';
+  kind: 'message' | 'permission' | 'activity';
   createdAt: number;
   message?: Message;
   request?: PermissionRequest;
+  activity?: MissionActivityEvent;
   grouped: boolean;
   html?: string;
   isError?: boolean;
+};
+type MissionActivityTone = 'work' | 'done' | 'blocked' | 'phase' | 'retry' | 'mission' | 'plan';
+type MissionActivityEvent = {
+  id: string;
+  createdAt: number;
+  agentId?: AgentId | undefined;
+  tone: MissionActivityTone;
+  title: string;
+  detail?: string | undefined;
+  runId?: string | undefined;
+};
+type OpsTone = 'good' | 'warn' | 'danger' | 'info' | 'muted';
+type OpsMetric = {
+  id: string;
+  label: string;
+  value: string;
+  detail: string;
+  tone: OpsTone;
+};
+type AttentionItem = {
+  id: string;
+  tone: OpsTone;
+  label: string;
+  title: string;
+  detail: string;
+  createdAt: number;
+  agentId?: AgentId | undefined;
+  runId?: string | undefined;
+};
+type ActiveSessionRow = {
+  run: AgentRun;
+  runtime: string;
+  turns: string;
+  tokens: string;
+  signal: string;
+  contextUsage: AgentContextUsage | null;
+};
+type ProviderCapacityRow = {
+  agentId: AgentId;
+  running: boolean;
+  usage: AgentContextUsage | null;
+  percent: number;
+  label: string;
+  detail: string;
+  tone: OpsTone;
+};
+type MissionGraphTone = 'active' | 'ready' | 'waiting' | 'blocked' | 'done' | 'open' | 'skipped';
+type MissionGraphDependency = {
+  id: string;
+  title: string;
+  status: TaskChecklistItem['status'];
+  done: boolean;
+};
+type MissionGraphCard = {
+  item: TaskChecklistItem;
+  tone: MissionGraphTone;
+  ready: boolean;
+  waiting: boolean;
+  dependencies: MissionGraphDependency[];
+  dependents: MissionGraphDependency[];
+  notesCount: number;
+  evidenceCount: number;
+  linkedRuns: AgentRun[];
+  activeRun: AgentRun | null;
+  latestRun: AgentRun | null;
+  latestNote: TaskChecklistNote | null;
+};
+type MissionGraphLane = {
+  id: string;
+  phase: TaskPhase | null;
+  title: string;
+  status: TaskPhaseStatus | 'backlog';
+  gate: string;
+  planLabel: string;
+  cards: MissionGraphCard[];
+  counts: {
+    total: number;
+    done: number;
+    open: number;
+    blocked: number;
+    ready: number;
+  };
+  tone: OpsTone;
+};
+type MissionGraphSummary = {
+  phasesDone: number;
+  phasesTotal: number;
+  itemsDone: number;
+  itemsTotal: number;
+  ready: number;
+  blocked: number;
+  activeRuns: number;
+  evidence: number;
+  artifacts: number;
+  collaboration: number;
 };
 type MissionActionKind = 'plan' | 'assign' | 'execute' | 'review' | 'sync' | 'verify';
 type MissionActionScope = 'team' | 'selected' | 'single';
@@ -55,13 +163,14 @@ const ACTIVE_TASK_STATUSES: TaskStatus[] = ['active', 'blocked', 'verifying'];
   templateUrl: './app.html',
   styleUrl: './app.css',
 })
-export class App {
+export class App implements OnDestroy {
   @ViewChild('messagesList') private messagesList?: ElementRef<HTMLOListElement>;
 
   private readonly api = inject(FiresideApi);
   private readonly ws = inject(FiresideWs);
   private scrollFrame: number | null = null;
   private deleteConfirmTimer: number | null = null;
+  private readonly clockTimer = window.setInterval(() => this.now.set(Date.now()), 1000);
 
   readonly agentChoices: AgentId[] = ['claude', 'codex', 'gemini'];
   readonly tabs: Array<{ id: TabId; label: string }> = [
@@ -70,6 +179,7 @@ export class App {
   ];
 
   readonly selectedTab = signal<TabId>('chat');
+  readonly now = signal(Date.now());
   readonly authorName = signal(localStorage.getItem('fireside.author') || 'human');
   readonly creatingRoom = signal(false);
   readonly newRoomAgents = signal<AgentId[]>([...this.agentChoices]);
@@ -118,7 +228,8 @@ export class App {
     {
       id: 'plan',
       label: 'Create / Revise Plan',
-      summary: 'Agree on direction, phase gates, checklist, evidence needs, and unresolved disagreements.',
+      summary:
+        'Agree on direction, phase gates, checklist, evidence needs, and unresolved disagreements.',
     },
     {
       id: 'assign',
@@ -155,7 +266,9 @@ export class App {
   );
   readonly missionHistory = computed(() =>
     [...this.tasks()].sort((a, b) => {
-      const activeDelta = Number(!ACTIVE_TASK_STATUSES.includes(a.status)) - Number(!ACTIVE_TASK_STATUSES.includes(b.status));
+      const activeDelta =
+        Number(!ACTIVE_TASK_STATUSES.includes(a.status)) -
+        Number(!ACTIVE_TASK_STATUSES.includes(b.status));
       if (activeDelta !== 0) return activeDelta;
       return (b.updatedAt ?? b.createdAt) - (a.updatedAt ?? a.createdAt);
     }),
@@ -166,7 +279,8 @@ export class App {
     const usageByAgent = new Map<AgentId, AgentContextUsage>();
     const actions = [...this.runActions()].sort((a, b) => a.createdAt - b.createdAt);
     for (const action of actions) {
-      if (action.agentId && action.contextUsage) usageByAgent.set(action.agentId, action.contextUsage);
+      if (action.agentId && action.contextUsage)
+        usageByAgent.set(action.agentId, action.contextUsage);
     }
     return usageByAgent;
   });
@@ -182,8 +296,38 @@ export class App {
   readonly isRoomWorking = computed(() => this.runningRuns().length > 0);
   readonly visibleArtifacts = computed(() => this.artifacts()?.files.slice(0, 8) ?? []);
   readonly completedRuns = computed(() =>
-    this.runs().filter((run) => run.status !== 'running').slice(0, 8),
+    this.runs()
+      .filter((run) => run.status !== 'running')
+      .slice(0, 8),
   );
+  readonly queuedHumanMessages = computed(() =>
+    this.messages().filter(
+      (message) => message.authorKind === 'human' && message.deliveryStatus === 'queued',
+    ),
+  );
+  readonly retryingRuns = computed(() =>
+    this.runs().filter((run) => run.lifecycleState === 'retry_queued'),
+  );
+  readonly stalledRuns = computed(() =>
+    this.runs().filter(
+      (run) =>
+        run.lifecycleState === 'stalled' ||
+        (run.status === 'running' && this.runIdleMs(run) >= 5 * 60 * 1000),
+    ),
+  );
+  readonly failedRuns = computed(() =>
+    this.runs()
+      .filter((run) => run.status === 'failed')
+      .sort((a, b) => (b.completedAt ?? b.startedAt ?? 0) - (a.completedAt ?? a.startedAt ?? 0))
+      .slice(0, 4),
+  );
+  readonly attentionItems = computed(() => this.buildAttentionItems());
+  readonly operationMetrics = computed(() => this.buildOperationMetrics());
+  readonly activeSessionRows = computed(() => this.buildActiveSessionRows());
+  readonly providerCapacityRows = computed(() => this.buildProviderCapacityRows());
+  readonly missionGraphLanes = computed(() => this.buildMissionGraphLanes());
+  readonly missionGraphSummary = computed(() => this.buildMissionGraphSummary());
+  readonly missionActivity = computed(() => this.buildMissionActivityEvents());
   readonly chatTimeline = computed(() => {
     const rawItems: ChatTimelineItem[] = [
       ...this.messages()
@@ -204,11 +348,18 @@ export class App {
         request,
         grouped: false,
       })),
+      ...this.missionActivity().map((activity) => ({
+        id: `activity:${activity.id}`,
+        kind: 'activity' as const,
+        createdAt: activity.createdAt,
+        activity,
+        grouped: false,
+      })),
     ].sort((a, b) => a.createdAt - b.createdAt);
 
     let lastAuthor = '';
     return rawItems.map((item) => {
-      if (!item.message || item.message.authorKind === 'system') {
+      if (item.activity || !item.message || item.message.authorKind === 'system') {
         lastAuthor = '';
         return item;
       }
@@ -273,6 +424,15 @@ export class App {
         this.messages.update((messages) => [...messages, event.message]);
         if (shouldStickToBottom) this.scheduleChatScrollToBottom();
       }
+      if (event.type === 'messageDeliveryUpdated' && event.update.roomId === roomId) {
+        this.messages.update((messages) =>
+          messages.map((message) =>
+            message.id === event.update.messageId
+              ? { ...message, deliveryStatus: event.update.deliveryStatus }
+              : message,
+          ),
+        );
+      }
       if (event.type === 'permissionRequestCreated' && event.request.roomId === roomId) {
         this.permissionRequests.update((requests) => this.upsert(requests, event.request));
         this.scheduleChatScrollToBottom();
@@ -297,12 +457,21 @@ export class App {
         }
       }
       if (event.type === 'agentRunUpdated' && event.run.roomId === roomId) {
+        const shouldStickToBottom = this.isChatNearBottom();
         this.runs.update((runs) => this.upsert(runs, event.run));
         if (event.run.id === this.openRunDetailId()) this.openRunDetail(event.run.id, true);
+        if (shouldStickToBottom && this.isActivityRunUpdate(event.run)) {
+          this.scheduleChatScrollToBottom();
+        }
       }
       if (event.type === 'agentRunActionCreated' && event.action.roomId === roomId) {
+        const shouldStickToBottom = this.isChatNearBottom();
         this.runActions.update((actions) => this.upsert(actions, event.action));
-        if (event.action.runId === this.openRunDetailId()) this.openRunDetail(event.action.runId, true);
+        if (event.action.runId === this.openRunDetailId())
+          this.openRunDetail(event.action.runId, true);
+        if (shouldStickToBottom && this.isActivityRunAction(event.action)) {
+          this.scheduleChatScrollToBottom();
+        }
       }
       if (event.type === 'artifactsUpdated' && event.roomId === roomId) {
         this.loadArtifacts(roomId);
@@ -327,6 +496,12 @@ export class App {
         this.handleRoomDeleted(event.roomId);
       }
     });
+  }
+
+  ngOnDestroy(): void {
+    window.clearInterval(this.clockTimer);
+    if (this.scrollFrame !== null) cancelAnimationFrame(this.scrollFrame);
+    if (this.deleteConfirmTimer !== null) window.clearTimeout(this.deleteConfirmTimer);
   }
 
   selectRoom(roomId: string): void {
@@ -396,7 +571,9 @@ export class App {
       .create({
         name,
         agents: this.newRoomAgents(),
-        yoloAgents: this.newRoomYoloAgents().filter((agent) => this.newRoomAgents().includes(agent)),
+        yoloAgents: this.newRoomYoloAgents().filter((agent) =>
+          this.newRoomAgents().includes(agent),
+        ),
       })
       .subscribe((room) => {
         this.rooms.update((rooms) => this.upsert(rooms, room));
@@ -617,9 +794,7 @@ export class App {
   }
 
   composerPlaceholder(): string {
-    return this.isRoomWorking()
-      ? 'queue context for the active agent run'
-      : 'message the room';
+    return this.isRoomWorking() ? 'queue context for the active agent run' : 'message the room';
   }
 
   stopActiveRuns(): void {
@@ -690,9 +865,572 @@ export class App {
     this.runDetailLoading.set(false);
   }
 
+  private buildOperationMetrics(): OpsMetric[] {
+    this.now();
+    const totalAgents = this.roomAgents().length;
+    const activeAgents = new Set(this.runningRuns().map((run) => run.agentId)).size;
+    const attention = this.attentionItems().length;
+    const control = this.taskControl();
+    const checklistTotal = control?.checklistItems.length ?? 0;
+    const checklistDone =
+      control?.checklistItems.filter((item) => item.status === 'done').length ?? 0;
+    const checklistBlocked =
+      control?.checklistItems.filter((item) => item.status === 'blocked').length ?? 0;
+    const phaseTotal = control?.phases.length ?? 0;
+    const phaseDone = control?.phases.filter((phase) => phase.status === 'done').length ?? 0;
+
+    return [
+      {
+        id: 'agents',
+        label: 'active agents',
+        value: `${activeAgents}/${totalAgents || 0}`,
+        detail: this.runningRuns().length
+          ? `${this.runningRuns().length} active run(s)`
+          : 'no active runs',
+        tone: activeAgents > 0 ? 'good' : 'muted',
+      },
+      {
+        id: 'attention',
+        label: 'attention queue',
+        value: String(attention),
+        detail: attention ? 'human-visible blockers or waits' : 'nothing requires attention',
+        tone: attention ? 'warn' : 'good',
+      },
+      {
+        id: 'progress',
+        label: 'mission progress',
+        value: checklistTotal
+          ? `${checklistDone}/${checklistTotal}`
+          : `${phaseDone}/${phaseTotal || 0}`,
+        detail: checklistTotal
+          ? `${checklistBlocked} blocked checklist item(s)`
+          : `${phaseDone}/${phaseTotal || 0} phase gate(s) closed`,
+        tone: checklistBlocked ? 'warn' : checklistTotal || phaseTotal ? 'good' : 'muted',
+      },
+      {
+        id: 'spend',
+        label: 'runtime / tokens',
+        value: this.formatDurationMs(this.totalRuntimeMs()),
+        detail: `${this.formatTokenCount(this.totalEstimatedPromptTokens())} prompt-estimated tokens`,
+        tone: this.runs().length ? 'info' : 'muted',
+      },
+    ];
+  }
+
+  private buildAttentionItems(): AttentionItem[] {
+    const items: AttentionItem[] = [];
+    const now = this.now();
+
+    for (const request of this.permissionRequests().filter(
+      (request) => request.status === 'pending',
+    )) {
+      items.push({
+        id: `permission:${request.id}`,
+        tone: 'warn',
+        label: 'permission',
+        title: `${request.agentId} needs ${this.permissionRequestLabel(request)}`,
+        detail: `${request.target}: ${this.oneLine(request.reason, 180)}`,
+        createdAt: request.createdAt,
+        agentId: request.agentId,
+      });
+    }
+
+    for (const message of this.queuedHumanMessages()) {
+      items.push({
+        id: `queued:${message.id}`,
+        tone: 'info',
+        label: 'queued message',
+        title: `${message.authorId} message waiting for active run`,
+        detail: this.oneLine(message.text, 180),
+        createdAt: message.createdAt,
+      });
+    }
+
+    for (const run of this.retryingRuns()) {
+      const retryMs = run.retryAfter ? Math.max(0, run.retryAfter - now) : 0;
+      items.push({
+        id: `retry:${run.id}`,
+        tone: 'warn',
+        label: 'retry',
+        title: `${run.agentId} retry queued`,
+        detail: `${run.attempt && run.attempt > 1 ? `attempt ${run.attempt}; ` : ''}${retryMs ? `due in ${this.formatDurationMs(retryMs)}; ` : ''}${this.oneLine(run.lifecycleReason || run.error || 'waiting for retry window', 180)}`,
+        createdAt:
+          run.retryAfter || run.lifecycleUpdatedAt || run.completedAt || run.startedAt || 0,
+        agentId: run.agentId,
+        runId: run.id,
+      });
+    }
+
+    for (const run of this.stalledRuns()) {
+      if (run.lifecycleState === 'retry_queued') continue;
+      items.push({
+        id: `stalled:${run.id}`,
+        tone: 'danger',
+        label: 'stalled',
+        title: `${run.agentId} may be stalled`,
+        detail: this.oneLine(
+          run.lifecycleReason ||
+            `no provider signal for ${this.formatDurationMs(this.runIdleMs(run))}`,
+          180,
+        ),
+        createdAt: run.lifecycleUpdatedAt || run.lastSignalAt || run.startedAt || 0,
+        agentId: run.agentId,
+        runId: run.id,
+      });
+    }
+
+    for (const run of this.failedRuns()) {
+      items.push({
+        id: `failed:${run.id}`,
+        tone: 'danger',
+        label: 'failed',
+        title: `${run.agentId} run failed`,
+        detail: this.oneLine(
+          run.error || run.lifecycleReason || 'failure recorded without detail',
+          180,
+        ),
+        createdAt: run.completedAt || run.startedAt || 0,
+        agentId: run.agentId,
+        runId: run.id,
+      });
+    }
+
+    for (const item of this.taskControl()?.blockedChecklistItems ?? []) {
+      items.push({
+        id: `blocked-item:${item.id}`,
+        tone: item.councilRequired ? 'danger' : 'warn',
+        label: item.councilRequired ? 'council' : 'blocked task',
+        title: item.title,
+        detail: this.oneLine(
+          item.blockedReason || item.statusNote || 'blocked without recorded reason',
+          180,
+        ),
+        createdAt: item.updatedAt || item.createdAt,
+        agentId: item.ownerAgentId || undefined,
+      });
+    }
+
+    const priority: Record<OpsTone, number> = { danger: 0, warn: 1, info: 2, good: 3, muted: 4 };
+    return items
+      .sort(
+        (a, b) => (priority[a.tone] ?? 4) - (priority[b.tone] ?? 4) || b.createdAt - a.createdAt,
+      )
+      .slice(0, 12);
+  }
+
+  private buildActiveSessionRows(): ActiveSessionRow[] {
+    this.now();
+    return this.runningRuns()
+      .map((run) => ({
+        run,
+        runtime: this.elapsedLabel(run.startedAt, null),
+        turns: this.runTurnLabel(run),
+        tokens: run.estimatedPromptTokens
+          ? this.formatTokenCount(run.estimatedPromptTokens)
+          : 'unknown',
+        signal: this.runActionSignal(run),
+        contextUsage: this.agentContextUsage(run.agentId),
+      }))
+      .sort((a, b) => (b.run.startedAt ?? 0) - (a.run.startedAt ?? 0));
+  }
+
+  private buildProviderCapacityRows(): ProviderCapacityRow[] {
+    return this.roomAgents().map((agentId) => {
+      const usage = this.agentContextUsage(agentId);
+      const running = this.runningRuns().some((run) => run.agentId === agentId);
+      if (!usage) {
+        return {
+          agentId,
+          running,
+          usage: null,
+          percent: 0,
+          label: 'no telemetry',
+          detail: running ? 'waiting for provider usage signal' : 'no recent context report',
+          tone: running ? 'info' : 'muted',
+        };
+      }
+      const percent = this.agentContextPercent(usage);
+      const used = this.agentContextUsedTokens(usage);
+      const remaining =
+        usage.contextWindow !== undefined ? Math.max(0, usage.contextWindow - used) : undefined;
+      const tone: OpsTone = !usage.contextWindow
+        ? 'info'
+        : percent >= 88
+          ? 'danger'
+          : percent >= 72
+            ? 'warn'
+            : 'good';
+      return {
+        agentId,
+        running,
+        usage,
+        percent,
+        label: usage.contextWindow
+          ? `${Math.round(percent)}% used`
+          : `${this.formatTokenCount(used)} used`,
+        detail:
+          remaining !== undefined
+            ? `${this.formatTokenCount(remaining)} remaining / ${this.agentContextLabel(usage)}`
+            : this.agentContextLabel(usage),
+        tone,
+      };
+    });
+  }
+
+  private totalRuntimeMs(): number {
+    this.now();
+    return this.runs().reduce((total, run) => total + this.runDurationMs(run), 0);
+  }
+
+  private totalEstimatedPromptTokens(): number {
+    return this.runs().reduce((total, run) => total + (run.estimatedPromptTokens || 0), 0);
+  }
+
+  private runDurationMs(run: AgentRun): number {
+    if (!run.startedAt) return 0;
+    const end = run.completedAt ?? (run.status === 'running' ? this.now() : run.startedAt);
+    return Math.max(0, end - run.startedAt);
+  }
+
+  private runIdleMs(run: AgentRun): number {
+    const latestActionAt = this.latestRawActionForRun(run.id)?.createdAt ?? 0;
+    const reference = Math.max(
+      run.lastSignalAt || 0,
+      latestActionAt,
+      run.lifecycleUpdatedAt || 0,
+      run.startedAt || 0,
+    );
+    return reference ? Math.max(0, this.now() - reference) : 0;
+  }
+
+  private latestRawActionForRun(runId: string): AgentRunAction | null {
+    return (
+      this.runActions()
+        .filter((action) => action.runId === runId)
+        .sort((a, b) => b.createdAt - a.createdAt)[0] ?? null
+    );
+  }
+
+  private formatDurationMs(ms: number): string {
+    const seconds = Math.max(0, Math.round(ms / 1000));
+    if (seconds < 60) return `${seconds}s`;
+    const minutes = Math.floor(seconds / 60);
+    const rest = seconds % 60;
+    if (minutes < 60) return `${minutes}m ${rest}s`;
+    const hours = Math.floor(minutes / 60);
+    const minRest = minutes % 60;
+    return `${hours}h ${minRest}m`;
+  }
+
+  private runTurnLabel(run: AgentRun): string {
+    if (run.maxTurns && run.maxTurns > 1 && run.continuationTurn) {
+      return `${run.continuationTurn}/${run.maxTurns}`;
+    }
+    return run.continuationTurn ? String(run.continuationTurn) : '1';
+  }
+
+  opsToneClass(tone: OpsTone): string {
+    return `is-${tone}`;
+  }
+
+  openAttentionItem(item: AttentionItem): void {
+    if (item.runId) this.openRunDetail(item.runId);
+  }
+
+  copyRunSession(run: AgentRun, event?: Event): void {
+    event?.preventDefault();
+    event?.stopPropagation();
+    if (!run.cliSessionId) return;
+    void navigator.clipboard?.writeText(run.cliSessionId);
+  }
+
+  private buildMissionGraphSummary(): MissionGraphSummary {
+    const control = this.taskControl();
+    const lanes = this.missionGraphLanes();
+    const cards = lanes.flatMap((lane) => lane.cards);
+    return {
+      phasesDone: control?.phases.filter((phase) => phase.status === 'done').length ?? 0,
+      phasesTotal: control?.phases.length ?? 0,
+      itemsDone: cards.filter((card) => card.item.status === 'done').length,
+      itemsTotal: cards.length,
+      ready: cards.filter((card) => card.ready).length,
+      blocked: cards.filter((card) => card.item.status === 'blocked').length,
+      activeRuns: cards.filter((card) => card.activeRun).length,
+      evidence: cards.reduce((total, card) => total + card.evidenceCount, 0),
+      artifacts: this.artifacts()?.files.length ?? 0,
+      collaboration: this.collaboration().length,
+    };
+  }
+
+  private buildMissionGraphLanes(): MissionGraphLane[] {
+    const control = this.taskControl();
+    if (!control) return [];
+
+    const items = control.checklistItems;
+    const itemsById = new Map(items.map((item) => [item.id, item]));
+    const notesByItemId = new Map<string, TaskChecklistNote[]>();
+    for (const note of control.checklistNotes) {
+      const notes = notesByItemId.get(note.itemId) ?? [];
+      notes.push(note);
+      notesByItemId.set(note.itemId, notes);
+    }
+    for (const notes of notesByItemId.values()) notes.sort((a, b) => a.createdAt - b.createdAt);
+
+    const dependentsByItemId = new Map<string, TaskChecklistItem[]>();
+    for (const item of items) {
+      for (const dependencyId of item.dependencyIds) {
+        const dependents = dependentsByItemId.get(dependencyId) ?? [];
+        dependents.push(item);
+        dependentsByItemId.set(dependencyId, dependents);
+      }
+    }
+
+    const runsByItemId = this.buildChecklistRunMap(items);
+    const phaseIds = new Set(control.phases.map((phase) => phase.id));
+    const cardFor = (item: TaskChecklistItem) =>
+      this.buildMissionGraphCard(item, {
+        itemsById,
+        notesByItemId,
+        dependentsByItemId,
+        runsByItemId,
+      });
+
+    const lanes: MissionGraphLane[] = control.phases.map((phase) => {
+      const cards = items
+        .filter((item) => item.phaseId === phase.id)
+        .map(cardFor)
+        .sort((a, b) => a.item.sortOrder - b.item.sortOrder || a.item.createdAt - b.item.createdAt);
+      return this.buildMissionGraphLane({
+        id: phase.id,
+        phase,
+        title: phase.title,
+        status: phase.status,
+        gate: phase.gate || phase.description,
+        planLabel: this.planLabel(phase.planId),
+        cards,
+      });
+    });
+
+    const backlogCards = items
+      .filter((item) => !item.phaseId || !phaseIds.has(item.phaseId))
+      .map(cardFor)
+      .sort((a, b) => a.item.sortOrder - b.item.sortOrder || a.item.createdAt - b.item.createdAt);
+    if (backlogCards.length > 0 || lanes.length === 0) {
+      lanes.push(
+        this.buildMissionGraphLane({
+          id: 'backlog',
+          phase: null,
+          title: lanes.length === 0 ? 'Mission Backlog' : 'Unphased Work',
+          status: 'backlog',
+          gate:
+            lanes.length === 0
+              ? 'Checklist work without phase gates yet.'
+              : 'Items not tied to a phase gate.',
+          planLabel: control.activePlan?.title ?? '',
+          cards: backlogCards,
+        }),
+      );
+    }
+
+    return lanes;
+  }
+
+  private buildMissionGraphLane(input: {
+    id: string;
+    phase: TaskPhase | null;
+    title: string;
+    status: TaskPhaseStatus | 'backlog';
+    gate: string;
+    planLabel: string;
+    cards: MissionGraphCard[];
+  }): MissionGraphLane {
+    const counts = {
+      total: input.cards.length,
+      done: input.cards.filter((card) => card.item.status === 'done').length,
+      open: input.cards.filter((card) => card.item.status === 'open').length,
+      blocked: input.cards.filter((card) => card.item.status === 'blocked').length,
+      ready: input.cards.filter((card) => card.ready).length,
+    };
+    const tone: OpsTone =
+      input.status === 'blocked' || counts.blocked > 0
+        ? 'warn'
+        : input.status === 'done'
+          ? 'good'
+          : input.status === 'active' || counts.ready > 0
+            ? 'info'
+            : 'muted';
+    return {
+      ...input,
+      counts,
+      tone,
+    };
+  }
+
+  private buildMissionGraphCard(
+    item: TaskChecklistItem,
+    context: {
+      itemsById: Map<string, TaskChecklistItem>;
+      notesByItemId: Map<string, TaskChecklistNote[]>;
+      dependentsByItemId: Map<string, TaskChecklistItem[]>;
+      runsByItemId: Map<string, AgentRun[]>;
+    },
+  ): MissionGraphCard {
+    const dependencies = item.dependencyIds
+      .map((id) => context.itemsById.get(id))
+      .filter((dependency): dependency is TaskChecklistItem => Boolean(dependency))
+      .map((dependency) => this.missionGraphDependency(dependency));
+    const dependents = (context.dependentsByItemId.get(item.id) ?? []).map((dependent) =>
+      this.missionGraphDependency(dependent),
+    );
+    const notes = context.notesByItemId.get(item.id) ?? [];
+    const linkedRuns = [...(context.runsByItemId.get(item.id) ?? [])].sort(
+      (a, b) => (b.startedAt ?? 0) - (a.startedAt ?? 0),
+    );
+    const activeRun = linkedRuns.find((run) => run.status === 'running') ?? null;
+    const latestRun = linkedRuns[0] ?? null;
+    const waiting = dependencies.some((dependency) => !dependency.done);
+    const ready = item.status === 'open' && !waiting && !activeRun;
+    const evidenceCount =
+      notes.filter((note) => note.kind === 'completion').length +
+      linkedRuns.filter((run) => run.status === 'completed' || run.status === 'empty').length;
+    const tone: MissionGraphTone = activeRun
+      ? 'active'
+      : item.status === 'blocked'
+        ? 'blocked'
+        : item.status === 'done'
+          ? 'done'
+          : item.status === 'skipped'
+            ? 'skipped'
+            : waiting
+              ? 'waiting'
+              : ready
+                ? 'ready'
+                : 'open';
+    return {
+      item,
+      tone,
+      ready,
+      waiting,
+      dependencies,
+      dependents,
+      notesCount: notes.length,
+      evidenceCount,
+      linkedRuns,
+      activeRun,
+      latestRun,
+      latestNote: notes[notes.length - 1] ?? null,
+    };
+  }
+
+  private missionGraphDependency(item: TaskChecklistItem): MissionGraphDependency {
+    return {
+      id: item.id,
+      title: item.title,
+      status: item.status,
+      done: item.status === 'done' || item.status === 'skipped',
+    };
+  }
+
+  private buildChecklistRunMap(items: TaskChecklistItem[]): Map<string, AgentRun[]> {
+    const runsByItemId = new Map<string, AgentRun[]>();
+    const addedRunIds = new Map<string, Set<string>>();
+    const runsById = new Map(this.runs().map((run) => [run.id, run]));
+
+    for (const action of this.runActions()) {
+      if (
+        action.label !== 'YOLO lane assigned' &&
+        !/^mission task (create|update)$/i.test(action.label)
+      ) {
+        continue;
+      }
+      const item = this.checklistItemForRunAction(items, action);
+      const run = runsById.get(action.runId);
+      if (!item || !run) continue;
+      const runIds = addedRunIds.get(item.id) ?? new Set<string>();
+      if (runIds.has(run.id)) continue;
+      runIds.add(run.id);
+      addedRunIds.set(item.id, runIds);
+      const linkedRuns = runsByItemId.get(item.id) ?? [];
+      linkedRuns.push(run);
+      runsByItemId.set(item.id, linkedRuns);
+    }
+
+    return runsByItemId;
+  }
+
+  private checklistItemForRunAction(
+    items: TaskChecklistItem[],
+    action: AgentRunAction,
+  ): TaskChecklistItem | null {
+    const detail = action.detail || '';
+    const idMatch = /\[id=([^\]]+)\]/i.exec(detail);
+    if (idMatch?.[1]) {
+      const byId = items.find((item) => item.id === idMatch[1]);
+      if (byId) return byId;
+    }
+
+    const parsed = this.parseActivityDetail(detail);
+    const candidateTitle =
+      parsed?.title || this.activityTaskTitle(detail) || detail.replace(/\s+\([^()]+\)$/i, '');
+    const normalized = this.normalizeMissionGraphTitle(candidateTitle);
+    if (!normalized) return null;
+    return (
+      items.find((item) => this.normalizeMissionGraphTitle(item.title) === normalized) ??
+      items.find((item) => {
+        const title = this.normalizeMissionGraphTitle(item.title);
+        return title.length > 0 && (normalized.startsWith(title) || title.startsWith(normalized));
+      }) ??
+      null
+    );
+  }
+
+  private normalizeMissionGraphTitle(value: string): string {
+    return value
+      .replace(/\s*\[id=[^\]]+\]\s*$/i, '')
+      .replace(/\s+\([^()]+\)$/i, '')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .toLowerCase();
+  }
+
+  missionGraphLaneClass(lane: MissionGraphLane): string {
+    return `is-${lane.tone}`;
+  }
+
+  missionGraphCardClass(card: MissionGraphCard): string {
+    return `is-${card.tone}`;
+  }
+
+  missionGraphRunLabel(card: MissionGraphCard): string {
+    const run = card.activeRun ?? card.latestRun;
+    if (!run) return '';
+    const prefix = run.status === 'running' ? 'running' : run.status;
+    const duration = this.elapsedLabel(run.startedAt, run.completedAt);
+    return `${prefix} / ${run.agentId} / ${duration}`;
+  }
+
+  missionGraphNotePreview(card: MissionGraphCard): string {
+    const note = card.latestNote;
+    if (!note) return '';
+    return `${note.authorId} / ${note.kind}: ${this.oneLine(note.body, 160)}`;
+  }
+
+  focusMissionGraphItem(item: TaskChecklistItem): void {
+    this.selectedMissionAction.set('execute');
+    this.missionActionChecklistItemId.set(item.id);
+  }
+
+  openMissionGraphCardRun(card: MissionGraphCard, event: Event): void {
+    event.preventDefault();
+    event.stopPropagation();
+    const run = card.activeRun ?? card.latestRun;
+    if (!run) return;
+    this.openRunDetail(run.id);
+  }
+
   elapsedLabel(startedAt?: number, completedAt?: number | null): string {
     if (!startedAt) return 'unknown';
-    const end = completedAt ?? Date.now();
+    const end = completedAt ?? this.now();
     const seconds = Math.max(0, Math.round((end - startedAt) / 1000));
     if (seconds < 60) return `${seconds}s`;
     const minutes = Math.floor(seconds / 60);
@@ -701,10 +1439,8 @@ export class App {
   }
 
   targetStatusText(item: PermissionRequest | AgentRun): string {
-    const kind =
-      'targetKind' in item ? item.targetKind : item.permissionTargetKind || 'unknown';
-    const exists =
-      'targetExists' in item ? item.targetExists : item.permissionTargetExists;
+    const kind = 'targetKind' in item ? item.targetKind : item.permissionTargetKind || 'unknown';
+    const exists = 'targetExists' in item ? item.targetExists : item.permissionTargetExists;
     if (exists === true) return `exists (${kind})`;
     if (exists === false) return `missing (${kind})`;
     return kind || 'unknown';
@@ -748,7 +1484,11 @@ export class App {
 
   permissionRequestLabel(request: PermissionRequest): string {
     if (request.requestedMode && request.requestedMode !== request.mode) {
-      if (['bash', 'shell', 'command', 'run-command', 'git', 'commit', 'git-commit'].includes(request.requestedMode)) {
+      if (
+        ['bash', 'shell', 'command', 'run-command', 'git', 'commit', 'git-commit'].includes(
+          request.requestedMode,
+        )
+      ) {
         return `${request.requestedMode} command`;
       }
       return `${request.requestedMode} (${this.permissionModeLabel(request.mode)})`;
@@ -757,13 +1497,22 @@ export class App {
   }
 
   latestActionForRun(runId: string): AgentRunAction | null {
-    return this.runActions().find((action) => action.runId === runId && this.isVisibleRunAction(action)) ?? null;
+    return (
+      this.runActions().find(
+        (action) => action.runId === runId && this.isVisibleRunAction(action),
+      ) ?? null
+    );
   }
 
   runMeta(run: AgentRun): string {
     const tokens = run.estimatedPromptTokens ? `${run.estimatedPromptTokens}t` : 'unknown tokens';
     const mode = run.permissionMode ? this.permissionModeLabel(run.permissionMode) : 'mode unknown';
-    return `${this.elapsedLabel(run.startedAt, run.completedAt)} / ${tokens} / ${mode}`;
+    const attempt = run.attempt && run.attempt > 1 ? ` / attempt ${run.attempt}` : '';
+    const turn =
+      run.maxTurns && run.maxTurns > 1 && run.continuationTurn
+        ? ` / turn ${run.continuationTurn}/${run.maxTurns}`
+        : '';
+    return `${this.elapsedLabel(run.startedAt, run.completedAt)} / ${tokens} / ${mode}${attempt}${turn}`;
   }
 
   agentContextUsage(agentId: AgentId): AgentContextUsage | null {
@@ -799,7 +1548,9 @@ export class App {
     const parts = [
       `model: ${usage.reasoningEffort ? `${usage.model}/${usage.reasoningEffort}` : usage.model}`,
       `used: ${this.formatTokenCount(usedTokens)} tokens${this.agentContextIsEstimated(usage) ? ' estimated' : ''}`,
-      usage.contextWindow ? `window: ${this.formatTokenCount(usage.contextWindow)} tokens` : 'window unknown',
+      usage.contextWindow
+        ? `window: ${this.formatTokenCount(usage.contextWindow)} tokens`
+        : 'window unknown',
       usage.contextWindow
         ? `remaining: ${this.formatTokenCount(Math.max(0, usage.contextWindow - usedTokens))} tokens`
         : '',
@@ -807,7 +1558,9 @@ export class App {
         ? `provider reported: ${this.formatTokenCount(usage.reportedUsedTokens)} tokens`
         : '',
       usage.inputTokens !== undefined ? `input: ${this.formatTokenCount(usage.inputTokens)}` : '',
-      usage.outputTokens !== undefined ? `output: ${this.formatTokenCount(usage.outputTokens)}` : '',
+      usage.outputTokens !== undefined
+        ? `output: ${this.formatTokenCount(usage.outputTokens)}`
+        : '',
       usage.reasoningOutputTokens !== undefined
         ? `reasoning: ${this.formatTokenCount(usage.reasoningOutputTokens)}`
         : '',
@@ -823,10 +1576,7 @@ export class App {
       usage.inputTokens > usage.contextWindow &&
       usage.cachedInputTokens !== undefined
     ) {
-      return Math.max(
-        0,
-        usage.inputTokens - usage.cachedInputTokens + (usage.outputTokens ?? 0),
-      );
+      return Math.max(0, usage.inputTokens - usage.cachedInputTokens + (usage.outputTokens ?? 0));
     }
     if (
       usage.provider === 'claude' &&
@@ -851,11 +1601,321 @@ export class App {
     return String(Math.round(value));
   }
 
+  private buildMissionActivityEvents(): MissionActivityEvent[] {
+    const runsById = new Map(this.runs().map((run) => [run.id, run]));
+    const laneByRun = new Map<string, { title: string; createdAt: number; actionId: string }>();
+    const events: MissionActivityEvent[] = [];
+
+    for (const action of this.runActions()) {
+      if (action.label === 'YOLO lane assigned') {
+        const title = this.activityTaskTitle(action.detail);
+        if (!title) continue;
+        const actor = this.activityActor(action.agentId);
+        laneByRun.set(action.runId, { title, createdAt: action.createdAt, actionId: action.id });
+        events.push({
+          id: `lane-start:${action.id}`,
+          createdAt: action.createdAt,
+          agentId: action.agentId,
+          tone: 'work',
+          title: `${actor} began work on "${title}"`,
+          detail: 'parallel checklist lane assigned',
+          runId: action.runId,
+        });
+      }
+    }
+
+    for (const run of this.runs()) {
+      const lane = laneByRun.get(run.id);
+      if (lane && run.completedAt && run.status !== 'running') {
+        const elapsed = this.elapsedLabel(run.startedAt, run.completedAt);
+        events.push({
+          id: `lane-finish:${run.id}:${run.status}`,
+          createdAt: run.completedAt,
+          agentId: run.agentId,
+          tone: run.status === 'completed' || run.status === 'empty' ? 'done' : 'blocked',
+          title:
+            run.status === 'completed' || run.status === 'empty'
+              ? `${run.agentId} finished "${lane.title}" in ${elapsed}`
+              : `${run.agentId} hit a failure on "${lane.title}" after ${elapsed}`,
+          detail: run.error ? this.oneLine(run.error, 180) : '',
+          runId: run.id,
+        });
+      }
+      if (run.lifecycleState === 'stalled' && run.lifecycleUpdatedAt) {
+        events.push({
+          id: `run-stalled:${run.id}:${run.lifecycleUpdatedAt}`,
+          createdAt: run.lifecycleUpdatedAt,
+          agentId: run.agentId,
+          tone: 'blocked',
+          title: `${run.agentId} may be stalled`,
+          detail: run.lifecycleReason || 'no provider signal recently',
+          runId: run.id,
+        });
+      }
+    }
+
+    const laneRunIds = new Set(laneByRun.keys());
+    for (const action of this.runActions()) {
+      if (action.label === 'retry scheduled') {
+        const run = runsById.get(action.runId);
+        const laneTitle = laneByRun.get(action.runId)?.title;
+        const actor = this.activityActor(action.agentId);
+        events.push({
+          id: `retry:${action.id}`,
+          createdAt: action.createdAt,
+          agentId: action.agentId,
+          tone: 'retry',
+          title: `${actor} scheduled a retry${laneTitle ? ` for "${laneTitle}"` : ''}`,
+          detail: this.actionDetailText(action, 180),
+          runId: run?.id ?? action.runId,
+        });
+        continue;
+      }
+
+      const missionEvent = this.activityFromMissionAction(action, laneRunIds);
+      if (missionEvent) events.push(missionEvent);
+    }
+
+    return this.dedupeActivityEvents(events)
+      .sort((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id))
+      .slice(-160);
+  }
+
+  private dedupeActivityEvents(events: MissionActivityEvent[]): MissionActivityEvent[] {
+    const seen = new Set<string>();
+    const deduped: MissionActivityEvent[] = [];
+    for (const event of events) {
+      if (seen.has(event.id)) continue;
+      seen.add(event.id);
+      deduped.push(event);
+    }
+    return deduped;
+  }
+
+  private activityFromMissionAction(
+    action: AgentRunAction,
+    laneRunIds: Set<string>,
+  ): MissionActivityEvent | null {
+    const actor = this.activityActor(action.agentId);
+    if (action.label === 'mission created') {
+      return {
+        id: `mission-created:${action.id}`,
+        createdAt: action.createdAt,
+        agentId: action.agentId,
+        tone: 'mission',
+        title: `${actor} created mission "${this.activityTaskTitle(action.detail)}"`,
+        detail: '',
+        runId: action.runId,
+      };
+    }
+
+    if (/^mission plan (create|update)$/i.test(action.label)) {
+      const parsed = this.parseActivityDetail(action.detail);
+      if (!parsed || (parsed.status && parsed.status !== 'active')) return null;
+      return {
+        id: `plan:${action.id}`,
+        createdAt: action.createdAt,
+        agentId: action.agentId,
+        tone: 'plan',
+        title: `${actor} ${/create$/i.test(action.label) ? 'created' : 'updated'} active plan "${parsed.title}"`,
+        runId: action.runId,
+      };
+    }
+
+    if (action.label === 'mission phase auto-advance') {
+      const [closed, opened] = (action.detail ?? '').split(/\s+done;\s+/i);
+      return {
+        id: `phase-auto:${action.id}`,
+        createdAt: action.createdAt,
+        agentId: action.agentId,
+        tone: 'phase',
+        title: `team closed "${closed || 'current phase'}" and opened "${(opened || '').replace(/\s+active$/i, '') || 'next phase'}"`,
+        detail: 'phase gate advanced',
+        runId: action.runId,
+      };
+    }
+
+    if (/^mission phase (create|update)$/i.test(action.label)) {
+      const parsed = this.parseActivityDetail(action.detail);
+      if (!parsed) return null;
+      const verb =
+        parsed.status === 'done'
+          ? 'closed phase gate'
+          : parsed.status === 'active'
+            ? 'opened phase gate'
+            : parsed.status === 'blocked'
+              ? 'blocked phase gate'
+              : /^mission phase create$/i.test(action.label)
+                ? 'added phase gate'
+                : '';
+      if (!verb) return null;
+      return {
+        id: `phase:${action.id}`,
+        createdAt: action.createdAt,
+        agentId: action.agentId,
+        tone: parsed.status === 'blocked' ? 'blocked' : 'phase',
+        title: `team ${verb} "${parsed.title}"`,
+        detail: parsed.status ? `status: ${parsed.status}` : '',
+        runId: action.runId,
+      };
+    }
+
+    if (/^mission task (create|update)$/i.test(action.label)) {
+      const parsed = this.parseActivityDetail(action.detail);
+      if (!parsed) return null;
+      if (parsed.status === 'done' && laneRunIds.has(action.runId)) return null;
+      if (/^mission task create$/i.test(action.label)) {
+        return {
+          id: `task-create:${action.id}`,
+          createdAt: action.createdAt,
+          agentId: action.agentId,
+          tone: 'work',
+          title: `${actor} added checklist item "${parsed.title}"`,
+          detail: parsed.status ? `status: ${parsed.status}` : '',
+          runId: action.runId,
+        };
+      }
+      if (parsed.status === 'done') {
+        return {
+          id: `task-done:${action.id}`,
+          createdAt: action.createdAt,
+          agentId: action.agentId,
+          tone: 'done',
+          title: `${actor} marked "${parsed.title}" done`,
+          runId: action.runId,
+        };
+      }
+      if (parsed.status === 'blocked') {
+        return {
+          id: `task-blocked:${action.id}`,
+          createdAt: action.createdAt,
+          agentId: action.agentId,
+          tone: 'blocked',
+          title: `${actor} blocked "${parsed.title}"`,
+          runId: action.runId,
+        };
+      }
+    }
+
+    return null;
+  }
+
+  private parseActivityDetail(
+    detail: string | undefined,
+  ): { title: string; status: string } | null {
+    const text = this.readableDetailText(detail, 260);
+    if (!text) return null;
+    const match = text.match(/^(.*?)\s+\(([^()]+)\)$/);
+    if (!match) return { title: text, status: '' };
+    return {
+      title: match[1]?.trim() || text,
+      status: match[2]?.trim().toLowerCase() || '',
+    };
+  }
+
+  private activityTaskTitle(detail: string | undefined): string {
+    const text = this.readableDetailText(detail, 220);
+    return text
+      .replace(/\s*\[id=[^\]]+\]\s*$/i, '')
+      .replace(/\s+\([^()]+\)$/i, '')
+      .trim();
+  }
+
+  private activityActor(agentId: AgentId | undefined): string {
+    return agentId || 'agent';
+  }
+
+  private isActivityRunAction(action: AgentRunAction): boolean {
+    return (
+      action.label === 'YOLO lane assigned' ||
+      action.label === 'retry scheduled' ||
+      action.label === 'mission phase auto-advance' ||
+      /^mission (created|plan (?:create|update)|phase (?:create|update)|task (?:create|update))$/i.test(
+        action.label,
+      )
+    );
+  }
+
+  private isActivityRunUpdate(run: AgentRun): boolean {
+    if (run.lifecycleState === 'stalled') return true;
+    if (run.status === 'running') return false;
+    return this.runActions().some(
+      (action) => action.runId === run.id && action.label === 'YOLO lane assigned',
+    );
+  }
+
   runActionSignal(run: AgentRun): string {
     const action = this.latestActionForRun(run.id);
-    if (!action) return run.lastSignal || run.summary || 'waiting for first broker signal';
-    const detail = this.actionDetailText(action, 120);
-    return detail ? `${action.label} / ${detail}` : action.label;
+    if (!action)
+      return (
+        this.runLifecycleSignal(run) ||
+        run.lastSignal ||
+        run.summary ||
+        'waiting for first broker signal'
+      );
+    return this.humanizedRunAction(action, 120);
+  }
+
+  humanizedRunAction(action: AgentRunAction, maxChars = 180): string {
+    const label = action.label.trim();
+    const normalized = label.toLowerCase();
+    const detail = this.actionDetailText(action, maxChars);
+
+    if (normalized === 'yolo lane assigned') {
+      return `lane assigned: ${this.activityTaskTitle(action.detail) || detail || 'checklist work'}`;
+    }
+    if (normalized === 'retry scheduled') {
+      return detail ? `retry scheduled: ${detail}` : 'retry scheduled';
+    }
+    if (normalized === 'agent process completed') {
+      return detail ? `provider process completed (${detail})` : 'provider process completed';
+    }
+    if (/mission phase auto-advance/i.test(label)) {
+      return detail ? `phase gate advanced: ${detail}` : 'phase gate advanced';
+    }
+    if (/^mission task (create|update)$/i.test(label)) {
+      const parsed = this.parseActivityDetail(action.detail);
+      return parsed
+        ? `checklist ${parsed.status || 'updated'}: ${parsed.title}`
+        : 'checklist updated';
+    }
+    if (/^mission phase (create|update)$/i.test(label)) {
+      const parsed = this.parseActivityDetail(action.detail);
+      return parsed ? `phase ${parsed.status || 'updated'}: ${parsed.title}` : 'phase gate updated';
+    }
+    if (/^mission plan (create|update)$/i.test(label)) {
+      const parsed = this.parseActivityDetail(action.detail);
+      return parsed ? `plan ${parsed.status || 'updated'}: ${parsed.title}` : 'plan updated';
+    }
+    if (/assistant text streaming/i.test(label)) {
+      return detail ? `drafting: ${detail}` : 'drafting response';
+    }
+    if (/assistant message ready|assistant text|agent_message/i.test(label)) {
+      return detail ? `message ready: ${detail}` : 'message ready';
+    }
+    if (/command|execution|exec/i.test(label)) {
+      return detail ? `command: ${detail}` : 'command running';
+    }
+    if (/tool/i.test(label)) {
+      return detail ? `tool use: ${detail}` : 'tool use';
+    }
+    if (/permission/i.test(label)) {
+      return detail ? `${label}: ${detail}` : label;
+    }
+    return detail ? `${label}: ${detail}` : label;
+  }
+
+  runLifecycleSignal(run: AgentRun): string {
+    if (!run.lifecycleState) return '';
+    const state = run.lifecycleState.replace(/_/g, ' ');
+    const reason = run.lifecycleReason ? ` / ${run.lifecycleReason}` : '';
+    if (run.lifecycleState === 'retry_queued' && run.retryAfter) {
+      return `${state} / retry after ${this.elapsedLabel(Date.now(), run.retryAfter)}`;
+    }
+    if (run.lastSignalAt && run.status === 'running') {
+      return `${state} / provider signal ${this.elapsedLabel(run.lastSignalAt, Date.now())} ago${reason}`;
+    }
+    return `${state}${reason}`;
   }
 
   runDraftSignal(run: AgentRun): string {
@@ -876,7 +1936,8 @@ export class App {
   canDismissRun(run: AgentRun): boolean {
     if (run.status !== 'running') return false;
     const action = this.latestActionForRun(run.id);
-    const referenceTime = action?.createdAt ?? run.startedAt ?? 0;
+    const referenceTime =
+      run.lastSignalAt || action?.createdAt || run.lifecycleUpdatedAt || run.startedAt || 0;
     if (!referenceTime) return false;
     return Date.now() - referenceTime >= 5 * 60 * 1000;
   }
@@ -1348,7 +2409,9 @@ export class App {
     const items = this.taskControl()?.checklistItems ?? [];
     return item.dependencyIds.some((id) => {
       const dependency = items.find((candidate) => candidate.id === id);
-      return dependency !== undefined && dependency.status !== 'done' && dependency.status !== 'skipped';
+      return (
+        dependency !== undefined && dependency.status !== 'done' && dependency.status !== 'skipped'
+      );
     });
   }
 
@@ -1374,7 +2437,9 @@ export class App {
 
   private missionActionAddress(): string {
     if (this.missionActionScope() === 'team') return 'Team';
-    return this.missionActionTargetAgents().map((agent) => `@${agent}`).join(' ');
+    return this.missionActionTargetAgents()
+      .map((agent) => `@${agent}`)
+      .join(' ');
   }
 
   private selectedMissionActionItem(): TaskChecklistItem | null {
@@ -1426,15 +2491,20 @@ export class App {
   }
 
   private refreshTasks(roomId: string, preferredTaskId?: string | null): void {
-    this.api.tasks.list(roomId).subscribe((tasks) => this.applyTaskList(roomId, tasks, preferredTaskId));
+    this.api.tasks
+      .list(roomId)
+      .subscribe((tasks) => this.applyTaskList(roomId, tasks, preferredTaskId));
   }
 
   private applyTaskList(roomId: string, tasks: Task[], preferredTaskId?: string | null): void {
     this.tasks.set(tasks);
     const preferred = preferredTaskId
-      ? tasks.find((task) => task.id === preferredTaskId && ACTIVE_TASK_STATUSES.includes(task.status))
+      ? tasks.find(
+          (task) => task.id === preferredTaskId && ACTIVE_TASK_STATUSES.includes(task.status),
+        )
       : null;
-    const activeTask = preferred ?? tasks.find((task) => ACTIVE_TASK_STATUSES.includes(task.status));
+    const activeTask =
+      preferred ?? tasks.find((task) => ACTIVE_TASK_STATUSES.includes(task.status));
     if (activeTask) {
       this.loadTaskControl(roomId, activeTask.id);
       this.loadCollaboration(roomId, activeTask.id);
@@ -1445,13 +2515,11 @@ export class App {
   }
 
   private loadCollaboration(roomId: string, taskId: string): void {
-    this.api.collaboration
-      .list(roomId, taskId)
-      .subscribe((items) => {
-        if (this.selectedRoomId() === roomId && this.activeTask()?.id === taskId) {
-          this.collaboration.set(items);
-        }
-      });
+    this.api.collaboration.list(roomId, taskId).subscribe((items) => {
+      if (this.selectedRoomId() === roomId && this.activeTask()?.id === taskId) {
+        this.collaboration.set(items);
+      }
+    });
   }
 
   private syncMissionActionTargets(): void {
@@ -1558,14 +2626,21 @@ export class App {
       : items.filter((signal) => this.isVisibleProviderSignal(signal.label, signal.detail));
   }
 
-  hiddenDiagnosticSignalCount(signals: AgentRunDetail['diagnostics']['signals'] | undefined): number {
+  hiddenDiagnosticSignalCount(
+    signals: AgentRunDetail['diagnostics']['signals'] | undefined,
+  ): number {
     if (this.showLowSignalRunEvents()) return 0;
     return this.lowSignalDiagnosticSignalCount(signals);
   }
 
-  lowSignalDiagnosticSignalCount(signals: AgentRunDetail['diagnostics']['signals'] | undefined): number {
+  lowSignalDiagnosticSignalCount(
+    signals: AgentRunDetail['diagnostics']['signals'] | undefined,
+  ): number {
     const items = signals ?? [];
-    return items.length - items.filter((signal) => this.isVisibleProviderSignal(signal.label, signal.detail)).length;
+    return (
+      items.length -
+      items.filter((signal) => this.isVisibleProviderSignal(signal.label, signal.detail)).length
+    );
   }
 
   setShowLowSignalRunEvents(event: Event): void {
@@ -1748,7 +2823,9 @@ export class App {
       const heading = /^(#{1,3})\s+(.+)$/.exec(trimmed);
       if (heading) {
         closeList();
-        html.push(`<h${heading[1]!.length}>${this.inlineMarkdown(heading[2]!)}</h${heading[1]!.length}>`);
+        html.push(
+          `<h${heading[1]!.length}>${this.inlineMarkdown(heading[2]!)}</h${heading[1]!.length}>`,
+        );
         continue;
       }
       const bullet = /^[-*]\s+(.+)$/.exec(trimmed);

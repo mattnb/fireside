@@ -1,6 +1,8 @@
 // server/src/db.ts
 import Database from 'better-sqlite3';
 import type { Database as DbType } from 'better-sqlite3';
+import { nanoid } from 'nanoid';
+import { extractCollaborationNotes } from './collaboration-notes.js';
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS rooms (
@@ -170,7 +172,17 @@ CREATE TABLE IF NOT EXISTS agent_runs (
   permission_target_kind TEXT NOT NULL DEFAULT 'unknown',
   permission_target_resolved_path TEXT NOT NULL DEFAULT '',
   permission_target_checked_at INTEGER NOT NULL DEFAULT 0,
-  permission_provider_profile TEXT NOT NULL DEFAULT ''
+  permission_provider_profile TEXT NOT NULL DEFAULT '',
+  lifecycle_state TEXT NOT NULL DEFAULT 'launching_agent_process',
+  lifecycle_reason TEXT NOT NULL DEFAULT '',
+  lifecycle_updated_at INTEGER NOT NULL DEFAULT 0,
+  last_signal_at INTEGER NOT NULL DEFAULT 0,
+  attempt INTEGER NOT NULL DEFAULT 1,
+  continuation_turn INTEGER NOT NULL DEFAULT 1,
+  max_turns INTEGER NOT NULL DEFAULT 1,
+  workspace_path TEXT NOT NULL DEFAULT '',
+  retry_of_run_id TEXT NOT NULL DEFAULT '',
+  retry_after INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE INDEX IF NOT EXISTS idx_agent_runs_room_started
@@ -226,7 +238,7 @@ CREATE INDEX IF NOT EXISTS idx_agent_run_actions_run_created
 
 CREATE TABLE IF NOT EXISTS mission_briefings (
   id TEXT PRIMARY KEY,
-  room_id TEXT NOT NULL REFERENCES rooms(id) ON DELETE CASCADE,
+  room_id TEXT REFERENCES rooms(id) ON DELETE SET NULL,
   task_id TEXT REFERENCES tasks(id) ON DELETE SET NULL,
   title TEXT NOT NULL,
   summary TEXT NOT NULL DEFAULT '',
@@ -275,6 +287,16 @@ function ensureAgentRunColumns(db: DbType): void {
     ['permission_target_resolved_path', "TEXT NOT NULL DEFAULT ''"],
     ['permission_target_checked_at', 'INTEGER NOT NULL DEFAULT 0'],
     ['permission_provider_profile', "TEXT NOT NULL DEFAULT ''"],
+    ['lifecycle_state', "TEXT NOT NULL DEFAULT 'launching_agent_process'"],
+    ['lifecycle_reason', "TEXT NOT NULL DEFAULT ''"],
+    ['lifecycle_updated_at', 'INTEGER NOT NULL DEFAULT 0'],
+    ['last_signal_at', 'INTEGER NOT NULL DEFAULT 0'],
+    ['attempt', 'INTEGER NOT NULL DEFAULT 1'],
+    ['continuation_turn', 'INTEGER NOT NULL DEFAULT 1'],
+    ['max_turns', 'INTEGER NOT NULL DEFAULT 1'],
+    ['workspace_path', "TEXT NOT NULL DEFAULT ''"],
+    ['retry_of_run_id', "TEXT NOT NULL DEFAULT ''"],
+    ['retry_after', 'INTEGER NOT NULL DEFAULT 0'],
   ];
 
   for (const [name, definition] of additions) {
@@ -319,8 +341,14 @@ function ensureTaskColumns(db: DbType): void {
     ['repo_path', "TEXT NOT NULL DEFAULT ''"],
     ['acceptance_criteria', "TEXT NOT NULL DEFAULT ''"],
     ['agents_json', "TEXT NOT NULL DEFAULT '[]'"],
-    ['status', "TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'paused', 'blocked', 'verifying', 'done'))"],
-    ['capability_profile', "TEXT NOT NULL DEFAULT 'plan' CHECK (capability_profile IN ('plan', 'edit', 'full-auto'))"],
+    [
+      'status',
+      "TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'paused', 'blocked', 'verifying', 'done'))",
+    ],
+    [
+      'capability_profile',
+      "TEXT NOT NULL DEFAULT 'plan' CHECK (capability_profile IN ('plan', 'edit', 'full-auto'))",
+    ],
     ['summary', "TEXT NOT NULL DEFAULT ''"],
     ['created_at', 'INTEGER NOT NULL DEFAULT 0'],
     ['updated_at', 'INTEGER NOT NULL DEFAULT 0'],
@@ -528,11 +556,151 @@ function ensureCollaborationIndexes(db: DbType): void {
   `);
 }
 
+interface LeakedCollaborationMessageRow {
+  id: string;
+  room_id: string;
+  author_id: string;
+  text: string;
+  created_at: number;
+}
+
+interface AgentRunForMessageRow {
+  id: string;
+  task_id: string | null;
+}
+
+function bounded(text: string, maxChars: number): string {
+  return text.length <= maxChars ? text : text.slice(0, maxChars);
+}
+
+function collaborationItemAlreadyStored(
+  db: DbType,
+  input: {
+    roomId: string;
+    agentId: string;
+    kind: string;
+    title: string;
+    target: string;
+    body: string;
+    createdAt: number;
+  },
+): boolean {
+  const row = db
+    .prepare(
+      `SELECT id FROM collaboration_items
+       WHERE room_id = ?
+         AND agent_id = ?
+         AND kind = ?
+         AND title = ?
+         AND target = ?
+         AND body = ?
+         AND created_at = ?
+       LIMIT 1`,
+    )
+    .get(
+      input.roomId,
+      input.agentId,
+      input.kind,
+      input.title,
+      input.target,
+      input.body,
+      input.createdAt,
+    ) as { id: string } | undefined;
+  return Boolean(row);
+}
+
+function reconcileLeakedCollaborationNotes(db: DbType): void {
+  const rows = db
+    .prepare(
+      `SELECT id, room_id, author_id, text, created_at
+       FROM messages
+       WHERE author_kind = 'agent'
+         AND text LIKE '%/collab-note%'
+         AND (text LIKE '%/end-collab-note%' OR text LIKE '%@end-collab-note%')`,
+    )
+    .all() as LeakedCollaborationMessageRow[];
+  if (rows.length === 0) return;
+
+  const findRun = db.prepare(
+    `SELECT id, task_id
+     FROM agent_runs
+     WHERE reply_message_id = ?
+     ORDER BY completed_at DESC, started_at DESC
+     LIMIT 1`,
+  );
+  const insertItem = db.prepare(
+    `INSERT INTO collaboration_items (
+      id, room_id, task_id, subject_type, subject_id, message_id, run_id, agent_id, kind, status, confidence,
+      title, target, body, evidence_json, created_at
+    ) VALUES (?, ?, ?, NULL, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  );
+  const updateMessage = db.prepare(`UPDATE messages SET text = ? WHERE id = ?`);
+  const clearRunReply = db.prepare(
+    `UPDATE agent_runs SET reply_message_id = NULL WHERE reply_message_id = ?`,
+  );
+  const deleteMessage = db.prepare(`DELETE FROM messages WHERE id = ?`);
+
+  const repair = db.transaction((messages: LeakedCollaborationMessageRow[]) => {
+    for (const message of messages) {
+      const extracted = extractCollaborationNotes(message.text);
+      if (extracted.notes.length === 0) continue;
+
+      const visibleText = extracted.visibleText.trim();
+      const run = findRun.get(message.id) as AgentRunForMessageRow | undefined;
+      const retainedMessageId = visibleText ? message.id : null;
+
+      for (const note of extracted.notes) {
+        const title = bounded(note.title, 240);
+        const target = bounded(note.target, 500);
+        const body = bounded(note.body, 2000);
+        if (
+          collaborationItemAlreadyStored(db, {
+            roomId: message.room_id,
+            agentId: message.author_id,
+            kind: note.kind,
+            title,
+            target,
+            body,
+            createdAt: message.created_at,
+          })
+        ) {
+          continue;
+        }
+        insertItem.run(
+          nanoid(16),
+          message.room_id,
+          run?.task_id ?? null,
+          retainedMessageId,
+          run?.id ?? null,
+          message.author_id,
+          note.kind,
+          note.status,
+          note.confidence,
+          title,
+          target,
+          body,
+          JSON.stringify(note.evidence.map((item) => bounded(item, 500)).slice(0, 12)),
+          message.created_at,
+        );
+      }
+
+      if (visibleText) {
+        updateMessage.run(visibleText, message.id);
+      } else {
+        clearRunReply.run(message.id);
+        deleteMessage.run(message.id);
+      }
+    }
+  });
+
+  repair(rows);
+}
+
 function ensureMissionBriefingTables(db: DbType): void {
   db.exec(`
     CREATE TABLE IF NOT EXISTS mission_briefings (
       id TEXT PRIMARY KEY,
-      room_id TEXT NOT NULL REFERENCES rooms(id) ON DELETE CASCADE,
+      room_id TEXT REFERENCES rooms(id) ON DELETE SET NULL,
       task_id TEXT REFERENCES tasks(id) ON DELETE SET NULL,
       title TEXT NOT NULL,
       summary TEXT NOT NULL DEFAULT '',
@@ -549,6 +717,60 @@ function ensureMissionBriefingTables(db: DbType): void {
     CREATE INDEX IF NOT EXISTS idx_mission_briefings_room_created
       ON mission_briefings(room_id, created_at);
   `);
+  ensureMissionBriefingRetention(db);
+}
+
+function ensureMissionBriefingRetention(db: DbType): void {
+  const columns = db.prepare(`PRAGMA table_info(mission_briefings)`).all() as Array<{
+    name: string;
+    notnull: number;
+  }>;
+  const roomColumn = columns.find((column) => column.name === 'room_id');
+  const foreignKeys = db.prepare(`PRAGMA foreign_key_list(mission_briefings)`).all() as Array<{
+    from: string;
+    table: string;
+    on_delete: string;
+  }>;
+  const roomForeignKey = foreignKeys.find(
+    (foreignKey) => foreignKey.from === 'room_id' && foreignKey.table === 'rooms',
+  );
+  const needsMigration =
+    roomColumn?.notnull === 1 || roomForeignKey?.on_delete.toUpperCase() === 'CASCADE';
+  if (!needsMigration) return;
+
+  db.pragma('foreign_keys = OFF');
+  db.exec(`
+    ALTER TABLE mission_briefings RENAME TO mission_briefings_old;
+
+    CREATE TABLE mission_briefings (
+      id TEXT PRIMARY KEY,
+      room_id TEXT REFERENCES rooms(id) ON DELETE SET NULL,
+      task_id TEXT REFERENCES tasks(id) ON DELETE SET NULL,
+      title TEXT NOT NULL,
+      summary TEXT NOT NULL DEFAULT '',
+      created_by TEXT NOT NULL,
+      created_at INTEGER NOT NULL,
+      message_count INTEGER NOT NULL DEFAULT 0,
+      run_count INTEGER NOT NULL DEFAULT 0,
+      payload_json TEXT NOT NULL
+    );
+
+    INSERT INTO mission_briefings (
+      id, room_id, task_id, title, summary, created_by, created_at, message_count, run_count, payload_json
+    )
+    SELECT
+      id, room_id, task_id, title, summary, created_by, created_at, message_count, run_count, payload_json
+    FROM mission_briefings_old;
+
+    DROP TABLE mission_briefings_old;
+
+    CREATE INDEX IF NOT EXISTS idx_mission_briefings_created
+      ON mission_briefings(created_at);
+
+    CREATE INDEX IF NOT EXISTS idx_mission_briefings_room_created
+      ON mission_briefings(room_id, created_at);
+  `);
+  db.pragma('foreign_keys = ON');
 }
 
 export function openDatabase(filename: string): DbType {
@@ -567,6 +789,7 @@ export function openDatabase(filename: string): DbType {
   ensureCollaborationStatusConstraint(db);
   ensureCollaborationSubjectColumns(db);
   ensureCollaborationIndexes(db);
+  reconcileLeakedCollaborationNotes(db);
   ensureMissionBriefingTables(db);
   return db;
 }

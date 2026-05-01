@@ -18,7 +18,8 @@ export interface ExtractedMissionPhaseUpdates {
   updates: ParsedMissionPhaseUpdate[];
 }
 
-const PHASE_RE = /(^|\n)\/mission-phase\s*\n([\s\S]*?)\n\/end-(?:mission-phase|collab-note)(?=\s|$)/gi;
+const PHASE_RE =
+  /(^|\n)\/mission-phase\s*\n([\s\S]*?)\n[/@]end-(?:mission-phase|collab-note)(?=\s|$)/gi;
 const ACTIONS = new Set(['create', 'update']);
 const STATUSES = new Set(['planned', 'active', 'blocked', 'done']);
 const STATUS_ALIASES = new Map<string, TaskPhaseStatus>([
@@ -60,7 +61,10 @@ function first(fields: Map<string, string[]>, ...keys: string[]): string {
 }
 
 function all(fields: Map<string, string[]>, ...keys: string[]): string[] {
-  return keys.flatMap((key) => fields.get(key) ?? []).map((value) => value.trim()).filter(Boolean);
+  return keys
+    .flatMap((key) => fields.get(key) ?? [])
+    .map((value) => value.trim())
+    .filter(Boolean);
 }
 
 function normalizeAction(value: string): MissionPhaseAction {
@@ -72,7 +76,7 @@ function normalizeStatus(value: string): TaskPhaseStatus | null {
   const normalized = value.trim().toLowerCase();
   return STATUSES.has(normalized)
     ? (normalized as TaskPhaseStatus)
-    : STATUS_ALIASES.get(normalized) ?? null;
+    : (STATUS_ALIASES.get(normalized) ?? null);
 }
 
 function parseSortOrder(value: string): number | null {

@@ -17,10 +17,7 @@ import { listPermissionRequests } from '../../src/repos/permission-requests.js';
 import { createAgentRun, listAgentRuns } from '../../src/repos/agent-runs.js';
 import { listAgentRunActions } from '../../src/repos/run-actions.js';
 import { listTaskPhases } from '../../src/repos/task-phases.js';
-import {
-  createTaskChecklistItem,
-  listTaskChecklistItems,
-} from '../../src/repos/task-checklist.js';
+import { createTaskChecklistItem, listTaskChecklistItems } from '../../src/repos/task-checklist.js';
 import { listTaskPlans } from '../../src/repos/task-plans.js';
 import { listTasks } from '../../src/repos/tasks.js';
 import { Broker } from '../../src/broker.js';
@@ -34,7 +31,11 @@ function fakeSpec(id: AgentId, replyText: string): AgentSpec {
     command: 'fake',
     defaultTimeoutMs: 1000,
     buildArgs: () => [],
-    parseOutput: () => ({ text: replyText, sessionId: `${id}-sess`, raw: { stdout: '', stderr: '' } }),
+    parseOutput: () => ({
+      text: replyText,
+      sessionId: `${id}-sess`,
+      raw: { stdout: '', stderr: '' },
+    }),
   };
 }
 
@@ -60,7 +61,11 @@ describe('Broker', () => {
           sessionId,
           ...(permission !== undefined ? { permission } : {}),
         });
-        return { text: `${spec.id}-says-hello`, sessionId: `${spec.id}-sess`, raw: { stdout: '', stderr: '' } };
+        return {
+          text: `${spec.id}-says-hello`,
+          sessionId: `${spec.id}-sess`,
+          raw: { stdout: '', stderr: '' },
+        };
       },
       getSpec: (id) => {
         const map: Record<string, AgentSpec> = {
@@ -186,7 +191,9 @@ describe('Broker', () => {
     expect(actions.map((action) => action.label)).not.toContain('claude message_start');
     expect(actions.map((action) => action.label)).not.toContain('claude content_block_start');
     expect(actions.map((action) => action.label)).not.toContain('claude tool_use');
-    expect(actions.find((action) => action.label === 'claude assistant message ready')).toMatchObject({
+    expect(
+      actions.find((action) => action.label === 'claude assistant message ready'),
+    ).toMatchObject({
       detail: 'Thanks for flagging this; I am checking the failure path now.',
     });
   });
@@ -509,16 +516,14 @@ describe('Broker', () => {
     expect(runs[0]!.prompt).toContain('YOLO work lane');
     expect(runs[1]!.prompt).toContain('YOLO work lane');
     expect(runs[0]!.prompt).not.toEqual(runs[1]!.prompt);
-    const firstRoundLaneTitles = runs
-      .slice(0, 2)
-      .map((run) => {
-        const assignedLine = run.prompt
-          .split(/\r?\n/)
-          .find((line) => line.startsWith('Assigned item:'));
-        if (assignedLine?.includes('Implement UI lane')) return 'Implement UI lane';
-        if (assignedLine?.includes('Verify broker lane')) return 'Verify broker lane';
-        return 'unknown';
-      });
+    const firstRoundLaneTitles = runs.slice(0, 2).map((run) => {
+      const assignedLine = run.prompt
+        .split(/\r?\n/)
+        .find((line) => line.startsWith('Assigned item:'));
+      if (assignedLine?.includes('Implement UI lane')) return 'Implement UI lane';
+      if (assignedLine?.includes('Verify broker lane')) return 'Verify broker lane';
+      return 'unknown';
+    });
     expect(new Set(firstRoundLaneTitles)).toEqual(
       new Set(['Implement UI lane', 'Verify broker lane']),
     );
@@ -605,9 +610,7 @@ describe('Broker', () => {
     const actionLabels = agentRuns.flatMap((run) =>
       listAgentRunActions(db, run.id).map((action) => action.label),
     );
-    expect(actionLabels).toContain(
-      'full-auto permission auto-approved in YOLO',
-    );
+    expect(actionLabels).toContain('full-auto permission auto-approved in YOLO');
   });
 
   it('applies room-level YOLO agent flags and budget to normal chat turns', async () => {
@@ -750,7 +753,7 @@ describe('Broker', () => {
         return {
           text: `${spec.id} working`,
           sessionId: `${spec.id}-sess`,
-      raw: { stdout: '', stderr: '' },
+          raw: { stdout: '', stderr: '' },
         };
       },
       getSpec: (id) => {
@@ -953,9 +956,9 @@ describe('Broker', () => {
     await broker.postHumanMessage(room.id, 'human', '@claude additional context');
 
     expect(runs).toEqual([]);
-    expect(listMessages(db, room.id).map((message) => `${message.authorId}:${message.text}`)).toEqual([
-      'human:@claude additional context',
-    ]);
+    expect(
+      listMessages(db, room.id).map((message) => `${message.authorId}:${message.text}`),
+    ).toEqual(['human:@claude additional context']);
   });
 
   it('drains queued human context after the active turn finishes', async () => {
@@ -996,11 +999,9 @@ describe('Broker', () => {
 
     expect(runs.map((run) => run.agentId)).toEqual(['claude', 'claude']);
     expect(runs[1]!.prompt).toContain('@claude queued context');
-    expect(listMessages(db, room.id).map((message) => `${message.authorId}:${message.text}`)).toEqual([
-      'human:@claude first',
-      'human:@claude queued context',
-      'claude:saw queued context',
-    ]);
+    expect(
+      listMessages(db, room.id).map((message) => `${message.authorId}:${message.text}`),
+    ).toEqual(['human:@claude first', 'human:@claude queued context', 'claude:saw queued context']);
   });
 
   it('uses room-level YOLO budget when draining queued context for a YOLO agent', async () => {
@@ -1057,7 +1058,9 @@ describe('Broker', () => {
       filesystemScope: 'unrestricted',
       web: true,
     });
-    expect(listMessages(db, room.id).map((message) => `${message.authorId}:${message.text}`)).toEqual([
+    expect(
+      listMessages(db, room.id).map((message) => `${message.authorId}:${message.text}`),
+    ).toEqual([
       'human:@gemini first',
       'human:@claude queued yolo context',
       'claude:saw queued yolo context',
@@ -1157,7 +1160,11 @@ describe('Broker', () => {
       resumeCliSessions: true,
       runAgent: async (spec, prompt, sessionId) => {
         runs.push({ agentId: spec.id, prompt, sessionId });
-        return { text: `${spec.id}-says-hello`, sessionId: `${spec.id}-sess`, raw: { stdout: '', stderr: '' } };
+        return {
+          text: `${spec.id}-says-hello`,
+          sessionId: `${spec.id}-sess`,
+          raw: { stdout: '', stderr: '' },
+        };
       },
       getSpec: (id) => {
         const map: Record<string, AgentSpec> = {
@@ -1186,6 +1193,67 @@ describe('Broker', () => {
     expect(events).toHaveLength(2);
     expect(events[0]).toMatchObject({ author: 'human' });
     expect(events[1]).toMatchObject({ author: 'claude' });
+  });
+
+  it('marks queued human messages as delivered when an agent receives them', async () => {
+    let releaseRun!: () => void;
+    let firstRunStarted!: () => void;
+    const releaseRunPromise = new Promise<void>((resolve) => {
+      releaseRun = resolve;
+    });
+    const firstRunStartedPromise = new Promise<void>((resolve) => {
+      firstRunStarted = resolve;
+    });
+    let runCount = 0;
+    const queueBroker = new Broker({
+      db,
+      maxAgentRepliesPerThread: 1,
+      runAgent: async (spec, prompt, sessionId) => {
+        runCount += 1;
+        runs.push({ agentId: spec.id, prompt, sessionId });
+        if (runCount === 1) {
+          firstRunStarted();
+          await releaseRunPromise;
+        }
+        return {
+          text: `${spec.id}-says-hello-${runCount}`,
+          sessionId: `${spec.id}-sess`,
+          raw: { stdout: '', stderr: '' },
+        };
+      },
+      getSpec: (id) => (id === 'claude' ? fakeSpec('claude', 'claude reply') : undefined),
+    });
+    const room = createRoom(db, { name: 'g', agents: ['claude'] });
+    const deliveryUpdates: Array<{ messageId: string; deliveryStatus: string }> = [];
+    queueBroker.on('messageDeliveryUpdated', (update) => {
+      deliveryUpdates.push({
+        messageId: update.messageId,
+        deliveryStatus: update.deliveryStatus,
+      });
+    });
+
+    const firstTurn = queueBroker.postHumanMessage(room.id, 'human', '@claude start slow');
+    await firstRunStartedPromise;
+
+    const queued = await queueBroker.postHumanMessage(room.id, 'human', '@claude queued context');
+    expect(queued.deliveryStatus).toBe('queued');
+    expect(
+      queueBroker.listMessages(room.id).find((message) => message.id === queued.id),
+    ).toMatchObject({
+      deliveryStatus: 'queued',
+    });
+
+    releaseRun();
+    await firstTurn;
+
+    expect(deliveryUpdates).toContainEqual({
+      messageId: queued.id,
+      deliveryStatus: 'delivered',
+    });
+    expect(
+      queueBroker.listMessages(room.id).find((message) => message.id === queued.id),
+    ).not.toHaveProperty('deliveryStatus', 'queued');
+    expect(runs).toHaveLength(2);
   });
 
   it('injects active mission context and records agent run visibility', async () => {
@@ -1590,7 +1658,7 @@ describe('Broker', () => {
             'action: update',
             'title: Audit',
             'status: done',
-            '/end-mission-phase',
+            '@end-mission-phase',
           ].join('\n'),
           sessionId: `${spec.id}-sess`,
           raw: { stdout: '', stderr: '' },
@@ -1627,6 +1695,11 @@ describe('Broker', () => {
       { title: 'Audit', status: 'done' },
       { title: 'Implementation', status: 'active' },
     ]);
+    expect(
+      listMessages(db, room.id)
+        .map((message) => message.text)
+        .join('\n'),
+    ).not.toContain('/mission-phase');
     const [run] = listAgentRuns(db, room.id);
     expect(listAgentRunActions(db, run!.id).map((action) => action.label)).toEqual(
       expect.arrayContaining(['mission phase update', 'mission phase auto-advance']),
@@ -1647,7 +1720,7 @@ describe('Broker', () => {
             'action: update',
             'title: Merge full strategy-doc audit',
             'note: Audit merge accepted by both agents; Phase 2 ownership and dependencies are settled.',
-            '/end-mission-task',
+            '@end-mission-task',
           ].join('\n'),
           sessionId: `${spec.id}-sess`,
           raw: { stdout: '', stderr: '' },
@@ -1679,10 +1752,16 @@ describe('Broker', () => {
       title: 'Merge full strategy-doc audit',
       status: 'done',
       ownerAgentId: 'codex',
-      statusNote: 'Audit merge accepted by both agents; Phase 2 ownership and dependencies are settled.',
+      statusNote:
+        'Audit merge accepted by both agents; Phase 2 ownership and dependencies are settled.',
       updatedBy: 'codex',
     });
     expect(item!.completedAt).toEqual(expect.any(Number));
+    expect(
+      listMessages(db, room.id)
+        .map((message) => message.text)
+        .join('\n'),
+    ).not.toContain('/mission-task');
   });
 
   it('stores advanced run detail without bloating run summaries', async () => {
@@ -2049,9 +2128,9 @@ describe('Broker', () => {
     expect(artifactBroker.removeArtifact(room.id, 'fixture', fixture!.storedPath)).toBe(true);
     expect(existsSync(sourcePath)).toBe(true);
     expect(existsSync(fixture!.storedPath)).toBe(false);
-    expect(artifactBroker.listArtifacts(room.id)?.files.some((file) => file.kind === 'fixture')).toBe(
-      false,
-    );
+    expect(
+      artifactBroker.listArtifacts(room.id)?.files.some((file) => file.kind === 'fixture'),
+    ).toBe(false);
 
     const draftPath = path.join(contextDir, room.id, 'drafts', 'candidate.md');
     mkdirSync(path.dirname(draftPath), { recursive: true });
@@ -2115,7 +2194,11 @@ describe('Broker', () => {
     });
     expect(listMessages(db, room.id).map((m) => m.authorId)).toEqual(['human']);
 
-    const resolved = permissionBroker.resolvePermissionRequest(requests[0]!.id, 'approved', 'human');
+    const resolved = permissionBroker.resolvePermissionRequest(
+      requests[0]!.id,
+      'approved',
+      'human',
+    );
     expect(resolved).toMatchObject({ status: 'approved', decidedBy: 'human' });
     await new Promise((resolve) => setTimeout(resolve, 25));
 
@@ -2131,7 +2214,9 @@ describe('Broker', () => {
     const messageLines = listMessages(db, room.id).map((m) => `${m.authorId}:${m.text}`);
     expect(messageLines).toHaveLength(4);
     expect(messageLines[0]).toBe('human:@claude edit foobar.txt');
-    expect(messageLines[1]).toContain('system:Permission approved for claude: edit access to foobar.txt.');
+    expect(messageLines[1]).toContain(
+      'system:Permission approved for claude: edit access to foobar.txt.',
+    );
     expect(messageLines[1]).toContain('Effective capabilities:');
     expect(messageLines.slice(2)).toEqual([
       'system:(claude started approved edit turn for foobar.txt.)',
@@ -2467,7 +2552,9 @@ describe('Broker', () => {
     const messageLines = listMessages(db, room.id).map((m) => `${m.authorId}:${m.text}`);
     expect(messageLines).toHaveLength(4);
     expect(messageLines[0]).toBe('human:@claude edit foobar.txt');
-    expect(messageLines[1]).toContain('system:Permission approved for claude: edit access to foobar.txt.');
+    expect(messageLines[1]).toContain(
+      'system:Permission approved for claude: edit access to foobar.txt.',
+    );
     expect(messageLines[1]).toContain('Effective capabilities:');
     expect(messageLines.slice(2)).toEqual([
       'system:(claude started approved edit turn for foobar.txt.)',

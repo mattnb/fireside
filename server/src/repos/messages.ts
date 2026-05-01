@@ -3,6 +3,7 @@ import type { Database } from 'better-sqlite3';
 import { nanoid } from 'nanoid';
 
 export type AuthorKind = 'human' | 'agent' | 'system';
+export type MessageDeliveryStatus = 'queued' | 'delivered';
 
 export interface Message {
   id: string;
@@ -11,6 +12,7 @@ export interface Message {
   authorKind: AuthorKind;
   text: string;
   createdAt: number;
+  deliveryStatus?: MessageDeliveryStatus;
 }
 
 interface MessageRow {

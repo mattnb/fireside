@@ -20,7 +20,8 @@ export interface ExtractedMissionReceipts {
   receipts: ParsedMissionReceipt[];
 }
 
-const RECEIPT_RE = /(^|\n)\/mission-receipt\s*\n([\s\S]*?)\n\/end-(?:mission-receipt|collab-note)(?=\s|$)/gi;
+const RECEIPT_RE =
+  /(^|\n)\/mission-receipt\s*\n([\s\S]*?)\n[/@]end-(?:mission-receipt|collab-note)(?=\s|$)/gi;
 const STATUSES = new Set<MissionReceiptStatus>([
   'completed',
   'blocked',
@@ -95,7 +96,15 @@ function parseBlock(block: string): ParsedMissionReceipt | null {
   const summary = all(fields, 'summary', 'note', 'body');
   const evidence = all(fields, 'evidence', 'proof', 'verified_by');
   const next = all(fields, 'next', 'next_step', 'follow_up');
-  const itemRef = first(fields, 'item', 'item_id', 'task', 'task_id', 'checklist', 'checklist_item');
+  const itemRef = first(
+    fields,
+    'item',
+    'item_id',
+    'task',
+    'task_id',
+    'checklist',
+    'checklist_item',
+  );
   const phaseRef = first(fields, 'phase', 'phase_id', 'gate');
   const planRef = first(fields, 'plan', 'plan_id');
 

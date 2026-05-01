@@ -41,4 +41,21 @@ goal: Missing a title.
     expect(extracted.visibleText).toBe('');
     expect(extracted.updates).toEqual([]);
   });
+
+  it('accepts accidental @ end markers', () => {
+    const extracted = extractMissionCreateUpdates(`Scaffolding.
+
+/mission-create
+title: Build operator visibility
+goal: Populate Mission Control from chat.
+@end-mission-create`);
+
+    expect(extracted.visibleText).toBe('Scaffolding.');
+    expect(extracted.updates).toMatchObject([
+      {
+        title: 'Build operator visibility',
+        goal: 'Populate Mission Control from chat.',
+      },
+    ]);
+  });
 });

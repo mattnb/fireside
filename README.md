@@ -86,7 +86,7 @@ Common settings:
 | `FIRESIDE_PORT` | `8787` | HTTP/WebSocket port |
 | `FIRESIDE_DATA_DIR` | `./data` | SQLite DB, logs, fixtures, drafts, provider context |
 | `FIRESIDE_UI_DIR` | auto | Static UI directory override |
-| `FIRESIDE_MAX_PROMPT_CHARS` | `24000` | Upper bound for generated agent prompts |
+| `FIRESIDE_MAX_PROMPT_CHARS` | `16000` | Upper bound for generated agent prompts |
 | `FIRESIDE_LARGE_MESSAGE_CHARS` | `6000` | Threshold for writing large chat content to disk context |
 | `FIRESIDE_RESUME_CLI_SESSIONS` | `true` | Reuse stored Claude/Codex/Gemini CLI sessions |
 | `FIRESIDE_CODEX_MODEL` | unset | Optional Codex context telemetry model override |

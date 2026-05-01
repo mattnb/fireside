@@ -15,7 +15,8 @@ export interface ExtractedMissionPlanUpdates {
   updates: ParsedMissionPlanUpdate[];
 }
 
-const PLAN_RE = /(^|\n)\/mission-plan\s*\n([\s\S]*?)\n\/end-(?:mission-plan|collab-note)(?=\s|$)/gi;
+const PLAN_RE =
+  /(^|\n)\/mission-plan\s*\n([\s\S]*?)\n[/@]end-(?:mission-plan|collab-note)(?=\s|$)/gi;
 const STATUSES = new Set(['draft', 'active', 'superseded', 'archived']);
 
 function normalizeAction(value: string): MissionPlanAction {

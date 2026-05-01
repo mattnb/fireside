@@ -74,7 +74,7 @@ export function loadConfig(): Config {
     dataDir,
     dbFile: path.join(dataDir, 'fireside.sqlite'),
     uiDir: path.resolve(uiDir),
-    maxPromptChars: envNumber('FIRESIDE_MAX_PROMPT_CHARS', 24_000),
+    maxPromptChars: envNumber('FIRESIDE_MAX_PROMPT_CHARS', 16_000),
     largeMessageThresholdChars: envNumber('FIRESIDE_LARGE_MESSAGE_CHARS', 6_000),
     resumeCliSessions: envFlag('FIRESIDE_RESUME_CLI_SESSIONS', true),
   };

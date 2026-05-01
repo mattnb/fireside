@@ -7,6 +7,7 @@ import {
   listMessages,
   type Message,
   type AuthorKind,
+  type MessageDeliveryStatus,
 } from './repos/messages.js';
 import {
   getRoom,
@@ -62,6 +63,7 @@ import {
   recoverInterruptedAgentRuns,
   updateAgentRun,
   type AgentRun,
+  type AgentRunLifecycleState,
   type AgentRunSummary,
 } from './repos/agent-runs.js';
 import {
@@ -116,6 +118,9 @@ import {
   type MissionBriefingSummary,
 } from './repos/briefings.js';
 import { buildTaskPromptContext } from './task-summary.js';
+import { decideRunRetry } from './run-lifecycle.js';
+import { loadWorkflowProfile, type WorkflowProfile } from './workflow-profile.js';
+import { getWorkspacePath } from './workspaces.js';
 import type { AgentId, AgentReply, AgentSpec, AgentStreamEvent } from './agents/types.js';
 import { logger } from './logger.js';
 import { buildRunDiagnostics, type RunDiagnostics } from './run-diagnostics.js';
@@ -123,6 +128,7 @@ import {
   isVisibleProviderSignal,
   readableProviderSignalDetail,
 } from './provider-signals.js';
+import { codexContextUsage, formatContextUsage } from './context-usage.js';
 import {
   extractCollaborationNotes,
   type ParsedCollaborationNote,
@@ -176,8 +182,10 @@ const DEFAULT_MAX_AGENT_REPLIES_PER_THREAD = 5;
 const YOLO_MAX_AGENT_REPLIES = 100;
 const YOLO_PERMISSION_AUTO_APPROVAL_LIMIT = 3;
 const DEFAULT_PROMPT_HISTORY = 16;
-const DEFAULT_MAX_PROMPT_CHARS = 24_000;
+const DEFAULT_MAX_PROMPT_CHARS = 16_000;
 const RUN_HEARTBEAT_MS = 10_000;
+const RUN_STALL_AFTER_MS = 5 * 60 * 1000;
+const RUN_SIGNAL_UPDATE_THROTTLE_MS = 2_500;
 const STREAM_MESSAGE_THROTTLE_MS = 1_000;
 const COMPACT_PROMPT = '/compact';
 const COMPACTABLE_AGENT_IDS = new Set<AgentId>(['claude', 'codex']);
@@ -194,6 +202,13 @@ interface DiscussionTurn {
 
 interface WorkLaneAssignment {
   item: TaskChecklistItem;
+}
+
+interface WorkflowProfilePromptItem {
+  sourcePath: string;
+  promptTemplate: string;
+  maxTurns: number;
+  maxConcurrentAgents: number;
 }
 
 export type AgentCompactionResult =
@@ -241,12 +256,25 @@ export interface YoloStatus {
   reason?: string;
 }
 
+export interface MessageDeliveryUpdate {
+  roomId: string;
+  messageId: string;
+  deliveryStatus: MessageDeliveryStatus;
+  deliveredAt?: number;
+}
+
 export interface AgentRunDetail {
   run: AgentRun;
   triggerMessage: Message | null;
   replyMessage: Message | null;
   diagnostics: RunDiagnostics;
   actions: AgentRunAction[];
+}
+
+interface AgentTurnResult {
+  message: Message | null;
+  progressed: boolean;
+  runId?: string;
 }
 
 export interface TaskControl {
@@ -342,6 +370,34 @@ function cleanVisibleAgentMessage(agentId: AgentId, text: string): string {
       '',
     )
     .trim();
+}
+
+function providerCompactionWarning(agentId: AgentId, stderr: string): string | null {
+  if (
+    agentId === 'codex' &&
+    /codex_core::session: failed to record rollout items: thread .* not found/i.test(stderr)
+  ) {
+    return 'Codex CLI returned success, but stderr reported that it failed to record rollout items for the resumed thread. The local rollout may not fully reflect the compaction turn.';
+  }
+  return null;
+}
+
+function waitForRetryDelay(delayMs: number, signal?: AbortSignal): Promise<boolean> {
+  if (delayMs <= 0) return Promise.resolve(signal?.aborted !== true);
+  if (signal?.aborted) return Promise.resolve(false);
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort);
+      resolve(true);
+    }, delayMs);
+    timer.unref?.();
+    const onAbort = (): void => {
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', onAbort);
+      resolve(false);
+    };
+    signal?.addEventListener('abort', onAbort, { once: true });
+  });
 }
 
 export class Broker extends EventEmitter {
@@ -738,7 +794,9 @@ export class Broker extends EventEmitter {
       triggerMessage,
       replyMessage,
       diagnostics: buildRunDiagnostics(run.agentId, run.stdout, run.stderr),
-      actions: listAgentRunActions(this.deps.db, run.id),
+      actions: listAgentRunActions(this.deps.db, run.id).map((action) =>
+        this.normalizeActionContextUsage(action),
+      ),
     };
   }
 
@@ -750,6 +808,8 @@ export class Broker extends EventEmitter {
         ? updateAgentRun(this.deps.db, run.id, {
             status: 'completed',
             completedAt: Date.now(),
+            lifecycleState: 'released',
+            lifecycleReason: `${authorId || 'human'} dismissed stale running cue`,
           })
         : listAgentRunsRepo(this.deps.db, roomId, { limit: 200 }).find((item) => item.id === run.id) ?? null;
     if (!updated) return null;
@@ -816,6 +876,9 @@ export class Broker extends EventEmitter {
       liveMessages: 0,
       contextArtifacts: 0,
       promptText: COMPACT_PROMPT,
+      lifecycleState: 'launching_agent_process',
+      lifecycleReason: 'manual compaction requested',
+      maxTurns: 1,
     });
     this.emit('agentRunUpdated', run);
     this.recordRunAction({
@@ -870,7 +933,34 @@ export class Broker extends EventEmitter {
   }
 
   listAgentRunActions(roomId: string, limit = 60): AgentRunAction[] {
-    return listRecentAgentRunActions(this.deps.db, roomId, limit);
+    return listRecentAgentRunActions(this.deps.db, roomId, limit).map((action) =>
+      this.normalizeActionContextUsage(action),
+    );
+  }
+
+  private normalizeActionContextUsage(action: AgentRunAction): AgentRunAction {
+    const usage = action.contextUsage;
+    if (!usage || usage.provider !== 'codex') return action;
+    const run = getAgentRun(this.deps.db, action.runId);
+    if (!run?.cliSessionId) return action;
+    const corrected = codexContextUsage(
+      {
+        input_tokens: usage.inputTokens,
+        cached_input_tokens: usage.cachedInputTokens,
+        output_tokens: usage.outputTokens,
+        reasoning_output_tokens: usage.reasoningOutputTokens,
+      },
+      { threadId: run.cliSessionId },
+    );
+    if (!corrected || corrected.source === usage.source) return action;
+    return {
+      ...action,
+      contextUsage: corrected,
+      detail:
+        action.label === 'codex turn completed'
+          ? formatContextUsage(corrected)
+          : action.detail,
+    };
   }
 
   listArtifacts(roomId: string): ConversationArtifactListing | null {
@@ -982,14 +1072,14 @@ export class Broker extends EventEmitter {
     decisionMessage: Message,
     permission: PermissionGrant | undefined,
   ): Promise<void> {
-    const message = await this.runAgentReply(
+    const result = await this.runAgentReply(
       request.roomId,
       request.agentId,
       decisionMessage,
       undefined,
       permission,
     );
-    if (!message) {
+    if (!result.message) {
       const mode = permission ? `approved ${permission.mode}` : 'denied permission';
       this.appendDirect(
         request.roomId,
@@ -1000,7 +1090,7 @@ export class Broker extends EventEmitter {
       await this.drainQueuedHumanMessages(request.roomId);
       return;
     }
-    await this.runAgentHandoffs(request.roomId, request.agentId, message);
+    await this.runAgentHandoffs(request.roomId, request.agentId, result.message);
     await this.drainQueuedHumanMessages(request.roomId);
   }
 
@@ -1174,6 +1264,68 @@ export class Broker extends EventEmitter {
     };
   }
 
+  private loadWorkflowProfileForTask(task: Task | null): WorkflowProfile | null {
+    if (!task?.repoPath) return null;
+    try {
+      return loadWorkflowProfile({ repoPath: task.repoPath });
+    } catch (err) {
+      logger.warn(
+        {
+          taskId: task.id,
+          repoPath: task.repoPath,
+          err: err instanceof Error ? err.message : String(err),
+        },
+        'failed to load workflow profile',
+      );
+      return null;
+    }
+  }
+
+  private workflowProfilePromptItem(
+    profile: WorkflowProfile | null,
+  ): WorkflowProfilePromptItem | undefined {
+    if (!profile) return undefined;
+    return {
+      sourcePath: profile.sourcePath ?? '',
+      promptTemplate: profile.promptTemplate,
+      maxTurns: profile.agent.maxTurns,
+      maxConcurrentAgents: profile.agent.maxConcurrentAgents,
+    };
+  }
+
+  private workflowWorkspacePath(
+    profile: WorkflowProfile | null,
+    task: Task | null,
+    workLane?: WorkLaneAssignment,
+  ): string {
+    if (!profile || !task) return '';
+    try {
+      return getWorkspacePath(profile.workspace.root, {
+        missionId: task.id,
+        taskId: workLane?.item.id ?? null,
+      });
+    } catch (err) {
+      logger.warn(
+        {
+          taskId: task.id,
+          workspaceRoot: profile.workspace.root,
+          err: err instanceof Error ? err.message : String(err),
+        },
+        'failed to resolve workflow workspace path',
+      );
+      return '';
+    }
+  }
+
+  listMessages(
+    roomId: string,
+    opts: { limit?: number } = {},
+  ): Message[] {
+    return listMessages(this.deps.db, roomId, opts).map((message) =>
+      this.withDeliveryStatus(roomId, message),
+    );
+  }
+
   private emitRoomTasks(roomId: string): void {
     for (const task of listTasksRepo(this.deps.db, roomId)) {
       this.emit('taskUpdated', task);
@@ -1264,12 +1416,14 @@ export class Broker extends EventEmitter {
     cancelSignal?: AbortSignal,
     yoloPermissionAutoApprovals = 0,
     workLane?: WorkLaneAssignment,
-  ): Promise<Message | null> {
-    if (cancelSignal?.aborted) return null;
+    attempt = 1,
+    retryOfRunId = '',
+  ): Promise<AgentTurnResult> {
+    if (cancelSignal?.aborted) return { message: null, progressed: false };
     const spec = this.deps.getSpec(agentId);
     if (!spec) {
       this.appendDirect(roomId, 'system', 'system', `(no adapter for agent "${agentId}")`);
-      return null;
+      return { message: null, progressed: false };
     }
     const room = getRoom(this.deps.db, roomId);
     if (!room) {
@@ -1311,6 +1465,7 @@ export class Broker extends EventEmitter {
         }
       : undefined;
     const activeTask = getActiveTask(this.deps.db, roomId);
+    const workflowProfile = this.loadWorkflowProfileForTask(activeTask ?? null);
     const collaborationItems = listCollaborationItemsRepo(this.deps.db, roomId, {
       limit: 10,
       ...(activeTask ? { taskId: activeTask.id } : {}),
@@ -1350,7 +1505,36 @@ export class Broker extends EventEmitter {
             reason: `Task capability profile "${activeTask.capabilityProfile}" for mission "${activeTask.title}".`,
           })
         : undefined;
-    const effectivePermission = explicitPermission ?? roomYoloPermission ?? taskPermission;
+    const workflowPermission: PermissionGrant | undefined =
+      !explicitPermission &&
+      !roomYoloPermission &&
+      !taskPermission &&
+      workflowProfile &&
+      workflowProfile.permissions.mode !== 'plan'
+        ? buildPermissionGrant({
+            agentId,
+            source: 'task',
+            mode: workflowProfile.permissions.mode,
+            target:
+              workflowProfile.permissions.target ||
+              this.workflowWorkspacePath(workflowProfile, activeTask ?? null, workLane) ||
+              activeTask?.repoPath ||
+              process.cwd(),
+            reason: `Workflow profile permission default${workflowProfile.sourcePath ? ` from ${workflowProfile.sourcePath}` : ''}.`,
+            ...(workflowProfile.permissions.filesystemScope
+              ? { filesystemScope: workflowProfile.permissions.filesystemScope }
+              : {}),
+            ...(workflowProfile.permissions.web ? { web: true } : {}),
+          })
+        : undefined;
+    const effectivePermission =
+      explicitPermission ?? roomYoloPermission ?? taskPermission ?? workflowPermission;
+    const workflowWorkspacePath = this.workflowWorkspacePath(
+      workflowProfile,
+      activeTask ?? null,
+      workLane,
+    );
+    const workflowProfilePromptItem = this.workflowProfilePromptItem(workflowProfile);
     const promptResult = buildTurnPromptResult({
       agentId,
       roomName: room.name,
@@ -1366,12 +1550,16 @@ export class Broker extends EventEmitter {
         text: messageTextForPrompt(trigger, contextFiles),
       },
       maxHistory,
-      maxPromptChars: this.deps.maxPromptChars ?? DEFAULT_MAX_PROMPT_CHARS,
+      maxPromptChars:
+        workflowProfile?.promptBudgetChars ?? this.deps.maxPromptChars ?? DEFAULT_MAX_PROMPT_CHARS,
       ...(promptContextFiles !== undefined ? { contextFiles: promptContextFiles } : {}),
       ...(discussion !== undefined ? { discussion } : {}),
       ...(effectivePermission !== undefined ? { permission: effectivePermission } : {}),
       ...(taskContext !== undefined ? { task: taskContext } : {}),
       ...(workLane !== undefined ? { workLane: this.workLanePromptItem(workLane.item) } : {}),
+      ...(workflowProfilePromptItem !== undefined
+        ? { workflowProfile: workflowProfilePromptItem }
+        : {}),
       collaboration: collaborationItems,
     });
     const prompt = promptResult.prompt;
@@ -1429,6 +1617,17 @@ export class Broker extends EventEmitter {
       permissionTargetResolvedPath: effectivePermission?.targetResolvedPath ?? '',
       permissionTargetCheckedAt: effectivePermission?.targetCheckedAt ?? 0,
       permissionProviderProfile: effectivePermission?.providerProfile ?? '',
+      lifecycleState: 'launching_agent_process',
+      lifecycleReason: 'prompt prepared; launching agent process',
+      continuationTurn: (discussion?.repliesUsed ?? 0) + 1,
+      maxTurns: discussion?.maxRepliesPerAgent ?? 1,
+      workspacePath:
+        workflowWorkspacePath ||
+        effectivePermission?.targetResolvedPath ||
+        effectivePermission?.target ||
+        '',
+      attempt,
+      retryOfRunId,
     });
     this.emit('agentRunUpdated', run);
     this.recordRunAction({
@@ -1526,6 +1725,8 @@ export class Broker extends EventEmitter {
         error: errMsg,
         stdout: raw.stdout,
         stderr: raw.stderr,
+        lifecycleState: canceled ? 'canceled_by_reconciliation' : 'failed',
+        lifecycleReason: errMsg,
       });
       if (failedRun) this.emit('agentRunUpdated', failedRun);
       this.recordDiagnosticActions(roomId, activeTask?.id ?? null, run.id, agentId, raw.stdout, raw.stderr);
@@ -1539,17 +1740,59 @@ export class Broker extends EventEmitter {
         label: canceled ? 'run canceled' : 'run failed',
         detail: errMsg,
       });
+      const retryDecision =
+        !canceled && discussion?.mode === 'yolo'
+          ? decideRunRetry({ state: 'failed', attempt }, { maxAttempts: 3 })
+          : null;
+      if (retryDecision?.shouldRetry && retryDecision.nextAttempt !== null) {
+        const retryAfter = Date.now() + retryDecision.delayMs;
+        const retryRun = updateAgentRun(this.deps.db, run.id, {
+          lifecycleState: 'retry_queued',
+          lifecycleReason: `${retryDecision.reason}: retrying attempt ${retryDecision.nextAttempt}`,
+          retryAfter,
+        });
+        if (retryRun) this.emit('agentRunUpdated', retryRun);
+        this.recordRunAction({
+          roomId,
+          taskId: activeTask?.id ?? null,
+          runId: run.id,
+          agentId,
+          kind: 'run',
+          status: 'info',
+          label: 'retry scheduled',
+          detail: `attempt ${retryDecision.nextAttempt} in ${Math.round(retryDecision.delayMs / 1000)}s`,
+        });
+        const shouldContinue = await waitForRetryDelay(retryDecision.delayMs, cancelSignal);
+        if (!shouldContinue) return { message: null, progressed: false, runId: run.id };
+        return this.runAgentReply(
+          roomId,
+          agentId,
+          trigger,
+          discussion,
+          permission,
+          cancelSignal,
+          yoloPermissionAutoApprovals,
+          workLane,
+          retryDecision.nextAttempt,
+          run.id,
+        );
+      }
       this.appendDirect(
         roomId,
         'system',
         'system',
         canceled ? `(${agentId} canceled: run was interrupted.)` : `(${agentId} failed: ${errMsg})`,
       );
-      return null;
+      return { message: null, progressed: false, runId: run.id };
     }
     this.activeRunAbortControllers.delete(run.id);
     cancelSignal?.removeEventListener('abort', relayCancel);
     stopHeartbeat();
+    this.updateRunLifecycle({
+      runId: run.id,
+      state: 'finishing',
+      reason: 'provider process completed; parsing response',
+    });
 
     if (this.deps.resumeCliSessions && reply.sessionId) {
       upsertCliSessionId(this.deps.db, roomId, agentId, reply.sessionId);
@@ -1676,6 +1919,11 @@ export class Broker extends EventEmitter {
         stderr: reply.raw.stderr,
         replyText: rawText,
         cliSessionId: reply.sessionId,
+        lifecycleState: 'succeeded',
+        lifecycleReason:
+          hiddenMissionUpdateCount > 0
+            ? 'mission control updates stored without visible chat text'
+            : 'agent declined to add a chat message',
       });
       if (emptyRun) this.emit('agentRunUpdated', emptyRun);
       this.recordRunAction({
@@ -1691,7 +1939,11 @@ export class Broker extends EventEmitter {
             ? 'mission control updates stored without visible chat text'
             : 'agent declined to add a chat message',
       });
-      return null; // agent declined to speak
+      return {
+        message: null,
+        progressed: missionStateUpdateCount > 0 || extractedDrafts.drafts.length > 0,
+        runId: run.id,
+      };
     }
     const extractedPermission = extractPermissionRequest(textAfterMissionReceipts, agentId);
     if (extractedPermission) {
@@ -1730,6 +1982,8 @@ export class Broker extends EventEmitter {
           stderr: reply.raw.stderr,
           replyText: rawText,
           cliSessionId: reply.sessionId,
+          lifecycleState: 'succeeded',
+          lifecycleReason: 'YOLO permission request auto-approved',
         });
         if (completedRun) this.emit('agentRunUpdated', completedRun);
         this.recordRunAction({
@@ -1753,7 +2007,7 @@ export class Broker extends EventEmitter {
             label: 'YOLO auto-approval limit reached',
             detail: `Stopped auto-following permission requests after ${YOLO_PERMISSION_AUTO_APPROVAL_LIMIT} consecutive YOLO approvals for this turn.`,
           });
-          return message;
+          return { message, progressed: Boolean(message), runId: run.id };
         }
         const autoPermission = this.buildYoloAutoApprovedPermissionGrant(
           agentId,
@@ -1769,6 +2023,8 @@ export class Broker extends EventEmitter {
           cancelSignal,
           yoloPermissionAutoApprovals + 1,
           workLane,
+          attempt,
+          retryOfRunId,
         );
       }
       const request = addPermissionRequest(this.deps.db, {
@@ -1784,6 +2040,8 @@ export class Broker extends EventEmitter {
         stderr: reply.raw.stderr,
         replyText: rawText,
         cliSessionId: reply.sessionId,
+        lifecycleState: 'released',
+        lifecycleReason: `${permissionRequest.mode} permission requested; waiting on human approval`,
       });
       if (permissionRun) this.emit('agentRunUpdated', permissionRun);
       this.recordRunAction({
@@ -1797,7 +2055,7 @@ export class Broker extends EventEmitter {
         detail: `${permissionRequest.target}: ${permissionRequest.reason}`,
       });
       this.emit('permissionRequestCreated', request);
-      return null;
+      return { message: null, progressed: false, runId: run.id };
     }
     if (missionTask && missionStateUpdateCount === 0 && missionReceiptCount === 0) {
       this.recordMissingMissionReceipt({
@@ -1823,9 +2081,11 @@ export class Broker extends EventEmitter {
       replyMessageId: message?.id ?? null,
       completedAt: Date.now(),
       stdout: reply.raw.stdout,
-        stderr: reply.raw.stderr,
-        replyText: rawText,
+      stderr: reply.raw.stderr,
+      replyText: rawText,
       cliSessionId: reply.sessionId,
+      lifecycleState: 'succeeded',
+      lifecycleReason: message ? 'message emitted' : 'collaboration note stored without visible chat text',
     });
     if (completedRun) this.emit('agentRunUpdated', completedRun);
     this.recordRunAction({
@@ -1838,7 +2098,7 @@ export class Broker extends EventEmitter {
       label: message ? 'message emitted' : 'ledger-only reply',
       detail: message ? message.text : 'collaboration note stored without visible chat text',
     });
-    return message;
+    return { message, progressed: Boolean(message) || extracted.notes.length > 0, runId: run.id };
   }
 
   private async runAgentCompaction(input: {
@@ -1895,6 +2155,8 @@ export class Broker extends EventEmitter {
         error: errMsg,
         stdout: raw.stdout,
         stderr: raw.stderr,
+        lifecycleState: canceled ? 'canceled_by_reconciliation' : 'failed',
+        lifecycleReason: errMsg,
       });
       if (failedRun) this.emit('agentRunUpdated', failedRun);
       this.recordDiagnosticActions(
@@ -1921,6 +2183,11 @@ export class Broker extends EventEmitter {
 
     this.activeRunAbortControllers.delete(input.runId);
     stopHeartbeat();
+    this.updateRunLifecycle({
+      runId: input.runId,
+      state: 'finishing',
+      reason: 'provider process completed; parsing compaction result',
+    });
     if (this.deps.resumeCliSessions && reply.sessionId) {
       upsertCliSessionId(this.deps.db, input.roomId, input.agentId, reply.sessionId);
     }
@@ -1931,6 +2198,8 @@ export class Broker extends EventEmitter {
       stderr: reply.raw.stderr,
       replyText: reply.text.trim(),
       cliSessionId: reply.sessionId,
+      lifecycleState: 'succeeded',
+      lifecycleReason: 'context compacted',
     });
     if (completedRun) this.emit('agentRunUpdated', completedRun);
     this.recordDiagnosticActions(
@@ -1941,6 +2210,7 @@ export class Broker extends EventEmitter {
       reply.raw.stdout,
       reply.raw.stderr,
     );
+    const warning = providerCompactionWarning(input.agentId, reply.raw.stderr);
     this.recordRunAction({
       roomId: input.roomId,
       taskId: input.taskId,
@@ -1948,10 +2218,12 @@ export class Broker extends EventEmitter {
       agentId: input.agentId,
       kind: 'run',
       status: 'completed',
-      label: 'context compacted',
-      detail: reply.sessionId
-        ? `session ${reply.sessionId} compacted`
-        : 'provider completed compaction without returning a session id',
+      label: warning ? 'context compacted with provider warning' : 'context compacted',
+      detail: warning
+        ? warning
+        : reply.sessionId
+          ? `session ${reply.sessionId} compacted`
+          : 'provider completed compaction without returning a session id',
     });
     void this.drainQueuedHumanMessages(input.roomId);
   }
@@ -1960,6 +2232,24 @@ export class Broker extends EventEmitter {
     const action = createAgentRunAction(this.deps.db, input);
     this.emit('agentRunActionCreated', action);
     return action;
+  }
+
+  private updateRunLifecycle(input: {
+    runId: string;
+    state: AgentRunLifecycleState;
+    reason?: string;
+    lastSignalAt?: number;
+    retryAfter?: number;
+  }): AgentRunSummary | null {
+    const updated = updateAgentRun(this.deps.db, input.runId, {
+      lifecycleState: input.state,
+      lifecycleReason: input.reason ?? '',
+      lifecycleUpdatedAt: Date.now(),
+      ...(input.lastSignalAt !== undefined ? { lastSignalAt: input.lastSignalAt } : {}),
+      ...(input.retryAfter !== undefined ? { retryAfter: input.retryAfter } : {}),
+    });
+    if (updated) this.emit('agentRunUpdated', updated);
+    return updated;
   }
 
   private recordMissionReceipts(input: {
@@ -2079,11 +2369,21 @@ export class Broker extends EventEmitter {
     let lastLabel = '';
     let lastDetail = '';
     let lastDuplicateAt = 0;
+    let lastRunSignalUpdateAt = 0;
     return (event: AgentStreamEvent): void => {
-      input.onSignal();
       const now = Date.now();
       const label = event.label.trim() || 'provider signal';
       const detail = (event.detail ?? '').trim();
+      input.onSignal();
+      if (now - lastRunSignalUpdateAt >= RUN_SIGNAL_UPDATE_THROTTLE_MS) {
+        lastRunSignalUpdateAt = now;
+        this.updateRunLifecycle({
+          runId: input.runId,
+          state: 'streaming_turn',
+          reason: label,
+          lastSignalAt: now,
+        });
+      }
       if (!isVisibleProviderSignal({ label, detail })) {
         return;
       }
@@ -2134,14 +2434,26 @@ export class Broker extends EventEmitter {
     latestProviderSignalAt: () => number;
   }): () => void {
     let stopped = false;
+    let stalledRecorded = false;
     const timer = setInterval(() => {
       if (stopped) return;
-      const elapsedSeconds = Math.max(0, Math.round((Date.now() - input.startedAt) / 1000));
+      const now = Date.now();
+      const elapsedSeconds = Math.max(0, Math.round((now - input.startedAt) / 1000));
       const latestProviderSignalAt = input.latestProviderSignalAt();
+      const idleMs =
+        latestProviderSignalAt > 0 ? now - latestProviderSignalAt : now - input.startedAt;
       const detail =
         latestProviderSignalAt > 0
-          ? `last provider signal ${Math.max(0, Math.round((Date.now() - latestProviderSignalAt) / 1000))}s ago; process still running`
+          ? `last provider signal ${Math.max(0, Math.round((now - latestProviderSignalAt) / 1000))}s ago; process still running`
           : `${elapsedSeconds}s elapsed; no provider stream output yet`;
+      if (!stalledRecorded && idleMs >= RUN_STALL_AFTER_MS) {
+        stalledRecorded = true;
+        this.updateRunLifecycle({
+          runId: input.runId,
+          state: 'stalled',
+          reason: detail,
+        });
+      }
       this.recordRunAction({
         roomId: input.roomId,
         taskId: input.taskId,
@@ -2880,11 +3192,13 @@ export class Broker extends EventEmitter {
   }
 
   private appendQueuedHumanMessage(roomId: string, authorId: string, text: string): Message {
-    const message = this.appendDirect(roomId, authorId, 'human', text);
+    const message = addMessage(this.deps.db, { roomId, authorId, authorKind: 'human', text });
     const queued = this.queuedHumanMessageIds.get(roomId) ?? new Set<string>();
     queued.add(message.id);
     this.queuedHumanMessageIds.set(roomId, queued);
-    return message;
+    const queuedMessage: Message = { ...message, deliveryStatus: 'queued' };
+    this.emit('messageAppended', queuedMessage);
+    return queuedMessage;
   }
 
   private roomHasActiveWork(roomId: string): boolean {
@@ -2898,8 +3212,30 @@ export class Broker extends EventEmitter {
   private markQueuedMessagesDelivered(roomId: string, messages: Message[]): void {
     const queued = this.queuedHumanMessageIds.get(roomId);
     if (!queued) return;
-    for (const message of messages) queued.delete(message.id);
+    const deliveredIds: string[] = [];
+    for (const message of messages) {
+      if (queued.delete(message.id)) deliveredIds.push(message.id);
+    }
     if (queued.size === 0) this.queuedHumanMessageIds.delete(roomId);
+    const deliveredAt = Date.now();
+    for (const messageId of deliveredIds) {
+      this.emit('messageDeliveryUpdated', {
+        roomId,
+        messageId,
+        deliveryStatus: 'delivered',
+        deliveredAt,
+      } satisfies MessageDeliveryUpdate);
+    }
+  }
+
+  private withDeliveryStatus(roomId: string, message: Message): Message {
+    if (
+      message.authorKind === 'human' &&
+      this.queuedHumanMessageIds.get(roomId)?.has(message.id)
+    ) {
+      return { ...message, deliveryStatus: 'queued' };
+    }
+    return message;
   }
 
   private latestQueuedHumanMessage(roomId: string): Message | null {
@@ -2923,8 +3259,11 @@ export class Broker extends EventEmitter {
         if (!message) return;
         const room = getRoom(this.deps.db, roomId);
         if (!room) return;
-        this.queuedHumanMessageIds.get(roomId)?.delete(message.id);
         const responders = this.pickResponders(room.agents, message.text, message.authorId);
+        if (responders.length === 0) {
+          this.markQueuedMessagesDelivered(roomId, [message]);
+          continue;
+        }
         await this.runRoomAwareDiscussionThread(roomId, room, responders, message);
       }
     } finally {
@@ -3052,7 +3391,7 @@ export class Broker extends EventEmitter {
         const results = await Promise.all(
           eligible.map(async (agentId) => ({
             agentId,
-              message: await this.runAgentReply(roomId, agentId, trigger, {
+            result: await this.runAgentReply(roomId, agentId, trigger, {
               round: Math.min(round, currentMaxPromptRounds()),
               maxRounds: currentMaxPromptRounds(),
               repliesUsed: replyCounts.get(agentId) ?? 0,
@@ -3067,19 +3406,20 @@ export class Broker extends EventEmitter {
 
         const activeAgents: AgentId[] = [];
         const directedAgents: AgentId[] = [];
-        for (const result of results) {
-          if (!result.message) continue;
-          activeAgents.push(result.agentId);
-          replyCounts.set(result.agentId, (replyCounts.get(result.agentId) ?? 0) + 1);
+        for (const { agentId, result } of results) {
+          if (!result.progressed && !result.message) continue;
+          activeAgents.push(agentId);
+          replyCounts.set(agentId, (replyCounts.get(agentId) ?? 0) + 1);
           totalReplies += 1;
           if (options.yoloState) {
             options.yoloState.totalRepliesUsed = totalReplies;
             this.emit('yoloStatusUpdated', this.yoloStatus(options.yoloState, true));
           }
+          if (!result.message) continue;
           const handoffs = this.pickAgentHandoffResponders(
             handoffPool,
             result.message.text,
-            result.agentId,
+            agentId,
           );
           for (const agentId of handoffs) {
             allowedAgents.add(agentId);

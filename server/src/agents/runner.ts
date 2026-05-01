@@ -23,12 +23,13 @@ function emitStreamEvents(
   spec: AgentSpec,
   line: string,
   stream: AgentStreamName,
+  sessionId: string | null,
   callback: ((event: AgentStreamEvent) => void) | undefined,
 ): void {
   if (!callback) return;
   let events: AgentStreamEvent[] = [];
   try {
-    events = spec.parseStreamLine?.(line, stream) ?? [];
+    events = spec.parseStreamLine?.(line, stream, sessionId) ?? [];
   } catch {
     events = [];
   }
@@ -81,9 +82,9 @@ export async function runAgentTurn(opts: RunAgentOptions): Promise<AgentReply> {
     ...(opts.onStreamEvent !== undefined
       ? {
           onStdoutLine: (line: string) =>
-            emitStreamEvents(spec, line, 'stdout', opts.onStreamEvent),
+            emitStreamEvents(spec, line, 'stdout', sessionId, opts.onStreamEvent),
           onStderrLine: (line: string) =>
-            emitStreamEvents(spec, line, 'stderr', opts.onStreamEvent),
+            emitStreamEvents(spec, line, 'stderr', sessionId, opts.onStreamEvent),
         }
       : {}),
   });

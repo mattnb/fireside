@@ -4,6 +4,21 @@ import type { AgentId } from '../agents/types.js';
 import type { PermissionCapability, PermissionMode, PermissionTargetKind } from '../permissions.js';
 
 export type AgentRunStatus = 'running' | 'completed' | 'failed' | 'empty' | 'permission-requested';
+export type AgentRunLifecycleState =
+  | 'start'
+  | 'preparing_workspace'
+  | 'building_prompt'
+  | 'launching_agent_process'
+  | 'initializing_session'
+  | 'streaming_turn'
+  | 'finishing'
+  | 'stalled'
+  | 'succeeded'
+  | 'failed'
+  | 'timed_out'
+  | 'canceled_by_reconciliation'
+  | 'retry_queued'
+  | 'released';
 
 export interface AgentRun {
   id: string;
@@ -37,6 +52,16 @@ export interface AgentRun {
   permissionTargetResolvedPath: string;
   permissionTargetCheckedAt: number;
   permissionProviderProfile: string;
+  lifecycleState: AgentRunLifecycleState;
+  lifecycleReason: string;
+  lifecycleUpdatedAt: number;
+  lastSignalAt: number;
+  attempt: number;
+  continuationTurn: number;
+  maxTurns: number;
+  workspacePath: string;
+  retryOfRunId: string;
+  retryAfter: number;
 }
 
 export type AgentRunSummary = Omit<
@@ -80,6 +105,16 @@ interface AgentRunRow {
   permission_target_resolved_path: string;
   permission_target_checked_at: number;
   permission_provider_profile: string;
+  lifecycle_state: AgentRunLifecycleState;
+  lifecycle_reason: string;
+  lifecycle_updated_at: number;
+  last_signal_at: number;
+  attempt: number;
+  continuation_turn: number;
+  max_turns: number;
+  workspace_path: string;
+  retry_of_run_id: string;
+  retry_after: number;
 }
 
 export interface CreateAgentRunInput {
@@ -104,6 +139,16 @@ export interface CreateAgentRunInput {
   permissionTargetResolvedPath?: string;
   permissionTargetCheckedAt?: number;
   permissionProviderProfile?: string;
+  lifecycleState?: AgentRunLifecycleState;
+  lifecycleReason?: string;
+  lifecycleUpdatedAt?: number;
+  lastSignalAt?: number;
+  attempt?: number;
+  continuationTurn?: number;
+  maxTurns?: number;
+  workspacePath?: string;
+  retryOfRunId?: string;
+  retryAfter?: number;
 }
 
 export interface UpdateAgentRunInput {
@@ -115,6 +160,16 @@ export interface UpdateAgentRunInput {
   stderr?: string;
   replyText?: string;
   cliSessionId?: string | null;
+  lifecycleState?: AgentRunLifecycleState;
+  lifecycleReason?: string;
+  lifecycleUpdatedAt?: number;
+  lastSignalAt?: number;
+  attempt?: number;
+  continuationTurn?: number;
+  maxTurns?: number;
+  workspacePath?: string;
+  retryOfRunId?: string;
+  retryAfter?: number;
 }
 
 const MAX_STORED_TEXT_CHARS = 200_000;
@@ -169,6 +224,16 @@ function rowToAgentRun(row: AgentRunRow): AgentRun {
     permissionTargetResolvedPath: row.permission_target_resolved_path || '',
     permissionTargetCheckedAt: row.permission_target_checked_at || 0,
     permissionProviderProfile: row.permission_provider_profile || '',
+    lifecycleState: row.lifecycle_state || 'launching_agent_process',
+    lifecycleReason: row.lifecycle_reason || '',
+    lifecycleUpdatedAt: row.lifecycle_updated_at || 0,
+    lastSignalAt: row.last_signal_at || 0,
+    attempt: row.attempt || 1,
+    continuationTurn: row.continuation_turn || 1,
+    maxTurns: row.max_turns || 1,
+    workspacePath: row.workspace_path || '',
+    retryOfRunId: row.retry_of_run_id || '',
+    retryAfter: row.retry_after || 0,
   };
 }
 
@@ -200,6 +265,16 @@ function toAgentRunSummary(run: AgentRun): AgentRunSummary {
     permissionTargetResolvedPath: run.permissionTargetResolvedPath,
     permissionTargetCheckedAt: run.permissionTargetCheckedAt,
     permissionProviderProfile: run.permissionProviderProfile,
+    lifecycleState: run.lifecycleState,
+    lifecycleReason: run.lifecycleReason,
+    lifecycleUpdatedAt: run.lifecycleUpdatedAt,
+    lastSignalAt: run.lastSignalAt,
+    attempt: run.attempt,
+    continuationTurn: run.continuationTurn,
+    maxTurns: run.maxTurns,
+    workspacePath: run.workspacePath,
+    retryOfRunId: run.retryOfRunId,
+    retryAfter: run.retryAfter,
   };
 }
 
@@ -213,8 +288,10 @@ export function createAgentRun(db: Database, input: CreateAgentRunInput): AgentR
       prompt_text, stdout, stderr, reply_text, cli_session_id, permission_source, permission_target,
       permission_reason, permission_filesystem_scope, permission_web, permission_capabilities_json,
       permission_target_exists, permission_target_kind, permission_target_resolved_path,
-      permission_target_checked_at, permission_provider_profile
-    ) VALUES (?, ?, ?, ?, NULL, ?, 'running', ?, ?, ?, ?, ?, ?, NULL, '', ?, '', '', '', NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      permission_target_checked_at, permission_provider_profile, lifecycle_state, lifecycle_reason,
+      lifecycle_updated_at, last_signal_at, attempt, continuation_turn, max_turns, workspace_path,
+      retry_of_run_id, retry_after
+    ) VALUES (?, ?, ?, ?, NULL, ?, 'running', ?, ?, ?, ?, ?, ?, NULL, '', ?, '', '', '', NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     id,
     input.roomId,
@@ -243,6 +320,16 @@ export function createAgentRun(db: Database, input: CreateAgentRunInput): AgentR
     input.permissionTargetResolvedPath ?? '',
     input.permissionTargetCheckedAt ?? 0,
     input.permissionProviderProfile ?? '',
+    input.lifecycleState ?? 'launching_agent_process',
+    input.lifecycleReason ?? '',
+    input.lifecycleUpdatedAt ?? now,
+    input.lastSignalAt ?? 0,
+    input.attempt ?? 1,
+    input.continuationTurn ?? 1,
+    input.maxTurns ?? 1,
+    input.workspacePath ?? '',
+    input.retryOfRunId ?? '',
+    input.retryAfter ?? 0,
   );
   return toAgentRunSummary(getAgentRun(db, id)!);
 }
@@ -322,6 +409,8 @@ export function recoverInterruptedAgentRuns(db: Database, now = Date.now()): Age
         status: 'failed',
         completedAt: now,
         error: 'Interrupted by Fireside server restart before the provider turn completed.',
+        lifecycleState: 'canceled_by_reconciliation',
+        lifecycleReason: 'Fireside restarted before the provider turn completed.',
       }),
     )
     .filter((run): run is AgentRunSummary => run !== null);
@@ -347,12 +436,26 @@ export function updateAgentRun(
     replyText: input.replyText !== undefined ? boundedText(input.replyText) : existing.replyText,
     cliSessionId:
       'cliSessionId' in input ? input.cliSessionId ?? null : existing.cliSessionId,
+    lifecycleState: input.lifecycleState ?? existing.lifecycleState,
+    lifecycleReason: input.lifecycleReason ?? existing.lifecycleReason,
+    lifecycleUpdatedAt:
+      input.lifecycleUpdatedAt ?? (input.lifecycleState ? Date.now() : existing.lifecycleUpdatedAt),
+    lastSignalAt: input.lastSignalAt ?? existing.lastSignalAt,
+    attempt: input.attempt ?? existing.attempt,
+    continuationTurn: input.continuationTurn ?? existing.continuationTurn,
+    maxTurns: input.maxTurns ?? existing.maxTurns,
+    workspacePath: input.workspacePath ?? existing.workspacePath,
+    retryOfRunId: input.retryOfRunId ?? existing.retryOfRunId,
+    retryAfter: input.retryAfter ?? existing.retryAfter,
   };
 
   db.prepare(
     `UPDATE agent_runs
      SET status = ?, reply_message_id = ?, completed_at = ?, error = ?,
-         stdout = ?, stderr = ?, reply_text = ?, cli_session_id = ?
+         stdout = ?, stderr = ?, reply_text = ?, cli_session_id = ?,
+         lifecycle_state = ?, lifecycle_reason = ?, lifecycle_updated_at = ?, last_signal_at = ?,
+         attempt = ?, continuation_turn = ?, max_turns = ?, workspace_path = ?,
+         retry_of_run_id = ?, retry_after = ?
      WHERE id = ?`,
   ).run(
     updated.status,
@@ -363,6 +466,16 @@ export function updateAgentRun(
     updated.stderr,
     updated.replyText,
     updated.cliSessionId,
+    updated.lifecycleState,
+    updated.lifecycleReason,
+    updated.lifecycleUpdatedAt,
+    updated.lastSignalAt,
+    updated.attempt,
+    updated.continuationTurn,
+    updated.maxTurns,
+    updated.workspacePath,
+    updated.retryOfRunId,
+    updated.retryAfter,
     id,
   );
   const run = getAgentRun(db, id);

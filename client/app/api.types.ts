@@ -5,6 +5,21 @@ export type TaskPhaseStatus = 'planned' | 'active' | 'blocked' | 'done';
 export type TaskChecklistStatus = 'open' | 'blocked' | 'done' | 'skipped';
 export type TaskPlanStatus = 'draft' | 'active' | 'superseded' | 'archived';
 export type RunStatus = 'running' | 'completed' | 'failed' | 'empty' | 'permission-requested';
+export type RunLifecycleState =
+  | 'start'
+  | 'preparing_workspace'
+  | 'building_prompt'
+  | 'launching_agent_process'
+  | 'initializing_session'
+  | 'streaming_turn'
+  | 'finishing'
+  | 'stalled'
+  | 'succeeded'
+  | 'failed'
+  | 'timed_out'
+  | 'canceled_by_reconciliation'
+  | 'retry_queued'
+  | 'released';
 export type CapabilityProfile = 'plan' | 'edit' | 'full-auto' | string;
 export type PermissionStatus = 'pending' | 'approved' | 'denied';
 export type PermissionCapability =
@@ -75,6 +90,7 @@ export interface Message {
   authorId: string;
   text: string;
   createdAt: number;
+  deliveryStatus?: 'queued' | 'delivered';
 }
 
 export interface PermissionRequest {
@@ -196,7 +212,7 @@ export interface MissionBriefingPayload {
 
 export interface MissionBriefingSummary {
   id: string;
-  roomId: string;
+  roomId: string | null;
   taskId: string | null;
   title: string;
   summary: string;
@@ -246,6 +262,16 @@ export interface AgentRun {
   permissionTargetResolvedPath?: string;
   permissionTargetCheckedAt?: number;
   permissionProviderProfile?: string;
+  lifecycleState?: RunLifecycleState;
+  lifecycleReason?: string;
+  lifecycleUpdatedAt?: number;
+  lastSignalAt?: number;
+  attempt?: number;
+  continuationTurn?: number;
+  maxTurns?: number;
+  workspacePath?: string;
+  retryOfRunId?: string;
+  retryAfter?: number;
 }
 
 export interface AgentRunAction {
@@ -346,6 +372,15 @@ export interface CollaborationItem {
 
 export type FiresideWsEvent =
   | { type: 'messageAppended'; message: Message }
+  | {
+      type: 'messageDeliveryUpdated';
+      update: {
+        roomId: string;
+        messageId: string;
+        deliveryStatus: 'queued' | 'delivered';
+        deliveredAt?: number;
+      };
+    }
   | { type: 'permissionRequestCreated'; request: PermissionRequest }
   | { type: 'permissionRequestUpdated'; request: PermissionRequest }
   | { type: 'roomUpdated'; room: Room }

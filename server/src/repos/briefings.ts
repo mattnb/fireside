@@ -29,7 +29,7 @@ export interface MissionBriefingPayload {
 
 export interface MissionBriefing {
   id: string;
-  roomId: string;
+  roomId: string | null;
   taskId: string | null;
   title: string;
   summary: string;
@@ -44,7 +44,7 @@ export type MissionBriefingSummary = Omit<MissionBriefing, 'payload'>;
 
 interface MissionBriefingRow {
   id: string;
-  room_id: string;
+  room_id: string | null;
   task_id: string | null;
   title: string;
   summary: string;

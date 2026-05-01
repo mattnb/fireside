@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import Database from 'better-sqlite3';
 
 export interface AgentContextUsage {
   provider: string;
@@ -27,6 +28,16 @@ interface CodexConfig {
   reasoningEffort?: string;
   contextWindow?: number;
   autoCompactAtTokens?: number;
+  source: string;
+}
+
+interface CodexRolloutTokenUsage {
+  inputTokens?: number;
+  cachedInputTokens?: number;
+  outputTokens?: number;
+  reasoningOutputTokens?: number;
+  totalTokens: number;
+  contextWindow?: number;
   source: string;
 }
 
@@ -110,6 +121,18 @@ function defaultCodexConfigPath(): string {
   return path.join(home, 'config.toml');
 }
 
+function defaultCodexHome(): string {
+  return process.env.CODEX_HOME ? path.resolve(process.env.CODEX_HOME) : path.join(os.homedir(), '.codex');
+}
+
+function codexStatePath(codexHome = defaultCodexHome()): string {
+  return path.join(codexHome, 'state_5.sqlite');
+}
+
+function codexSessionsDir(codexHome = defaultCodexHome()): string {
+  return path.join(codexHome, 'sessions');
+}
+
 function stripInlineComment(value: string): string {
   let quote: '"' | "'" | '' = '';
   for (let i = 0; i < value.length; i += 1) {
@@ -130,6 +153,121 @@ function parseRootTomlValue(raw: string): string | number | undefined {
   const number = Number(value.replace(/_/g, ''));
   if (Number.isFinite(number)) return number;
   return undefined;
+}
+
+function readCodexRolloutPathFromState(threadId: string, codexHome = defaultCodexHome()): string | null {
+  const statePath = codexStatePath(codexHome);
+  if (!fs.existsSync(statePath)) return null;
+  try {
+    const db = new Database(statePath, { readonly: true, fileMustExist: true });
+    try {
+      const row = db
+        .prepare(`SELECT rollout_path FROM threads WHERE id = ?`)
+        .get(threadId) as { rollout_path?: unknown } | undefined;
+      return typeof row?.rollout_path === 'string' && row.rollout_path
+        ? row.rollout_path
+        : null;
+    } finally {
+      db.close();
+    }
+  } catch {
+    return null;
+  }
+}
+
+function findCodexRolloutPath(threadId: string, codexHome = defaultCodexHome()): string | null {
+  const fromState = readCodexRolloutPathFromState(threadId, codexHome);
+  if (fromState && fs.existsSync(fromState)) return fromState;
+
+  const root = codexSessionsDir(codexHome);
+  const stack = [root];
+  while (stack.length > 0) {
+    const current = stack.pop();
+    if (!current || !fs.existsSync(current)) continue;
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(current, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const entry of entries) {
+      const fullPath = path.join(current, entry.name);
+      if (entry.isDirectory()) {
+        stack.push(fullPath);
+      } else if (
+        entry.isFile() &&
+        entry.name.includes(threadId) &&
+        entry.name.startsWith('rollout-') &&
+        entry.name.endsWith('.jsonl')
+      ) {
+        return fullPath;
+      }
+    }
+  }
+  return null;
+}
+
+function numberFromRecord(record: Record<string, unknown>, key: string): number | undefined {
+  return numberValue(record[key]) ?? positiveInteger(record[key]);
+}
+
+function parseCodexRolloutTokenLine(
+  line: string,
+  source: string,
+): CodexRolloutTokenUsage | null {
+  if (!line.includes('"token_count"')) return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(line);
+  } catch {
+    return null;
+  }
+  const root = asRecord(parsed);
+  const payload = asRecord(root?.payload);
+  if (payload?.type !== 'token_count') return null;
+  const info = asRecord(payload.info);
+  const last = asRecord(info?.last_token_usage);
+  if (!last) return null;
+
+  const inputTokens = numberFromRecord(last, 'input_tokens');
+  const cachedInputTokens = numberFromRecord(last, 'cached_input_tokens');
+  const outputTokens = numberFromRecord(last, 'output_tokens');
+  const reasoningOutputTokens = numberFromRecord(last, 'reasoning_output_tokens');
+  const totalTokens =
+    numberFromRecord(last, 'total_tokens') ?? Math.max(0, (inputTokens ?? 0) + (outputTokens ?? 0));
+  const contextWindow = positiveInteger(info?.model_context_window);
+  if (totalTokens <= 0 && contextWindow === undefined) return null;
+
+  return {
+    ...(inputTokens !== undefined ? { inputTokens } : {}),
+    ...(cachedInputTokens !== undefined ? { cachedInputTokens } : {}),
+    ...(outputTokens !== undefined ? { outputTokens } : {}),
+    ...(reasoningOutputTokens !== undefined ? { reasoningOutputTokens } : {}),
+    totalTokens,
+    ...(contextWindow !== undefined ? { contextWindow } : {}),
+    source,
+  };
+}
+
+export function readLatestCodexRolloutTokenUsage(
+  threadId: string | undefined,
+  codexHome = defaultCodexHome(),
+): CodexRolloutTokenUsage | null {
+  if (!threadId) return null;
+  const rolloutPath = findCodexRolloutPath(threadId, codexHome);
+  if (!rolloutPath || !fs.existsSync(rolloutPath)) return null;
+
+  let latest: CodexRolloutTokenUsage | null = null;
+  try {
+    const content = fs.readFileSync(rolloutPath, 'utf8');
+    for (const line of content.split(/\r?\n/)) {
+      const parsed = parseCodexRolloutTokenLine(line, `rollout:${rolloutPath}`);
+      if (parsed) latest = parsed;
+    }
+  } catch {
+    return null;
+  }
+  return latest;
 }
 
 function readRootToml(content: string): Map<string, string | number> {
@@ -199,7 +337,10 @@ export function codexContextWindowForModel(model: string | undefined): number | 
   return undefined;
 }
 
-export function codexContextUsage(rawUsage: unknown): AgentContextUsage | null {
+export function codexContextUsage(
+  rawUsage: unknown,
+  opts: { threadId?: string; codexHome?: string } = {},
+): AgentContextUsage | null {
   const usage = asRecord(rawUsage);
   if (!usage) return null;
   const inputTokens = numberValue(usage.input_tokens);
@@ -216,7 +357,39 @@ export function codexContextUsage(rawUsage: unknown): AgentContextUsage | null {
 
   const config = readCodexConfig();
   const model = config.model ?? 'codex';
-  const contextWindow = config.contextWindow ?? codexContextWindowForModel(model);
+  const rollout = readLatestCodexRolloutTokenUsage(opts.threadId, opts.codexHome);
+  const configuredContextWindow = config.contextWindow ?? codexContextWindowForModel(model);
+  if (rollout) {
+    const reportedUsedTokens = Math.max(0, (inputTokens ?? 0) + (outputTokens ?? 0));
+    return addWindowFields({
+      provider: 'codex',
+      model,
+      ...(config.reasoningEffort ? { reasoningEffort: config.reasoningEffort } : {}),
+      usedTokens: rollout.totalTokens,
+      ...(reportedUsedTokens > 0 && reportedUsedTokens !== rollout.totalTokens
+        ? { reportedUsedTokens }
+        : {}),
+      ...(rollout.inputTokens !== undefined ? { inputTokens: rollout.inputTokens } : {}),
+      ...(rollout.cachedInputTokens !== undefined
+        ? { cachedInputTokens: rollout.cachedInputTokens }
+        : {}),
+      ...(rollout.outputTokens !== undefined ? { outputTokens: rollout.outputTokens } : {}),
+      ...(rollout.reasoningOutputTokens !== undefined
+        ? { reasoningOutputTokens: rollout.reasoningOutputTokens }
+        : {}),
+      ...(rollout.contextWindow !== undefined
+        ? { contextWindow: rollout.contextWindow }
+        : configuredContextWindow !== undefined
+          ? { contextWindow: configuredContextWindow }
+          : {}),
+      ...(config.autoCompactAtTokens !== undefined
+        ? { autoCompactAtTokens: config.autoCompactAtTokens }
+        : {}),
+      source: `${rollout.source}:last-token-usage`,
+    });
+  }
+
+  const contextWindow = configuredContextWindow;
   const effective = effectiveCodexUsedTokens(
     inputTokens ?? 0,
     cachedInputTokens,
