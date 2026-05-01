@@ -1625,6 +1625,15 @@
   align-items: center;
 }
 
+.msg__seen-avatars .avatar--tiny {
+  opacity: 0.58;
+  transition: opacity 120ms ease;
+}
+
+.msg__seen-avatars .avatar--tiny:hover {
+  opacity: 0.86;
+}
+
 .msg__seen-avatars .avatar--tiny + .avatar--tiny {
   margin-left: -5px;
 }
