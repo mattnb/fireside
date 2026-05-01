@@ -56,6 +56,7 @@ type ChatTimelineItem = {
   grouped: boolean;
   html?: string;
   isError?: boolean;
+  seenAgents?: AgentId[];
 };
 type MissionActivityTone = 'work' | 'done' | 'blocked' | 'phase' | 'retry' | 'mission' | 'plan';
 type MissionActivityEvent = {
@@ -419,6 +420,9 @@ export class App implements OnDestroy {
           grouped: false,
           html: this.renderMessageHtml(message.text),
           isError: message.authorKind === 'system' && /failed|timed out|error/i.test(message.text),
+          ...(message.authorKind === 'system'
+            ? {}
+            : { seenAgents: this.messageSeenAgents(message) }),
         })),
       ...this.permissionRequests().map((request) => ({
         id: `permission:${request.id}`,
@@ -807,6 +811,20 @@ export class App implements OnDestroy {
 
   isRoomYoloAgent(agentId: AgentId): boolean {
     return this.roomYoloAgents().includes(agentId);
+  }
+
+  messageSeenAgents(message: Message): AgentId[] {
+    const seen = new Set<AgentId>();
+    for (const run of this.runs()) {
+      if (run.triggerMessageId !== message.id) continue;
+      if (run.agentId === message.authorId) continue;
+      seen.add(run.agentId);
+    }
+    const roomOrder = this.roomAgents();
+    return [
+      ...roomOrder.filter((agentId) => seen.has(agentId)),
+      ...[...seen].filter((agentId) => !roomOrder.includes(agentId)).sort(),
+    ];
   }
 
   canCompactAgent(agentId: AgentId): boolean {

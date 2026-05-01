@@ -530,6 +530,25 @@
             </div>
             }
             <div class="msg__body" [innerHTML]="item.html"></div>
+            @if (item.seenAgents; as seenAgents) {
+            <div class="msg__seen" [class.is-empty]="seenAgents.length === 0">
+              <span>Seen by</span>
+              @if (seenAgents.length > 0) {
+              <span class="msg__seen-avatars" aria-label="Seen by agents">
+                @for (agent of seenAgents; track agent) {
+                <span
+                  class="avatar avatar--tiny"
+                  [class]="'avatar avatar--tiny avatar--' + agent"
+                  [title]="agent"
+                  aria-hidden="true"
+                ></span>
+                }
+              </span>
+              } @else {
+              <em>nobody</em>
+              }
+            </div>
+            }
           </div>
         </li>
         } } @empty {
