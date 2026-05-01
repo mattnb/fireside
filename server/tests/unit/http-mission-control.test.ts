@@ -26,6 +26,23 @@ describe('mission control HTTP endpoints', () => {
     });
     app = buildHttpServer({ db, broker, uiDir: process.cwd() });
 
+    const projectResponse = await app.inject({
+      method: 'POST',
+      url: '/api/projects',
+      payload: { name: 'Crucible' },
+    });
+    expect(projectResponse.statusCode).toBe(200);
+    const project = projectResponse.json<{ id: string; name: string }>();
+    expect(project.name).toBe('Crucible');
+
+    const missionResponse = await app.inject({
+      method: 'POST',
+      url: '/api/rooms',
+      payload: { name: 'UX lane', projectId: project.id, agents: ['codex'], yoloAgents: ['codex'] },
+    });
+    expect(missionResponse.statusCode).toBe(200);
+    expect(missionResponse.json<{ projectId: string }>().projectId).toBe(project.id);
+
     const phaseResponse = await app.inject({
       method: 'POST',
       url: `/api/rooms/${room.id}/tasks/${task.id}/phases`,

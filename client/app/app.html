@@ -12,17 +12,17 @@
       </button>
     </nav>
 
-    <nav class="rooms" aria-label="Rooms">
+    <nav class="rooms" aria-label="Projects">
       <vfx-smoke-and-embers class="rooms__vfx"></vfx-smoke-and-embers>
       <div class="rooms__head">
-        <div class="rooms__label">rooms</div>
+        <div class="rooms__label">projects</div>
         <button
           type="button"
           class="rooms__add"
-          [class.is-active]="creatingRoom()"
-          title="New channel"
-          aria-label="New channel"
-          (click)="toggleCreateRoom()"
+          [class.is-active]="creatingProject()"
+          title="New project"
+          aria-label="New project"
+          (click)="toggleCreateProject()"
         >
           <svg viewBox="0 0 20 20" aria-hidden="true">
             <path
@@ -35,73 +35,134 @@
           </svg>
         </button>
       </div>
-      @if (creatingRoom()) {
-      <form class="room-create" (submit)="$event.preventDefault(); createRoom(roomName)">
+      @if (creatingProject()) {
+      <form
+        class="room-create project-create"
+        (submit)="$event.preventDefault(); createProject(projectName)"
+      >
         <input
-          #roomName
+          #projectName
           class="room-create__input"
           type="text"
           autocomplete="off"
-          placeholder="channel name"
-          aria-label="Channel name"
+          placeholder="project name"
+          aria-label="Project name"
         />
-        <div class="room-create__agent-head" aria-hidden="true">
-          <span>agent</span>
-          <span>yolo</span>
-        </div>
-        <div class="room-create__agents" aria-label="Agents">
-          @for (agent of agentChoices; track agent) {
-          <article class="room-agent-choice">
-            <label class="room-agent-listen">
-              <input
-                type="checkbox"
-                [checked]="isNewRoomAgentSelected(agent)"
-                (change)="toggleNewRoomAgent(agent, $event)"
-              />
-              <span class="avatar avatar--sm" [class]="'avatar avatar--sm avatar--' + agent"></span>
-              <span>{{ agent }}</span>
-            </label>
-            <span class="room-agent-yolo" title="Participates in YOLO rounds">
-              <input
-                type="checkbox"
-                [checked]="isNewRoomYoloAgentSelected(agent)"
-                (change)="toggleNewRoomYoloAgent(agent, $event)"
-              />
-              yolo
-            </span>
-          </article>
-          }
-        </div>
         <div class="room-create__actions">
-          <button class="room-create__submit" type="submit">create</button>
-          <button class="room-create__cancel" type="button" (click)="cancelCreateRoom(roomName)">
+          <button class="room-create__submit" type="submit">create project</button>
+          <button
+            class="room-create__cancel"
+            type="button"
+            (click)="cancelCreateProject(projectName)"
+          >
             cancel
           </button>
         </div>
       </form>
-      } @for (room of rooms(); track room.id) {
-      <div
-        class="room-row"
-        [class.is-active]="room.id === selectedRoomId() && selectedTab() !== 'briefings'"
+      } @for (group of projectGroups(); track group.project.id) {
+      <section
+        class="project-group"
+        [class.is-active]="group.project.id === selectedProjectId() && !selectedRoomId()"
       >
-        <button type="button" class="room-pill" (click)="selectRoom(room.id)">
-          <span class="room-pill__hash">#</span>
-          <span class="room-pill__name">{{ room.name }}</span>
-          <span class="room-pill__count">{{ room.agents.length }}</span>
-        </button>
-        <button
-          type="button"
-          class="room-pill__delete"
-          [class.is-confirming]="deletingRoomId() === room.id"
-          [title]="deletingRoomId() === room.id ? 'Click again to delete' : 'Delete channel'"
-          [attr.aria-label]="deletingRoomId() === room.id ? 'Confirm delete channel' : 'Delete channel'"
-          (click)="deleteRoom(room, $event)"
+        <header class="project-group__head">
+          <button type="button" class="project-pill" (click)="selectProject(group.project.id)">
+            <span class="project-pill__icon">&gt;</span>
+            <span class="project-pill__name">{{ group.project.name }}</span>
+            <span class="project-pill__count">{{ group.missions.length }}</span>
+          </button>
+          <button
+            type="button"
+            class="rooms__add rooms__add--mission"
+            [class.is-active]="creatingMissionProjectId() === group.project.id"
+            title="New mission"
+            aria-label="New mission"
+            (click)="toggleCreateRoom(group.project.id)"
+          >
+            <svg viewBox="0 0 20 20" aria-hidden="true">
+              <path
+                d="M10 4v12M4 10h12"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.7"
+                stroke-linecap="round"
+              />
+            </svg>
+          </button>
+        </header>
+        @if (creatingMissionProjectId() === group.project.id) {
+        <form class="room-create" (submit)="$event.preventDefault(); createRoom(roomName)">
+          <input
+            #roomName
+            class="room-create__input"
+            type="text"
+            autocomplete="off"
+            placeholder="mission name"
+            aria-label="Mission name"
+          />
+          <div class="room-create__agent-head" aria-hidden="true">
+            <span>agent</span>
+            <span>yolo</span>
+          </div>
+          <div class="room-create__agents" aria-label="Agents">
+            @for (agent of agentChoices; track agent) {
+            <article class="room-agent-choice">
+              <label class="room-agent-listen">
+                <input
+                  type="checkbox"
+                  [checked]="isNewRoomAgentSelected(agent)"
+                  (change)="toggleNewRoomAgent(agent, $event)"
+                />
+                <span
+                  class="avatar avatar--sm"
+                  [class]="'avatar avatar--sm avatar--' + agent"
+                ></span>
+                <span>{{ agent }}</span>
+              </label>
+              <span class="room-agent-yolo" title="Participates in YOLO rounds">
+                <input
+                  type="checkbox"
+                  [checked]="isNewRoomYoloAgentSelected(agent)"
+                  (change)="toggleNewRoomYoloAgent(agent, $event)"
+                />
+                yolo
+              </span>
+            </article>
+            }
+          </div>
+          <div class="room-create__actions">
+            <button class="room-create__submit" type="submit">create mission</button>
+            <button class="room-create__cancel" type="button" (click)="cancelCreateRoom(roomName)">
+              cancel
+            </button>
+          </div>
+        </form>
+        } @for (room of group.missions; track room.id) {
+        <div
+          class="room-row"
+          [class.is-active]="room.id === selectedRoomId() && selectedTab() !== 'briefings'"
         >
-          x
-        </button>
-      </div>
+          <button type="button" class="room-pill" (click)="selectRoom(room.id)">
+            <span class="room-pill__hash">#</span>
+            <span class="room-pill__name">{{ room.name }}</span>
+            <span class="room-pill__count">{{ room.agents.length }}</span>
+          </button>
+          <button
+            type="button"
+            class="room-pill__delete"
+            [class.is-confirming]="deletingRoomId() === room.id"
+            [title]="deletingRoomId() === room.id ? 'Click again to delete' : 'Delete mission'"
+            [attr.aria-label]="deletingRoomId() === room.id ? 'Confirm delete mission' : 'Delete mission'"
+            (click)="deleteRoom(room, $event)"
+          >
+            x
+          </button>
+        </div>
+        } @empty {
+        <p class="project-group__empty">no missions yet</p>
+        }
+      </section>
       } @empty {
-      <p class="empty-copy">no rooms yet</p>
+      <p class="empty-copy">no projects yet</p>
       }
     </nav>
 
@@ -126,9 +187,21 @@
       <div class="presence-group">
         <div class="presence-group__head">
           <span class="section-label">agents</span>
-          <em>{{ roomYoloAgents().length }} yolo</em>
+          <em>
+            {{ selectedRoom() ? roomYoloAgents().length : selectedProjectYoloAgents().length }} yolo
+          </em>
         </div>
-        @if (roomYoloAgents().length > 0 || yoloStatus()?.active) {
+        @if (!selectedRoom()) { @for (agent of selectedProjectAgents(); track agent) {
+        <div class="presence-row presence-row--agent">
+          <span class="avatar avatar--sm" [class]="'avatar avatar--sm avatar--' + agent"></span>
+          <span>{{ agent }}</span>
+          <span class="presence-row__actions">
+            <em>{{ selectedProjectYoloAgents().includes(agent) ? 'yolo' : 'project' }}</em>
+          </span>
+        </div>
+        } @empty {
+        <p class="empty-copy">no project agents yet</p>
+        } } @else { @if (roomYoloAgents().length > 0 || yoloStatus()?.active) {
         <div class="yolo-turn-bank" [class]="'yolo-turn-bank yolo-turn-bank--' + yoloTurnTone()">
           <div class="yolo-turn-bank__head">
             <span>yolo turns</span>
@@ -190,6 +263,7 @@
         <button class="agent-manage-btn" type="button" (click)="openEditAgents()">
           Manage Agents
         </button>
+        }
       </div>
 
       <div class="presence-group">
@@ -242,12 +316,17 @@
   <main class="workspace">
     <header class="topbar">
       <div class="channel">
-        <span class="channel__hash">{{ selectedTab() === 'briefings' ? '' : '#' }}</span>
+        <span class="channel__hash"
+          >{{ selectedTab() === 'briefings' || !selectedRoom() ? '' : '#' }}</span
+        >
         <span class="channel__name">
-          {{ selectedTab() === 'briefings' ? 'briefing room' : selectedRoom()?.name ?? 'no room
-          selected' }}
+          {{ selectedTab() === 'briefings' ? 'briefing room' : selectedRoom()?.name ??
+          selectedProject()?.name ?? 'no project selected' }}
         </span>
       </div>
+      @if (!selectedRoom() && selectedTab() !== 'briefings') {
+      <span class="project-dashboard-chip">project dashboard</span>
+      } @else {
       <div class="tabs" role="tablist" aria-label="Fireside workspace">
         @for (tab of tabs; track tab.id) {
         <button
@@ -262,9 +341,76 @@
         </button>
         }
       </div>
+      }
     </header>
 
-    @if (selectedTab() === 'chat') {
+    @if (!selectedRoom() && selectedTab() !== 'briefings') {
+    <section class="project-dashboard" aria-label="Project dashboard">
+      <header class="project-dashboard__hero">
+        <div>
+          <div class="section-label">project</div>
+          <h1>{{ selectedProject()?.name || 'No project selected' }}</h1>
+          <p>
+            Coordinate parallel missions under one workspace. Open a mission to chat with its team,
+            or start another lane from the project list.
+          </p>
+        </div>
+        <div class="project-dashboard__stats">
+          @if (projectDashboardSummary(); as summary) {
+          <article>
+            <span>missions</span>
+            <strong>{{ selectedProjectRooms().length }}</strong>
+          </article>
+          <article>
+            <span>active</span>
+            <strong>{{ summary.missions }}</strong>
+          </article>
+          <article>
+            <span>running</span>
+            <strong>{{ summary.running }}</strong>
+          </article>
+          <article>
+            <span>blocked</span>
+            <strong>{{ summary.blocked }}</strong>
+          </article>
+          }
+        </div>
+      </header>
+
+      <section class="project-dashboard__grid">
+        @for (room of selectedProjectRooms(); track room.id) {
+        <article class="project-mission-card" (click)="selectRoom(room.id)">
+          <header>
+            <div>
+              <span>mission</span>
+              <h2>{{ room.name }}</h2>
+            </div>
+            <strong>{{ room.agents.length }} agents</strong>
+          </header>
+          <p>{{ projectRoomSignal(room) }}</p>
+          <div class="project-mission-card__agents">
+            @for (agent of room.agents; track agent) {
+            <span class="avatar avatar--sm" [class]="'avatar avatar--sm avatar--' + agent"></span>
+            }
+          </div>
+          <footer>
+            <span>{{ projectRoomMeta(room) }}</span>
+            @if (projectRoomSnapshot(room.id)?.lastRun; as run) {
+            <em>{{ run.agentId }} / {{ run.status }}</em>
+            } @else {
+            <em>no runs</em>
+            }
+          </footer>
+        </article>
+        } @empty {
+        <section class="project-dashboard__empty">
+          <h2>No missions yet</h2>
+          <p>Create a mission from the project list to start a focused agent team.</p>
+        </section>
+        }
+      </section>
+    </section>
+    } @else if (selectedTab() === 'chat') {
     <section class="chat-pane" aria-label="Chat">
       <ol #messagesList class="messages">
         @for (item of chatTimeline(); track item.id) { @if (item.request; as request) {

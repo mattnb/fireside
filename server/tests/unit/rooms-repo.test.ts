@@ -1,7 +1,13 @@
 // server/tests/unit/rooms-repo.test.ts
 import { describe, it, expect, beforeEach } from 'vitest';
 import { openDatabase } from '../../src/db.js';
-import { createRoom, deleteRoom, getRoom, listRooms, setRoomAgents } from '../../src/repos/rooms.js';
+import {
+  createRoom,
+  deleteRoom,
+  getRoom,
+  listRooms,
+  setRoomAgents,
+} from '../../src/repos/rooms.js';
 import { addMessage, listMessages } from '../../src/repos/messages.js';
 import {
   addPermissionRequest,
@@ -10,6 +16,7 @@ import {
 import { createAgentRun, listAgentRuns } from '../../src/repos/agent-runs.js';
 import { getCliSessionId, upsertCliSessionId } from '../../src/repos/sessions.js';
 import { createTask, listTasks, updateTask } from '../../src/repos/tasks.js';
+import { createProject, listProjects } from '../../src/repos/projects.js';
 
 describe('rooms repo', () => {
   let db: ReturnType<typeof openDatabase>;
@@ -37,6 +44,23 @@ describe('rooms repo', () => {
     createRoom(db, { name: 'b', agents: [] });
     const rooms = listRooms(db);
     expect(rooms.map((r) => r.name)).toEqual(['a', 'b']);
+  });
+
+  it('assigns rooms to projects and defaults existing callers to General', () => {
+    const project = createProject(db, { name: 'Crucible' });
+    const scoped = createRoom(db, {
+      name: 'ux audit',
+      projectId: project.id,
+      agents: ['claude'],
+    });
+    const fallback = createRoom(db, { name: 'general lane', agents: [] });
+
+    expect(scoped.projectId).toBe(project.id);
+    expect(getRoom(db, scoped.id)?.projectId).toBe(project.id);
+    expect(fallback.projectId).toBe('general');
+    expect(listProjects(db).map((item) => item.name)).toEqual(
+      expect.arrayContaining(['General', 'Crucible']),
+    );
   });
 
   it('updates room agents', () => {

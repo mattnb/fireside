@@ -1,11 +1,7 @@
 import type { Database } from 'better-sqlite3';
 import type { AgentId } from './agents/types.js';
 import type { AgentContextUsage } from './context-usage.js';
-import {
-  listAllAgentRunsForRoom,
-  type AgentRun,
-  type AgentRunStatus,
-} from './repos/agent-runs.js';
+import { listAllAgentRunsForRoom, type AgentRun, type AgentRunStatus } from './repos/agent-runs.js';
 import {
   listAgentRunActionsForRoom,
   type AgentRunAction,
@@ -178,6 +174,7 @@ export interface StatusSnapshotContextUsage {
 
 export interface StatusSnapshotRoom {
   id: string;
+  projectId: string;
   name: string;
   agents: AgentId[];
   yoloAgents: AgentId[];
@@ -300,10 +297,7 @@ function addRunCount(counts: StatusSnapshotRunCounts, run: AgentRun): void {
   }
 }
 
-function addRunActionCount(
-  counts: StatusSnapshotRunActionCounts,
-  action: AgentRunAction,
-): void {
+function addRunActionCount(counts: StatusSnapshotRunActionCounts, action: AgentRunAction): void {
   counts.total += 1;
   counts[action.status] += 1;
   counts.byStatus[action.status] += 1;
@@ -311,10 +305,7 @@ function addRunActionCount(
   if (action.contextUsage) counts.withContextUsage += 1;
 }
 
-function mergeTaskCounts(
-  target: StatusSnapshotTaskCounts,
-  source: StatusSnapshotTaskCounts,
-): void {
+function mergeTaskCounts(target: StatusSnapshotTaskCounts, source: StatusSnapshotTaskCounts): void {
   target.total += source.total;
   target.active += source.active;
   target.paused += source.paused;
@@ -327,10 +318,7 @@ function mergeTaskCounts(
   }
 }
 
-function mergeRunCounts(
-  target: StatusSnapshotRunCounts,
-  source: StatusSnapshotRunCounts,
-): void {
+function mergeRunCounts(target: StatusSnapshotRunCounts, source: StatusSnapshotRunCounts): void {
   target.total += source.total;
   target.running += source.running;
   target.retrying += source.retrying;
@@ -434,10 +422,7 @@ function compareRunsDesc(a: StatusSnapshotRun, b: StatusSnapshotRun): number {
   return timeDiff !== 0 ? timeDiff : b.id.localeCompare(a.id);
 }
 
-function compareActionsDesc(
-  a: StatusSnapshotRunAction,
-  b: StatusSnapshotRunAction,
-): number {
+function compareActionsDesc(a: StatusSnapshotRunAction, b: StatusSnapshotRunAction): number {
   const timeDiff = b.createdAt - a.createdAt;
   return timeDiff !== 0 ? timeDiff : b.id.localeCompare(a.id);
 }
@@ -455,12 +440,8 @@ function contextUsageEntry(
   };
 }
 
-function buildContextUsage(
-  actions: StatusSnapshotRunAction[],
-): StatusSnapshotContextUsage {
-  const withUsage = actions
-    .filter((action) => action.contextUsage)
-    .sort(compareActionsDesc);
+function buildContextUsage(actions: StatusSnapshotRunAction[]): StatusSnapshotContextUsage {
+  const withUsage = actions.filter((action) => action.contextUsage).sort(compareActionsDesc);
   const latestAction = withUsage[0];
   const latest = latestAction ? contextUsageEntry(latestAction) : null;
   const byAgent = new Map<AgentId, StatusSnapshotAgentContextUsage>();
@@ -539,6 +520,7 @@ export function buildStatusSnapshot(input: BuildStatusSnapshotInput): StatusSnap
 
     return {
       id: room.id,
+      projectId: room.projectId,
       name: room.name,
       agents: room.agents,
       yoloAgents: room.yoloAgents,

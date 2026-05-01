@@ -27,6 +27,9 @@ import {
   MissionBriefingSummary,
   PermissionRequest,
   Room,
+  Project,
+  StatusSnapshot,
+  StatusSnapshotRoom,
   Task,
   TaskChecklistItem,
   TaskChecklistNote,
@@ -216,7 +219,8 @@ export class App implements OnDestroy {
   readonly selectedMissionView = signal<MissionViewId>('overview');
   readonly now = signal(Date.now());
   readonly authorName = signal(localStorage.getItem('fireside.author') || 'human');
-  readonly creatingRoom = signal(false);
+  readonly creatingProject = signal(false);
+  readonly creatingMissionProjectId = signal<string | null>(null);
   readonly newRoomAgents = signal<AgentId[]>([...this.agentChoices]);
   readonly newRoomYoloAgents = signal<AgentId[]>([]);
   readonly deletingRoomId = signal<string | null>(null);
@@ -226,7 +230,10 @@ export class App implements OnDestroy {
   readonly compactAgent = signal<AgentId | null>(null);
   readonly compactingAgent = signal<AgentId | null>(null);
   readonly compactError = signal('');
+  readonly projects = signal<Project[]>([]);
   readonly rooms = signal<Room[]>([]);
+  readonly stateSnapshot = signal<StatusSnapshot | null>(null);
+  readonly selectedProjectId = signal<string | null>(null);
   readonly selectedRoomId = signal<string | null>(null);
   readonly messages = signal<Message[]>([]);
   readonly permissionRequests = signal<PermissionRequest[]>([]);
@@ -296,6 +303,33 @@ export class App implements OnDestroy {
 
   readonly selectedRoom = computed(
     () => this.rooms().find((room) => room.id === this.selectedRoomId()) ?? null,
+  );
+  readonly selectedProject = computed(
+    () => this.projects().find((project) => project.id === this.selectedProjectId()) ?? null,
+  );
+  readonly projectGroups = computed(() =>
+    this.projects().map((project) => ({
+      project,
+      missions: this.rooms().filter((room) => room.projectId === project.id),
+    })),
+  );
+  readonly selectedProjectRooms = computed(() => {
+    const projectId = this.selectedProjectId();
+    return projectId ? this.rooms().filter((room) => room.projectId === projectId) : [];
+  });
+  readonly selectedProjectAgents = computed(() => [
+    ...new Set(this.selectedProjectRooms().flatMap((room) => room.agents)),
+  ]);
+  readonly selectedProjectYoloAgents = computed(() => [
+    ...new Set(this.selectedProjectRooms().flatMap((room) => room.yoloAgents)),
+  ]);
+  readonly selectedProjectRoomSnapshots = computed(() => {
+    const snapshot = this.stateSnapshot();
+    const roomIds = new Set(this.selectedProjectRooms().map((room) => room.id));
+    return snapshot?.rooms.filter((room) => roomIds.has(room.id)) ?? [];
+  });
+  readonly projectDashboardSummary = computed(() =>
+    this.buildProjectDashboardSummary(this.selectedProjectRoomSnapshots()),
   );
   readonly activeTask = computed(
     () => this.tasks().find((task) => ACTIVE_TASK_STATUSES.includes(task.status)) ?? null,
@@ -445,7 +479,9 @@ export class App implements OnDestroy {
 
   constructor() {
     this.ws.connect();
+    this.loadProjects();
     this.loadRooms();
+    this.loadStateSnapshot();
     this.loadBriefings();
 
     effect(() => {
@@ -481,6 +517,7 @@ export class App implements OnDestroy {
         this.permissionRequests.update((requests) => this.upsert(requests, event.request));
       }
       if (event.type === 'taskUpdated' && event.task.roomId === roomId) {
+        this.loadStateSnapshot();
         this.tasks.update((tasks) => this.upsert(tasks, event.task));
         if (ACTIVE_TASK_STATUSES.includes(event.task.status)) {
           this.loadTaskControl(roomId, event.task.id);
@@ -497,6 +534,7 @@ export class App implements OnDestroy {
         }
       }
       if (event.type === 'agentRunUpdated' && event.run.roomId === roomId) {
+        this.loadStateSnapshot();
         const shouldStickToBottom = this.isChatNearBottom();
         this.runs.update((runs) => this.upsert(runs, event.run));
         if (event.run.id === this.openRunDetailId()) this.openRunDetail(event.run.id, true);
@@ -505,6 +543,7 @@ export class App implements OnDestroy {
         }
       }
       if (event.type === 'agentRunActionCreated' && event.action.roomId === roomId) {
+        this.loadStateSnapshot();
         const shouldStickToBottom = this.isChatNearBottom();
         this.runActions.update((actions) => this.upsert(actions, event.action));
         if (event.action.runId === this.openRunDetailId())
@@ -525,6 +564,7 @@ export class App implements OnDestroy {
         this.yoloStatus.set(event.status);
       }
       if (event.type === 'roomUpdated') {
+        this.loadStateSnapshot();
         this.rooms.update((rooms) => this.upsert(rooms, event.room));
         this.syncMissionActionTargets();
         if (event.room.id === roomId && this.editingAgents()) {
@@ -533,6 +573,7 @@ export class App implements OnDestroy {
         }
       }
       if (event.type === 'roomDeleted') {
+        this.loadStateSnapshot();
         this.handleRoomDeleted(event.roomId);
       }
     });
@@ -545,12 +586,22 @@ export class App implements OnDestroy {
   }
 
   selectRoom(roomId: string): void {
+    const room = this.rooms().find((candidate) => candidate.id === roomId);
+    if (room) this.selectedProjectId.set(room.projectId);
     this.selectedRoomId.set(roomId);
     if (this.selectedTab() === 'briefings') {
       this.selectedTab.set('chat');
       this.scheduleChatScrollToBottom();
     }
     this.closeRunDetail();
+    this.closeTaskInspector();
+  }
+
+  selectProject(projectId: string): void {
+    this.selectedProjectId.set(projectId);
+    this.selectedRoomId.set(null);
+    this.clearRoomState();
+    if (this.selectedTab() === 'briefings') this.selectedTab.set('chat');
   }
 
   selectTab(tabId: TabId): void {
@@ -563,15 +614,43 @@ export class App implements OnDestroy {
     this.selectTab('briefings');
   }
 
-  toggleCreateRoom(): void {
-    this.creatingRoom.update((value) => !value);
+  toggleCreateProject(): void {
+    this.creatingProject.update((value) => !value);
+    this.creatingMissionProjectId.set(null);
+  }
+
+  cancelCreateProject(input: HTMLInputElement): void {
+    input.value = '';
+    this.creatingProject.set(false);
+  }
+
+  createProject(input: HTMLInputElement): void {
+    const name = input.value.trim();
+    if (!name) return;
+    this.api.projects.create({ name }).subscribe((project) => {
+      this.projects.update((projects) => this.upsert(projects, project));
+      this.selectedProjectId.set(project.id);
+      this.selectedRoomId.set(null);
+      input.value = '';
+      this.creatingProject.set(false);
+      this.clearRoomState();
+    });
+  }
+
+  toggleCreateRoom(projectId?: string): void {
+    const targetProjectId = projectId ?? this.selectedProjectId();
+    if (!targetProjectId) return;
+    this.creatingProject.set(false);
+    this.creatingMissionProjectId.update((current) =>
+      current === targetProjectId ? null : targetProjectId,
+    );
   }
 
   cancelCreateRoom(input: HTMLInputElement): void {
     input.value = '';
     this.newRoomAgents.set([...this.agentChoices]);
     this.newRoomYoloAgents.set([]);
-    this.creatingRoom.set(false);
+    this.creatingMissionProjectId.set(null);
   }
 
   isNewRoomAgentSelected(agentId: AgentId): boolean {
@@ -606,9 +685,11 @@ export class App implements OnDestroy {
 
   createRoom(input: HTMLInputElement): void {
     const name = input.value.trim();
-    if (!name) return;
+    const projectId = this.creatingMissionProjectId() ?? this.selectedProjectId();
+    if (!name || !projectId) return;
     this.api.rooms
       .create({
+        projectId,
         name,
         agents: this.newRoomAgents(),
         yoloAgents: this.newRoomYoloAgents().filter((agent) =>
@@ -617,11 +698,13 @@ export class App implements OnDestroy {
       })
       .subscribe((room) => {
         this.rooms.update((rooms) => this.upsert(rooms, room));
+        this.selectedProjectId.set(room.projectId);
         this.selectedRoomId.set(room.id);
         input.value = '';
         this.newRoomAgents.set([...this.agentChoices]);
         this.newRoomYoloAgents.set([]);
-        this.creatingRoom.set(false);
+        this.creatingMissionProjectId.set(null);
+        this.loadStateSnapshot();
       });
   }
 
@@ -785,8 +868,39 @@ export class App implements OnDestroy {
   private loadRooms(): void {
     this.api.rooms.list().subscribe((rooms) => {
       this.rooms.set(rooms);
-      this.selectedRoomId.set(rooms[0]?.id ?? null);
+      const selectedRoomId = this.selectedRoomId();
+      const selectedRoom = selectedRoomId ? rooms.find((room) => room.id === selectedRoomId) : null;
+      if (selectedRoom) {
+        this.selectedProjectId.set(selectedRoom.projectId);
+        return;
+      }
+      const selectedProjectId = this.selectedProjectId();
+      if (
+        selectedProjectId &&
+        this.projects().some((project) => project.id === selectedProjectId)
+      ) {
+        this.selectedRoomId.set(null);
+        this.clearRoomState();
+        return;
+      }
+      const firstProjectId = this.projects()[0]?.id ?? rooms[0]?.projectId ?? null;
+      this.selectedProjectId.set(firstProjectId);
+      this.selectedRoomId.set(null);
+      this.clearRoomState();
     });
+  }
+
+  private loadProjects(): void {
+    this.api.projects.list().subscribe((projects) => {
+      this.projects.set(projects);
+      if (!this.selectedProjectId() && projects[0]) {
+        this.selectedProjectId.set(projects[0].id);
+      }
+    });
+  }
+
+  private loadStateSnapshot(): void {
+    this.api.state.get().subscribe((snapshot) => this.stateSnapshot.set(snapshot));
   }
 
   loadBriefings(): void {
@@ -1182,6 +1296,48 @@ export class App implements OnDestroy {
     event?.stopPropagation();
     if (!run.cliSessionId) return;
     void navigator.clipboard?.writeText(run.cliSessionId);
+  }
+
+  projectRoomSnapshot(roomId: string): StatusSnapshotRoom | null {
+    return this.stateSnapshot()?.rooms.find((room) => room.id === roomId) ?? null;
+  }
+
+  projectRoomMeta(room: Room): string {
+    const snapshot = this.projectRoomSnapshot(room.id);
+    const active = snapshot?.counts.activeMissions ?? 0;
+    const running = snapshot?.counts.runs.running ?? 0;
+    const blocked = snapshot?.counts.tasks.blocked ?? 0;
+    const parts = [
+      `${room.agents.length} agent${room.agents.length === 1 ? '' : 's'}`,
+      `${active} active`,
+      `${running} running`,
+    ];
+    if (blocked) parts.push(`${blocked} blocked`);
+    return parts.join(' / ');
+  }
+
+  projectRoomSignal(room: Room): string {
+    const snapshot = this.projectRoomSnapshot(room.id);
+    if (!snapshot) return 'no mission telemetry yet';
+    const task = snapshot.activeMissions[0];
+    if (task) return `${task.status}: ${task.title}`;
+    if (snapshot.lastAction) return this.humanizedRunAction(snapshot.lastAction, 120);
+    if (snapshot.lastRun)
+      return this.runLifecycleSignal(snapshot.lastRun) || snapshot.lastRun.status;
+    return 'no active mission';
+  }
+
+  private buildProjectDashboardSummary(rooms: StatusSnapshotRoom[]) {
+    return rooms.reduce(
+      (summary, room) => {
+        summary.missions += room.counts.activeMissions;
+        summary.running += room.counts.runs.running;
+        summary.blocked += room.counts.tasks.blocked;
+        summary.agents += room.agents.length;
+        return summary;
+      },
+      { missions: 0, running: 0, blocked: 0, agents: 0 },
+    );
   }
 
   selectMissionView(view: MissionViewId): void {
@@ -2763,12 +2919,13 @@ export class App implements OnDestroy {
   }
 
   private handleRoomDeleted(roomId: string): void {
+    const deleted = this.rooms().find((room) => room.id === roomId);
     const remaining = this.rooms().filter((room) => room.id !== roomId);
     this.rooms.set(remaining);
     if (this.selectedRoomId() !== roomId) return;
-    const nextRoomId = remaining[0]?.id ?? null;
-    this.selectedRoomId.set(nextRoomId);
-    if (!nextRoomId) this.clearRoomState();
+    this.selectedProjectId.set(deleted?.projectId ?? this.selectedProjectId());
+    this.selectedRoomId.set(null);
+    this.clearRoomState();
   }
 
   private clearRoomState(): void {
@@ -2782,6 +2939,7 @@ export class App implements OnDestroy {
     this.taskControl.set(null);
     this.yoloStatus.set(null);
     this.closeRunDetail();
+    this.closeTaskInspector();
   }
 
   private isChatNearBottom(): boolean {

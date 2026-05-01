@@ -5,8 +5,17 @@ import { nanoid } from 'nanoid';
 import { extractCollaborationNotes } from './collaboration-notes.js';
 
 const SCHEMA = `
+CREATE TABLE IF NOT EXISTS projects (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  description TEXT NOT NULL DEFAULT '',
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS rooms (
   id TEXT PRIMARY KEY,
+  project_id TEXT REFERENCES projects(id) ON DELETE SET NULL,
   name TEXT NOT NULL,
   created_at INTEGER NOT NULL,
   agents_json TEXT NOT NULL DEFAULT '[]',
@@ -261,11 +270,34 @@ function columnNames(db: DbType, table: string): Set<string> {
   return new Set(rows.map((row) => row.name));
 }
 
+function ensureProjects(db: DbType): void {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS projects (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      description TEXT NOT NULL DEFAULT '',
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    );
+  `);
+  const now = Date.now();
+  db.prepare(
+    `INSERT OR IGNORE INTO projects (id, name, description, created_at, updated_at)
+     VALUES ('general', 'General', 'Default project for existing missions.', ?, ?)`,
+  ).run(now, now);
+}
+
 function ensureRoomColumns(db: DbType): void {
   const columns = columnNames(db, 'rooms');
   if (!columns.has('yolo_agents_json')) {
     db.prepare(`ALTER TABLE rooms ADD COLUMN yolo_agents_json TEXT NOT NULL DEFAULT '[]'`).run();
   }
+  if (!columns.has('project_id')) {
+    db.prepare(`ALTER TABLE rooms ADD COLUMN project_id TEXT`).run();
+  }
+  db.prepare(
+    `UPDATE rooms SET project_id = 'general' WHERE project_id IS NULL OR project_id = ''`,
+  ).run();
 }
 
 function ensureAgentRunColumns(db: DbType): void {
@@ -778,6 +810,7 @@ export function openDatabase(filename: string): DbType {
   db.pragma('journal_mode = WAL');
   db.pragma('foreign_keys = ON');
   db.exec(SCHEMA);
+  ensureProjects(db);
   ensureRoomColumns(db);
   ensurePermissionRequestColumns(db);
   ensureTaskColumns(db);

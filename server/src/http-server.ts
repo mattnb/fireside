@@ -3,7 +3,8 @@ import Fastify from 'fastify';
 import fastifyStatic from '@fastify/static';
 import type { Database } from 'better-sqlite3';
 import path from 'node:path';
-import { createRoom, getRoom, listRooms } from './repos/rooms.js';
+import { createRoom, getRoom, listRooms, updateRoomProject } from './repos/rooms.js';
+import { createProject, getProject, listProjects, updateProject } from './repos/projects.js';
 import { getPermissionRequest, listPermissionRequests } from './repos/permission-requests.js';
 import type { AgentId } from './agents/types.js';
 import type { TaskStatus } from './repos/tasks.js';
@@ -72,6 +73,10 @@ export function buildHttpServer(deps: HttpDeps) {
     return listRooms(deps.db);
   });
 
+  app.get('/api/projects', async () => {
+    return listProjects(deps.db);
+  });
+
   app.get('/api/state', async () => {
     return buildStatusSnapshot({ db: deps.db });
   });
@@ -96,20 +101,57 @@ export function buildHttpServer(deps: HttpDeps) {
     return { path };
   });
 
-  app.post<{ Body: { name: string; agents: AgentId[]; yoloAgents?: AgentId[] } }>(
-    '/api/rooms',
+  app.post<{ Body: { name: string; description?: string } }>(
+    '/api/projects',
     async (req, reply) => {
-      const { name, agents, yoloAgents } =
-        req.body ?? ({} as { name: string; agents: AgentId[]; yoloAgents?: AgentId[] });
-      if (!name || !Array.isArray(agents)) {
-        return reply.code(400).send({ error: 'name and agents are required' });
-      }
-      if (yoloAgents !== undefined && !Array.isArray(yoloAgents)) {
-        return reply.code(400).send({ error: 'yoloAgents must be an array' });
-      }
-      return createRoom(deps.db, { name, agents, yoloAgents: yoloAgents ?? [] });
+      const name = typeof req.body?.name === 'string' ? req.body.name.trim().slice(0, 160) : '';
+      const description =
+        typeof req.body?.description === 'string' ? req.body.description.trim().slice(0, 1000) : '';
+      if (!name) return reply.code(400).send({ error: 'name is required' });
+      return createProject(deps.db, { name, description });
     },
   );
+
+  app.patch<{ Params: { id: string }; Body: { name?: string; description?: string } }>(
+    '/api/projects/:id',
+    async (req, reply) => {
+      const name =
+        typeof req.body?.name === 'string' ? req.body.name.trim().slice(0, 160) : undefined;
+      const description =
+        typeof req.body?.description === 'string'
+          ? req.body.description.trim().slice(0, 1000)
+          : undefined;
+      const updated = updateProject(deps.db, req.params.id, {
+        ...(name !== undefined ? { name } : {}),
+        ...(description !== undefined ? { description } : {}),
+      });
+      if (!updated) return reply.code(404).send({ error: 'not found' });
+      return updated;
+    },
+  );
+
+  app.post<{
+    Body: { name: string; agents: AgentId[]; yoloAgents?: AgentId[]; projectId?: string };
+  }>('/api/rooms', async (req, reply) => {
+    const { name, agents, yoloAgents, projectId } =
+      req.body ??
+      ({} as { name: string; agents: AgentId[]; yoloAgents?: AgentId[]; projectId?: string });
+    if (!name || !Array.isArray(agents)) {
+      return reply.code(400).send({ error: 'name and agents are required' });
+    }
+    if (yoloAgents !== undefined && !Array.isArray(yoloAgents)) {
+      return reply.code(400).send({ error: 'yoloAgents must be an array' });
+    }
+    if (projectId && !getProject(deps.db, projectId)) {
+      return reply.code(400).send({ error: 'project not found' });
+    }
+      return createRoom(deps.db, {
+        name,
+        agents,
+        yoloAgents: yoloAgents ?? [],
+        ...(projectId !== undefined ? { projectId } : {}),
+      });
+  });
 
   app.get<{ Params: { id: string } }>('/api/rooms/:id', async (req, reply) => {
     const room = getRoom(deps.db, req.params.id);
@@ -140,22 +182,31 @@ export function buildHttpServer(deps: HttpDeps) {
     return reply.code(204).send();
   });
 
-  app.patch<{ Params: { id: string }; Body: { agents: AgentId[]; yoloAgents?: AgentId[] } }>(
-    '/api/rooms/:id',
-    async (req, reply) => {
-      const { agents, yoloAgents } =
-        req.body ?? ({} as { agents: AgentId[]; yoloAgents?: AgentId[] });
-      if (!Array.isArray(agents)) {
-        return reply.code(400).send({ error: 'agents must be an array' });
-      }
-      if (yoloAgents !== undefined && !Array.isArray(yoloAgents)) {
-        return reply.code(400).send({ error: 'yoloAgents must be an array' });
-      }
-      const updated = deps.broker.setAgents(req.params.id, agents, yoloAgents);
+  app.patch<{
+    Params: { id: string };
+    Body: { agents?: AgentId[]; yoloAgents?: AgentId[]; projectId?: string };
+  }>('/api/rooms/:id', async (req, reply) => {
+    const { agents, yoloAgents, projectId } =
+      req.body ?? ({} as { agents?: AgentId[]; yoloAgents?: AgentId[]; projectId?: string });
+    let updated = getRoom(deps.db, req.params.id);
+    if (!updated) return reply.code(404).send({ error: 'not found' });
+    if (agents !== undefined && !Array.isArray(agents)) {
+      return reply.code(400).send({ error: 'agents must be an array' });
+    }
+    if (yoloAgents !== undefined && !Array.isArray(yoloAgents)) {
+      return reply.code(400).send({ error: 'yoloAgents must be an array' });
+    }
+    if (agents !== undefined) {
+      updated = deps.broker.setAgents(req.params.id, agents, yoloAgents);
       if (!updated) return reply.code(404).send({ error: 'not found' });
-      return updated;
-    },
-  );
+    }
+    if (projectId !== undefined) {
+      const moved = updateRoomProject(deps.db, req.params.id, projectId);
+      if (!moved) return reply.code(400).send({ error: 'project not found' });
+      updated = moved;
+    }
+    return updated;
+  });
 
   app.get<{ Params: { id: string }; Querystring: { limit?: string } }>(
     '/api/rooms/:id/messages',
@@ -189,7 +240,8 @@ export function buildHttpServer(deps: HttpDeps) {
     } = {
       roomId: req.params.id,
       taskId: typeof taskId === 'string' ? taskId : null,
-      createdBy: typeof createdBy === 'string' && createdBy.trim() ? createdBy.slice(0, 120) : 'human',
+      createdBy:
+        typeof createdBy === 'string' && createdBy.trim() ? createdBy.slice(0, 120) : 'human',
     };
     if (typeof title === 'string') input.title = title.slice(0, 220);
     if (typeof summary === 'string') input.summary = summary.slice(0, 1000);
@@ -258,8 +310,16 @@ export function buildHttpServer(deps: HttpDeps) {
   }>('/api/rooms/:id/tasks/:taskId', async (req, reply) => {
     const room = getRoom(deps.db, req.params.id);
     if (!room) return reply.code(404).send({ error: 'not found' });
-    const { title, goal, repoPath, acceptanceCriteria, agents, status, capabilityProfile, summary } =
-      req.body ?? {};
+    const {
+      title,
+      goal,
+      repoPath,
+      acceptanceCriteria,
+      agents,
+      status,
+      capabilityProfile,
+      summary,
+    } = req.body ?? {};
     if (agents !== undefined && !Array.isArray(agents)) {
       return reply.code(400).send({ error: 'agents must be an array' });
     }
@@ -310,7 +370,8 @@ export function buildHttpServer(deps: HttpDeps) {
     const room = getRoom(deps.db, req.params.id);
     if (!room) return reply.code(404).send({ error: 'not found' });
     const { planId, title, description, status, gate, sortOrder } = req.body ?? {};
-    if (!title || typeof title !== 'string') return reply.code(400).send({ error: 'title required' });
+    if (!title || typeof title !== 'string')
+      return reply.code(400).send({ error: 'title required' });
     if (status !== undefined && !isTaskPhaseStatus(status)) {
       return reply.code(400).send({ error: 'invalid status' });
     }
@@ -343,14 +404,19 @@ export function buildHttpServer(deps: HttpDeps) {
     if (status !== undefined && !isTaskPhaseStatus(status)) {
       return reply.code(400).send({ error: 'invalid status' });
     }
-    const phase = deps.broker.updateTaskPhase(req.params.id, req.params.taskId, req.params.phaseId, {
-      ...(planId !== undefined ? { planId } : {}),
-      ...(title !== undefined ? { title: String(title).slice(0, 200) } : {}),
-      ...(description !== undefined ? { description: String(description).slice(0, 2000) } : {}),
-      ...(status !== undefined ? { status } : {}),
-      ...(gate !== undefined ? { gate: String(gate).slice(0, 1000) } : {}),
-      ...(sortOrder !== undefined ? { sortOrder: optionalOrder(sortOrder) ?? 0 } : {}),
-    });
+    const phase = deps.broker.updateTaskPhase(
+      req.params.id,
+      req.params.taskId,
+      req.params.phaseId,
+      {
+        ...(planId !== undefined ? { planId } : {}),
+        ...(title !== undefined ? { title: String(title).slice(0, 200) } : {}),
+        ...(description !== undefined ? { description: String(description).slice(0, 2000) } : {}),
+        ...(status !== undefined ? { status } : {}),
+        ...(gate !== undefined ? { gate: String(gate).slice(0, 1000) } : {}),
+        ...(sortOrder !== undefined ? { sortOrder: optionalOrder(sortOrder) ?? 0 } : {}),
+      },
+    );
     if (!phase) return reply.code(404).send({ error: 'not found' });
     return phase;
   });
@@ -386,7 +452,8 @@ export function buildHttpServer(deps: HttpDeps) {
       councilRequired,
       sortOrder,
     } = req.body ?? {};
-    if (!title || typeof title !== 'string') return reply.code(400).send({ error: 'title required' });
+    if (!title || typeof title !== 'string')
+      return reply.code(400).send({ error: 'title required' });
     if (status !== undefined && !isTaskChecklistStatus(status)) {
       return reply.code(400).send({ error: 'invalid status' });
     }
@@ -480,7 +547,8 @@ export function buildHttpServer(deps: HttpDeps) {
     const room = getRoom(deps.db, req.params.id);
     if (!room) return reply.code(404).send({ error: 'not found' });
     const { title, body, status } = req.body ?? {};
-    if (!title || typeof title !== 'string') return reply.code(400).send({ error: 'title required' });
+    if (!title || typeof title !== 'string')
+      return reply.code(400).send({ error: 'title required' });
     if (status !== undefined && !isTaskPlanStatus(status)) {
       return reply.code(400).send({ error: 'invalid status' });
     }
@@ -680,5 +748,3 @@ export function buildHttpServer(deps: HttpDeps) {
 
   return app;
 }
-
-

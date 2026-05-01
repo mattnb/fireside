@@ -2,9 +2,11 @@
 import type { Database } from 'better-sqlite3';
 import { nanoid } from 'nanoid';
 import type { AgentId } from '../agents/types.js';
+import { ensureDefaultProject, getProject } from './projects.js';
 
 export interface Room {
   id: string;
+  projectId: string;
   name: string;
   agents: AgentId[];
   yoloAgents: AgentId[];
@@ -13,6 +15,7 @@ export interface Room {
 
 interface RoomRow {
   id: string;
+  project_id: string | null;
   name: string;
   agents_json: string;
   yolo_agents_json: string;
@@ -22,7 +25,9 @@ interface RoomRow {
 function parseAgents(json: string): AgentId[] {
   try {
     const parsed = JSON.parse(json) as unknown;
-    return Array.isArray(parsed) ? (parsed.filter((item) => typeof item === 'string') as AgentId[]) : [];
+    return Array.isArray(parsed)
+      ? (parsed.filter((item) => typeof item === 'string') as AgentId[])
+      : [];
   } catch {
     return [];
   }
@@ -33,6 +38,7 @@ function rowToRoom(row: RoomRow): Room {
   const yoloAgents = parseAgents(row.yolo_agents_json).filter((agent) => agents.includes(agent));
   return {
     id: row.id,
+    projectId: row.project_id || 'general',
     name: row.name,
     agents,
     yoloAgents,
@@ -42,15 +48,20 @@ function rowToRoom(row: RoomRow): Room {
 
 export function createRoom(
   db: Database,
-  input: { name: string; agents: AgentId[]; yoloAgents?: AgentId[] },
+  input: { name: string; agents: AgentId[]; yoloAgents?: AgentId[]; projectId?: string | null },
 ): Room {
   const id = nanoid(12);
   const now = Date.now();
   const yoloAgents = (input.yoloAgents ?? []).filter((agent) => input.agents.includes(agent));
+  const projectId =
+    input.projectId && getProject(db, input.projectId)
+      ? input.projectId
+      : ensureDefaultProject(db).id;
   db.prepare(
-    `INSERT INTO rooms (id, name, created_at, agents_json, yolo_agents_json) VALUES (?, ?, ?, ?, ?)`,
-  ).run(id, input.name, now, JSON.stringify(input.agents), JSON.stringify(yoloAgents));
-  return { id, name: input.name, agents: input.agents, yoloAgents, createdAt: now };
+    `INSERT INTO rooms (id, project_id, name, created_at, agents_json, yolo_agents_json)
+     VALUES (?, ?, ?, ?, ?, ?)`,
+  ).run(id, projectId, input.name, now, JSON.stringify(input.agents), JSON.stringify(yoloAgents));
+  return { id, projectId, name: input.name, agents: input.agents, yoloAgents, createdAt: now };
 }
 
 export function getRoom(db: Database, id: string): Room | null {
@@ -61,6 +72,12 @@ export function getRoom(db: Database, id: string): Room | null {
 export function listRooms(db: Database): Room[] {
   const rows = db.prepare(`SELECT * FROM rooms ORDER BY created_at ASC`).all() as RoomRow[];
   return rows.map(rowToRoom);
+}
+
+export function updateRoomProject(db: Database, roomId: string, projectId: string): Room | null {
+  if (!getProject(db, projectId)) return null;
+  db.prepare(`UPDATE rooms SET project_id = ? WHERE id = ?`).run(projectId, roomId);
+  return getRoom(db, roomId);
 }
 
 export function setRoomAgents(

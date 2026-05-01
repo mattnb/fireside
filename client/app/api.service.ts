@@ -15,7 +15,9 @@ import {
   PermissionRequest,
   PickerResult,
   PostMessageRequest,
+  Project,
   Room,
+  StatusSnapshot,
   Task,
   TaskChecklistItem,
   TaskControl,
@@ -44,17 +46,30 @@ export class FiresideApi {
 
   readonly rooms = {
     list: () => this.http.get<Room[]>('/api/rooms'),
-    create: (body: Pick<Room, 'name' | 'agents' | 'yoloAgents'>) =>
+    create: (body: Pick<Room, 'name' | 'agents' | 'yoloAgents'> & { projectId?: string }) =>
       this.http.post<Room>('/api/rooms', body),
-    update: (roomId: string, body: Partial<Pick<Room, 'name' | 'agents' | 'yoloAgents'>>) =>
-      this.http.patch<Room>(`/api/rooms/${roomId}`, body),
+    update: (
+      roomId: string,
+      body: Partial<Pick<Room, 'name' | 'agents' | 'yoloAgents' | 'projectId'>>,
+    ) => this.http.patch<Room>(`/api/rooms/${roomId}`, body),
     delete: (roomId: string) => this.http.delete<void>(`/api/rooms/${roomId}`),
+  };
+
+  readonly projects = {
+    list: () => this.http.get<Project[]>('/api/projects'),
+    create: (body: Pick<Project, 'name'> & Partial<Pick<Project, 'description'>>) =>
+      this.http.post<Project>('/api/projects', body),
+    update: (projectId: string, body: Partial<Pick<Project, 'name' | 'description'>>) =>
+      this.http.patch<Project>(`/api/projects/${projectId}`, body),
+  };
+
+  readonly state = {
+    get: () => this.http.get<StatusSnapshot>('/api/state'),
   };
 
   readonly briefings = {
     list: () => this.http.get<MissionBriefingSummary[]>('/api/briefings'),
-    detail: (briefingId: string) =>
-      this.http.get<MissionBriefing>(`/api/briefings/${briefingId}`),
+    detail: (briefingId: string) => this.http.get<MissionBriefing>(`/api/briefings/${briefingId}`),
     create: (
       roomId: string,
       body: { taskId?: string | null; title?: string; summary?: string; createdBy: string },
@@ -64,11 +79,19 @@ export class FiresideApi {
   readonly permissions = {
     list: (roomId: string) =>
       this.http.get<PermissionRequest[]>(`/api/rooms/${roomId}/permission-requests`),
-    decide: (roomId: string, requestId: string, decision: 'approved' | 'denied', decidedBy: string) =>
-      this.http.post<PermissionRequest>(`/api/rooms/${roomId}/permission-requests/${requestId}/decision`, {
-        decision,
-        decidedBy,
-      }),
+    decide: (
+      roomId: string,
+      requestId: string,
+      decision: 'approved' | 'denied',
+      decidedBy: string,
+    ) =>
+      this.http.post<PermissionRequest>(
+        `/api/rooms/${roomId}/permission-requests/${requestId}/decision`,
+        {
+          decision,
+          decidedBy,
+        },
+      ),
   };
 
   readonly messages = {

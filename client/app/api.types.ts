@@ -76,11 +76,80 @@ export interface YoloStatus {
 
 export interface Room {
   id: string;
+  projectId: string;
   name: string;
   agents: AgentId[];
   yoloAgents: AgentId[];
   createdAt?: number;
   updatedAt?: number;
+}
+
+export interface Project {
+  id: string;
+  name: string;
+  description: string;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface StatusSnapshotTaskCounts {
+  total: number;
+  active: number;
+  paused: number;
+  blocked: number;
+  verifying: number;
+  done: number;
+  activeLike: number;
+}
+
+export interface StatusSnapshotRunCounts {
+  total: number;
+  running: number;
+  retrying: number;
+  completed: number;
+  failed: number;
+  empty: number;
+  permissionRequested: number;
+}
+
+export interface StatusSnapshotRoom {
+  id: string;
+  projectId: string;
+  name: string;
+  agents: AgentId[];
+  yoloAgents: AgentId[];
+  createdAt: number;
+  counts: {
+    agents: number;
+    activeMissions: number;
+    tasks: StatusSnapshotTaskCounts;
+    runs: StatusSnapshotRunCounts;
+  };
+  activeMissions: Array<{
+    id: string;
+    roomId: string;
+    title: string;
+    goal: string;
+    repoPath: string;
+    status: TaskStatus;
+    summary: string;
+    updatedAt: number;
+  }>;
+  lastRun: AgentRun | null;
+  lastAction: AgentRunAction | null;
+}
+
+export interface StatusSnapshot {
+  version: 1;
+  generatedAt: number;
+  counts: {
+    rooms: number;
+    agents: number;
+    activeMissions: number;
+    tasks: StatusSnapshotTaskCounts;
+    runs: StatusSnapshotRunCounts;
+  };
+  rooms: StatusSnapshotRoom[];
 }
 
 export interface Message {
