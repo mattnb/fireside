@@ -19,7 +19,8 @@ CREATE TABLE IF NOT EXISTS rooms (
   name TEXT NOT NULL,
   created_at INTEGER NOT NULL,
   agents_json TEXT NOT NULL DEFAULT '[]',
-  yolo_agents_json TEXT NOT NULL DEFAULT '[]'
+  yolo_agents_json TEXT NOT NULL DEFAULT '[]',
+  agent_profiles_json TEXT NOT NULL DEFAULT '[]'
 );
 
 CREATE TABLE IF NOT EXISTS messages (
@@ -339,6 +340,9 @@ function ensureRoomColumns(db: DbType): void {
   const columns = columnNames(db, 'rooms');
   if (!columns.has('yolo_agents_json')) {
     db.prepare(`ALTER TABLE rooms ADD COLUMN yolo_agents_json TEXT NOT NULL DEFAULT '[]'`).run();
+  }
+  if (!columns.has('agent_profiles_json')) {
+    db.prepare(`ALTER TABLE rooms ADD COLUMN agent_profiles_json TEXT NOT NULL DEFAULT '[]'`).run();
   }
   if (!columns.has('project_id')) {
     db.prepare(`ALTER TABLE rooms ADD COLUMN project_id TEXT`).run();

@@ -5,6 +5,7 @@ import {
   AgentRun,
   AgentRunAction,
   AgentRunDetail,
+  AgentCatalog,
   Artifact,
   ArtifactListing,
   CollaborationItem,
@@ -47,11 +48,14 @@ export class FiresideApi {
 
   readonly rooms = {
     list: () => this.http.get<Room[]>('/api/rooms'),
-    create: (body: Pick<Room, 'name' | 'agents' | 'yoloAgents'> & { projectId?: string }) =>
+    create: (
+      body: Pick<Room, 'name' | 'agents' | 'yoloAgents'> &
+        Partial<Pick<Room, 'agentProfiles'>> & { projectId?: string },
+    ) =>
       this.http.post<Room>('/api/rooms', body),
     update: (
       roomId: string,
-      body: Partial<Pick<Room, 'name' | 'agents' | 'yoloAgents' | 'projectId'>>,
+      body: Partial<Pick<Room, 'name' | 'agents' | 'yoloAgents' | 'agentProfiles' | 'projectId'>>,
     ) => this.http.patch<Room>(`/api/rooms/${roomId}`, body),
     delete: (roomId: string) => this.http.delete<void>(`/api/rooms/${roomId}`),
   };
@@ -147,6 +151,7 @@ export class FiresideApi {
   };
 
   readonly agents = {
+    catalog: () => this.http.get<AgentCatalog>('/api/agents/catalog'),
     compact: (roomId: string, agentId: string, authorId: string) =>
       this.http.post<AgentRun>(`/api/rooms/${roomId}/agents/${agentId}/compact`, { authorId }),
   };

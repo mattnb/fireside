@@ -26,7 +26,7 @@ import {
 } from './repos/rooms.js';
 import { getCliSessionId, upsertCliSessionId } from './repos/sessions.js';
 import { buildTurnPromptResult, type WorkLanePromptItem } from './transcript.js';
-import { parseAgentReferences } from './mentions.js';
+import { parseAgentReferences, parseAgentReferencesForAliases } from './mentions.js';
 import {
   listConversationArtifacts,
   messageTextForPrompt,
@@ -160,6 +160,12 @@ import {
   type ParsedMissionCreateUpdate,
 } from './mission-create-updates.js';
 import { extractMissionReceipts, type ParsedMissionReceipt } from './mission-receipts.js';
+import {
+  defaultAgentProfile,
+  isCompactableProviderAgent,
+  providerIdFromAgentId,
+} from './agents/profiles.js';
+import type { RoomAgentProfile } from './agents/types.js';
 
 export interface BrokerDeps {
   db: Database;
@@ -195,7 +201,6 @@ const RUN_SIGNAL_UPDATE_THROTTLE_MS = 2_500;
 const STREAM_MESSAGE_THROTTLE_MS = 1_000;
 const AGENT_JOB_LEASE_MS = 15 * 60 * 1000;
 const COMPACT_PROMPT = '/compact';
-const COMPACTABLE_AGENT_IDS = new Set<AgentId>(['claude', 'codex']);
 
 interface DiscussionTurn {
   round: number;
@@ -428,15 +433,15 @@ function isBrokerInternalSystemMessage(message: Message): boolean {
   if (message.authorKind !== 'system') return false;
   return (
     /^Permission (approved|denied) for /i.test(message.text) ||
-    /^\([a-z]+ started approved /i.test(message.text) ||
-    /^\([a-z]+ finished the .* follow-up without a visible chat message\.\)$/i.test(message.text) ||
+    /^\([a-z0-9-]+ started approved /i.test(message.text) ||
+    /^\([a-z0-9-]+ finished the .* follow-up without a visible chat message\.\)$/i.test(message.text) ||
     /^\(fireside workflow contract repair for /i.test(message.text)
   );
 }
 
 function providerCompactionWarning(agentId: AgentId, stderr: string): string | null {
   if (
-    agentId === 'codex' &&
+    providerIdFromAgentId(agentId) === 'codex' &&
     /codex_core::session: failed to record rollout items: thread .* not found/i.test(stderr)
   ) {
     return 'Codex CLI returned success, but stderr reported that it failed to record rollout items for the resumed thread. The local rollout may not fully reflect the compaction turn.';
@@ -500,7 +505,7 @@ export class Broker extends EventEmitter {
     if (inlineYoloProfile) {
       return this.startYoloDiscussion(roomId, authorId, inlineYoloProfile, text);
     }
-    const responders = this.pickResponders(room.agents, text, authorId);
+    const responders = this.pickResponders(room, text, authorId);
     const yoloResponders = room.yoloAgents.filter((agent) => responders.includes(agent));
     if (yoloResponders.length > 0) {
       return this.startYoloDiscussion(
@@ -693,8 +698,13 @@ export class Broker extends EventEmitter {
     return ok;
   }
 
-  setAgents(roomId: string, agents: AgentId[], yoloAgents?: AgentId[]): Room | null {
-    setRoomAgentsRepo(this.deps.db, roomId, agents, yoloAgents);
+  setAgents(
+    roomId: string,
+    agents: AgentId[],
+    yoloAgents?: AgentId[],
+    agentProfiles?: RoomAgentProfile[],
+  ): Room | null {
+    setRoomAgentsRepo(this.deps.db, roomId, agents, yoloAgents, agentProfiles);
     const updated = getRoom(this.deps.db, roomId);
     if (updated) this.emit('roomUpdated', updated);
     return updated;
@@ -958,7 +968,7 @@ export class Broker extends EventEmitter {
   startAgentCompaction(roomId: string, agentId: AgentId, authorId: string): AgentCompactionResult {
     const room = getRoom(this.deps.db, roomId);
     if (!room) return { ok: false, statusCode: 404, error: 'room not found' };
-    if (!COMPACTABLE_AGENT_IDS.has(agentId)) {
+    if (!isCompactableProviderAgent(agentId)) {
       return {
         ok: false,
         statusCode: 400,
@@ -1720,15 +1730,17 @@ export class Broker extends EventEmitter {
     workflowRepair = false,
   ): Promise<AgentTurnResult> {
     if (cancelSignal?.aborted) return { message: null, progressed: false };
-    const spec = this.deps.getSpec(agentId);
-    if (!spec) {
-      this.appendDirect(roomId, 'system', 'system', `(no adapter for agent "${agentId}")`);
-      return { message: null, progressed: false };
-    }
     const room = getRoom(this.deps.db, roomId);
     if (!room) {
       // The room was created before this call ran; it should still exist. Defensive guard.
       throw new Error(`unknown room: ${roomId}`);
+    }
+    const agentProfile =
+      room.agentProfiles.find((profile) => profile.id === agentId) ?? defaultAgentProfile(agentId);
+    const spec = this.deps.getSpec(agentProfile.providerId);
+    if (!spec) {
+      this.appendDirect(roomId, 'system', 'system', `(no adapter for agent "${agentId}")`);
+      return { message: null, progressed: false };
     }
     const allMessages = listMessages(this.deps.db, roomId);
     const triggerIndex = allMessages.findIndex((m) => m.id === trigger.id);
@@ -1843,8 +1855,10 @@ export class Broker extends EventEmitter {
     const workflowProfilePromptItem = this.workflowProfilePromptItem(workflowProfile);
     const promptResult = buildTurnPromptResult({
       agentId,
+      agentProfile,
       roomName: room.name,
       roomAgents: room.agents,
+      roomAgentProfiles: room.agentProfiles,
       history: promptHistory.map((m) => ({
         authorId: m.authorId,
         authorKind: m.authorKind,
@@ -4294,7 +4308,7 @@ export class Broker extends EventEmitter {
     if (authorKind === 'agent') return message;
 
     const responders =
-      discussionOptions?.responders ?? this.pickResponders(room.agents, text, authorId);
+      discussionOptions?.responders ?? this.pickResponders(room, text, authorId);
     await this.runRoomAwareDiscussionThread(roomId, room, responders, message, discussionOptions);
     return message;
   }
@@ -4438,7 +4452,7 @@ export class Broker extends EventEmitter {
         if (!message) return;
         const room = getRoom(this.deps.db, roomId);
         if (!room) return;
-        const responders = this.pickResponders(room.agents, message.text, message.authorId);
+        const responders = this.pickResponders(room, message.text, message.authorId);
         if (responders.length === 0) {
           this.markQueuedMessagesDelivered(roomId, [message]);
           continue;
@@ -4450,24 +4464,47 @@ export class Broker extends EventEmitter {
     }
   }
 
-  private pickResponders(roomAgents: AgentId[], text: string, authorId: string): AgentId[] {
-    const mentions = parseAgentReferences(text);
+  private pickResponders(room: Room, text: string, authorId: string): AgentId[] {
+    const mentions = this.parseRoomAgentReferences(room, text);
     if (mentions.length > 0) {
-      return mentions.filter((m) => roomAgents.includes(m) && m !== authorId);
+      return mentions.filter((m) => room.agents.includes(m) && m !== authorId);
     }
-    return roomAgents.filter((a) => a !== authorId);
+    return room.agents.filter((a) => a !== authorId);
+  }
+
+  private parseRoomAgentReferences(room: Room, text: string): AgentId[] {
+    const aliases = new Map<AgentId, string[]>();
+    for (const agentId of room.agents) {
+      const profile =
+        room.agentProfiles.find((candidate) => candidate.id === agentId) ??
+        defaultAgentProfile(agentId);
+      aliases.set(agentId, [
+        agentId,
+        profile.providerId,
+        profile.displayName,
+        profile.displayName.replace(/\s+/g, '-'),
+      ]);
+    }
+    const dynamic = parseAgentReferencesForAliases(text, aliases);
+    const staticMatches = parseAgentReferences(text).flatMap((match) =>
+      room.agentProfiles
+        .filter((profile) => profile.providerId === match || profile.id === match)
+        .map((profile) => profile.id),
+    );
+    return [...new Set([...dynamic, ...staticMatches])];
   }
 
   private pickAgentHandoffResponders(
-    roomAgents: AgentId[],
+    room: Room,
     text: string,
     authorId: AgentId,
     allowedAgents?: Set<AgentId>,
   ): AgentId[] {
-    return parseAgentReferences(text).filter(
+    const references = this.parseRoomAgentReferences(room, text);
+    return references.filter(
       (agentId) =>
         agentId !== authorId &&
-        roomAgents.includes(agentId) &&
+        room.agents.includes(agentId) &&
         (allowedAgents ? allowedAgents.has(agentId) : true),
     );
   }
@@ -4479,7 +4516,7 @@ export class Broker extends EventEmitter {
   ): Promise<void> {
     const room = getRoom(this.deps.db, roomId);
     if (!room) return;
-    const responders = this.pickAgentHandoffResponders(room.agents, message.text, authorId);
+    const responders = this.pickAgentHandoffResponders(room, message.text, authorId);
     if (responders.length === 0) return;
     await this.runRoomAwareDiscussionThread(roomId, room, responders, message);
   }
@@ -4609,11 +4646,14 @@ export class Broker extends EventEmitter {
             this.emit('yoloStatusUpdated', this.yoloStatus(options.yoloState, true));
           }
           if (!result.message) continue;
-          const handoffs = this.pickAgentHandoffResponders(
-            handoffPool,
-            result.message.text,
-            agentId,
-          );
+          const handoffs = room
+            ? this.pickAgentHandoffResponders(
+                room,
+                result.message.text,
+                agentId,
+                new Set(handoffPool),
+              )
+            : [];
           for (const agentId of handoffs) {
             allowedAgents.add(agentId);
             if (!directedAgents.includes(agentId)) directedAgents.push(agentId);

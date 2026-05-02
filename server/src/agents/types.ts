@@ -2,7 +2,25 @@
 import type { PermissionGrant } from '../permissions.js';
 import type { AgentContextUsage } from '../context-usage.js';
 
-export type AgentId = 'claude' | 'codex' | 'gemini' | 'echo';
+export type ProviderId = 'claude' | 'codex' | 'gemini' | 'echo';
+export type AgentId = string;
+
+export interface AgentPersona {
+  id: string;
+  name: string;
+  category: string;
+  summary: string;
+  prompt: string;
+}
+
+export interface RoomAgentProfile {
+  id: AgentId;
+  providerId: ProviderId;
+  displayName: string;
+  personaId: string;
+  personaName: string;
+  personaSummary: string;
+}
 
 export interface AgentRunContext {
   permission?: PermissionGrant;

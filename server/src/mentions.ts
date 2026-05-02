@@ -18,6 +18,15 @@ export function parseMentions(text: string): AgentId[] {
   return Array.from(found);
 }
 
+export function parseMentionTokens(text: string): string[] {
+  const found = new Set<string>();
+  for (const match of text.matchAll(MENTION_RE)) {
+    const captured = match[1];
+    if (captured) found.add(captured.toLowerCase());
+  }
+  return Array.from(found);
+}
+
 const CODE_BLOCK_RE = /```[\s\S]*?```/g;
 const INLINE_CODE_RE = /`[^`\n]*`/g;
 const AGENT_NAME_RE = /\b(claude|codex|gemini|echo)\b/gi;
@@ -63,5 +72,35 @@ export function parseBareAgentNames(text: string): AgentId[] {
   const clean = scrubCode(text);
   const found = new Set<AgentId>();
   collectAgentMatches(clean, AGENT_NAME_RE, found);
+  return Array.from(found);
+}
+
+export function parseAgentReferencesForAliases(
+  text: string,
+  aliasesByAgent: Map<AgentId, string[]>,
+): AgentId[] {
+  const clean = normalizeHandoffMarkup(scrubCode(text)).toLowerCase();
+  const mentionTokens = new Set(parseMentionTokens(clean));
+  const found = new Set<AgentId>();
+  for (const [agentId, aliases] of aliasesByAgent) {
+    const normalizedAliases = aliases
+      .map((alias) => alias.trim().toLowerCase())
+      .filter((alias) => alias.length > 0);
+    if (normalizedAliases.some((alias) => mentionTokens.has(alias))) {
+      found.add(agentId);
+      continue;
+    }
+    if (
+      normalizedAliases.some((alias) => {
+        const escaped = alias.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        return new RegExp(
+          `(?:^|[.!?\\n]\\s*)${escaped}\\s*(?:(?::|,|;|--|-)(?=\\s*\\S)|\\s+(?:please|can|could|should|take|pick|verify|review|continue|next|your|you\\b))`,
+          'i',
+        ).test(clean);
+      })
+    ) {
+      found.add(agentId);
+    }
+  }
   return Array.from(found);
 }

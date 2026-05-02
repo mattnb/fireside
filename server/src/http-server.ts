@@ -17,6 +17,8 @@ import { pickFile, pickFolder } from './folder-picker.js';
 import { logger } from './logger.js';
 import type { ConversationArtifactFile } from './context-files.js';
 import { buildStatusSnapshot } from './status-snapshot.js';
+import { AGENT_PERSONAS, AGENT_PROVIDERS } from './agents/personas.js';
+import type { RoomAgentProfile } from './agents/types.js';
 
 export interface HttpDeps {
   db: Database;
@@ -80,6 +82,13 @@ export function buildHttpServer(deps: HttpDeps) {
     return listRooms(deps.db);
   });
 
+  app.get('/api/agents/catalog', async () => {
+    return {
+      providers: AGENT_PROVIDERS,
+      personas: AGENT_PERSONAS,
+    };
+  });
+
   app.get('/api/projects', async () => {
     return listProjects(deps.db);
   });
@@ -138,13 +147,31 @@ export function buildHttpServer(deps: HttpDeps) {
   );
 
   app.post<{
-    Body: { name: string; agents: AgentId[]; yoloAgents?: AgentId[]; projectId?: string };
+    Body: {
+      name: string;
+      agents?: AgentId[];
+      yoloAgents?: AgentId[];
+      agentProfiles?: RoomAgentProfile[];
+      projectId?: string;
+    };
   }>('/api/rooms', async (req, reply) => {
-    const { name, agents, yoloAgents, projectId } =
+    const { name, agents, yoloAgents, agentProfiles, projectId } =
       req.body ??
-      ({} as { name: string; agents: AgentId[]; yoloAgents?: AgentId[]; projectId?: string });
-    if (!name || !Array.isArray(agents)) {
-      return reply.code(400).send({ error: 'name and agents are required' });
+      ({} as {
+        name: string;
+        agents?: AgentId[];
+        yoloAgents?: AgentId[];
+        agentProfiles?: RoomAgentProfile[];
+        projectId?: string;
+      });
+    if (!name || (!Array.isArray(agents) && !Array.isArray(agentProfiles))) {
+      return reply.code(400).send({ error: 'name and agents or agentProfiles are required' });
+    }
+    if (agents !== undefined && !Array.isArray(agents)) {
+      return reply.code(400).send({ error: 'agents must be an array' });
+    }
+    if (agentProfiles !== undefined && !Array.isArray(agentProfiles)) {
+      return reply.code(400).send({ error: 'agentProfiles must be an array' });
     }
     if (yoloAgents !== undefined && !Array.isArray(yoloAgents)) {
       return reply.code(400).send({ error: 'yoloAgents must be an array' });
@@ -152,12 +179,14 @@ export function buildHttpServer(deps: HttpDeps) {
     if (projectId && !getProject(deps.db, projectId)) {
       return reply.code(400).send({ error: 'project not found' });
     }
-    return createRoom(deps.db, {
+    const createInput: Parameters<typeof createRoom>[1] = {
       name,
-      agents,
       yoloAgents: yoloAgents ?? [],
-      ...(projectId !== undefined ? { projectId } : {}),
-    });
+    };
+    if (agents !== undefined) createInput.agents = agents;
+    if (agentProfiles !== undefined) createInput.agentProfiles = agentProfiles;
+    if (projectId !== undefined) createInput.projectId = projectId;
+    return createRoom(deps.db, createInput);
   });
 
   app.get<{ Params: { id: string } }>('/api/rooms/:id', async (req, reply) => {
@@ -191,10 +220,16 @@ export function buildHttpServer(deps: HttpDeps) {
 
   app.patch<{
     Params: { id: string };
-    Body: { agents?: AgentId[]; yoloAgents?: AgentId[]; projectId?: string };
+    Body: { agents?: AgentId[]; yoloAgents?: AgentId[]; agentProfiles?: RoomAgentProfile[]; projectId?: string };
   }>('/api/rooms/:id', async (req, reply) => {
-    const { agents, yoloAgents, projectId } =
-      req.body ?? ({} as { agents?: AgentId[]; yoloAgents?: AgentId[]; projectId?: string });
+    const { agents, yoloAgents, agentProfiles, projectId } =
+      req.body ??
+      ({} as {
+        agents?: AgentId[];
+        yoloAgents?: AgentId[];
+        agentProfiles?: RoomAgentProfile[];
+        projectId?: string;
+      });
     let updated = getRoom(deps.db, req.params.id);
     if (!updated) return reply.code(404).send({ error: 'not found' });
     if (agents !== undefined && !Array.isArray(agents)) {
@@ -203,8 +238,11 @@ export function buildHttpServer(deps: HttpDeps) {
     if (yoloAgents !== undefined && !Array.isArray(yoloAgents)) {
       return reply.code(400).send({ error: 'yoloAgents must be an array' });
     }
-    if (agents !== undefined) {
-      updated = deps.broker.setAgents(req.params.id, agents, yoloAgents);
+    if (agentProfiles !== undefined && !Array.isArray(agentProfiles)) {
+      return reply.code(400).send({ error: 'agentProfiles must be an array' });
+    }
+    if (agents !== undefined || agentProfiles !== undefined) {
+      updated = deps.broker.setAgents(req.params.id, agents ?? [], yoloAgents, agentProfiles);
       if (!updated) return reply.code(404).send({ error: 'not found' });
     }
     if (projectId !== undefined) {

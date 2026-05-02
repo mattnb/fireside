@@ -69,6 +69,57 @@ describe('rooms repo', () => {
     expect(getRoom(db, room.id)!.agents).toEqual(['claude', 'codex', 'gemini']);
   });
 
+  it('stores multiple instances from the same provider with personas', () => {
+    const room = createRoom(db, {
+      name: 'specialists',
+      agentProfiles: [
+        {
+          id: 'claude-security',
+          providerId: 'claude',
+          displayName: 'Claude Security',
+          personaId: 'security-engineer',
+          personaName: 'Security Engineer',
+          personaSummary: '',
+        },
+        {
+          id: 'claude-reliability',
+          providerId: 'claude',
+          displayName: 'Claude Reliability',
+          personaId: 'reliability-engineer',
+          personaName: 'Reliability Engineer',
+          personaSummary: '',
+        },
+      ],
+      yoloAgents: ['claude-reliability'],
+    });
+
+    expect(room.agents).toEqual(['claude-security', 'claude-reliability']);
+    expect(room.yoloAgents).toEqual(['claude-reliability']);
+    expect(room.agentProfiles.map((profile) => profile.providerId)).toEqual(['claude', 'claude']);
+    expect(getRoom(db, room.id)?.agentProfiles.map((profile) => profile.personaId)).toEqual([
+      'security-engineer',
+      'reliability-engineer',
+    ]);
+  });
+
+  it('deduplicates exact legacy agent ids without collapsing provider instances', () => {
+    const room = createRoom(db, { name: 'legacy duplicates', agents: ['claude'] });
+    db.prepare(`UPDATE rooms SET agents_json = ?, yolo_agents_json = ? WHERE id = ?`).run(
+      JSON.stringify(['claude', 'codex', 'claude', 'codex', 'claude-security']),
+      JSON.stringify(['claude', 'claude', 'codex', 'claude-security', 'codex']),
+      room.id,
+    );
+
+    const fetched = getRoom(db, room.id)!;
+    expect(fetched.agents).toEqual(['claude', 'codex', 'claude-security']);
+    expect(fetched.yoloAgents).toEqual(['claude', 'codex', 'claude-security']);
+    expect(fetched.agentProfiles.map((profile) => profile.id)).toEqual([
+      'claude',
+      'codex',
+      'claude-security',
+    ]);
+  });
+
   it('setRoomAgents removes sessions for agents that are no longer in the room', () => {
     const room = createRoom(db, { name: 'general', agents: ['claude', 'codex'] });
     upsertCliSessionId(db, room.id, 'claude', 'session-claude');

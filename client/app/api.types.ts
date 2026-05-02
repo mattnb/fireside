@@ -1,4 +1,5 @@
 export type AgentId = 'claude' | 'codex' | 'gemini' | string;
+export type ProviderId = 'claude' | 'codex' | 'gemini' | 'echo' | string;
 export type AuthorKind = 'human' | 'agent' | 'system';
 export type TaskStatus = 'active' | 'paused' | 'blocked' | 'verifying' | 'done';
 export type TaskPhaseStatus = 'planned' | 'active' | 'blocked' | 'done';
@@ -75,12 +76,41 @@ export interface YoloStatus {
   reason?: string;
 }
 
+export interface AgentProviderCatalogItem {
+  id: ProviderId;
+  displayName: string;
+  summary: string;
+}
+
+export interface AgentPersona {
+  id: string;
+  name: string;
+  category: string;
+  summary: string;
+  prompt: string;
+}
+
+export interface AgentCatalog {
+  providers: AgentProviderCatalogItem[];
+  personas: AgentPersona[];
+}
+
+export interface RoomAgentProfile {
+  id: AgentId;
+  providerId: ProviderId;
+  displayName: string;
+  personaId: string;
+  personaName: string;
+  personaSummary: string;
+}
+
 export interface Room {
   id: string;
   projectId: string;
   name: string;
   agents: AgentId[];
   yoloAgents: AgentId[];
+  agentProfiles: RoomAgentProfile[];
   createdAt?: number;
   updatedAt?: number;
 }
@@ -140,6 +170,7 @@ export interface StatusSnapshotRoom {
   name: string;
   agents: AgentId[];
   yoloAgents: AgentId[];
+  agentProfiles: RoomAgentProfile[];
   createdAt: number;
   counts: {
     agents: number;

@@ -29,6 +29,8 @@ function fixtureFor(id: AgentId): string {
       return readFileSync(path.join(FIXTURE_DIR, 'gemini-headless.json'), 'utf8');
     case 'echo':
       throw new Error('echo is not part of provider conformance');
+    default:
+      throw new Error(`unknown provider fixture: ${id}`);
   }
 }
 

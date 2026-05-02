@@ -9,12 +9,17 @@ import {
   inject,
   signal,
   untracked,
+  viewChild,
 } from '@angular/core';
 
 import { FiresideApi } from './api.service';
+import { initOverviewRays } from './overview-rays';
 import {
   AgentId,
+  AgentCatalog,
   AgentContextUsage,
+  AgentPersona,
+  AgentProviderCatalogItem,
   AgentRun,
   AgentRunAction,
   AgentRunDetail,
@@ -26,7 +31,9 @@ import {
   MissionBriefing,
   MissionBriefingSummary,
   PermissionRequest,
+  ProviderId,
   Room,
+  RoomAgentProfile,
   Project,
   StatusSnapshot,
   StatusSnapshotAgentState,
@@ -46,6 +53,22 @@ import { VfxSmokeAndEmbersComponent } from './vfx-smoke-and-embers/vfx-smoke-and
 
 type TabId = 'chat' | 'mission' | 'briefings';
 type MissionViewId = 'overview' | 'board' | 'checklist' | 'roadmap' | 'plan' | 'evidence' | 'setup';
+type MissionTab = 'brief' | 'active';
+type AgentRailKind = 'running' | 'yolo' | 'idle' | 'ready' | 'waiting' | 'blocked' | 'stale';
+type OverviewAgentRow = {
+  agentId: AgentId;
+  status: string;
+  detail: string;
+  kind: AgentRailKind;
+  working: boolean;
+  idle: boolean;
+};
+type OverviewPhaseMarker = {
+  id: string;
+  title: string;
+  isDone: boolean;
+  isCurrent: boolean;
+};
 type ChatTimelineItem = {
   id: string;
   kind: 'message' | 'permission' | 'activity';
@@ -175,8 +198,30 @@ type MissionActionDefinition = {
   label: string;
   summary: string;
 };
+type DraftRoomAgent = {
+  clientId: string;
+  providerId: ProviderId;
+  personaId: string;
+  yolo: boolean;
+};
 
 const ACTIVE_TASK_STATUSES: TaskStatus[] = ['active', 'blocked', 'verifying'];
+const DEFAULT_AGENT_CATALOG: AgentCatalog = {
+  providers: [
+    { id: 'claude', displayName: 'Claude', summary: 'Claude Code provider adapter.' },
+    { id: 'codex', displayName: 'Codex', summary: 'OpenAI Codex CLI provider adapter.' },
+    { id: 'gemini', displayName: 'Gemini', summary: 'Gemini CLI provider adapter.' },
+  ],
+  personas: [
+    {
+      id: 'generalist',
+      name: 'Generalist',
+      category: 'default',
+      summary: 'No special lens; collaborate normally across planning, execution, and review.',
+      prompt: '',
+    },
+  ],
+};
 
 @Component({
   selector: 'fs-root',
@@ -187,14 +232,20 @@ const ACTIVE_TASK_STATUSES: TaskStatus[] = ['active', 'blocked', 'verifying'];
 })
 export class App implements OnDestroy {
   @ViewChild('messagesList') private messagesList?: ElementRef<HTMLOListElement>;
+  private readonly overviewRaysCanvas =
+    viewChild<ElementRef<HTMLCanvasElement>>('overviewRaysCanvas');
+  private readonly overviewAttnCard = viewChild<ElementRef<HTMLElement>>('overviewAttnCard');
+  private overviewRaysTeardown: (() => void) | null = null;
 
   private readonly api = inject(FiresideApi);
   private readonly ws = inject(FiresideWs);
   private scrollFrame: number | null = null;
   private deleteConfirmTimer: number | null = null;
+  private draftAgentCounter = 0;
   private readonly clockTimer = window.setInterval(() => this.now.set(Date.now()), 1000);
 
   readonly agentChoices: AgentId[] = ['claude', 'codex', 'gemini'];
+  readonly agentCatalog = signal<AgentCatalog>(DEFAULT_AGENT_CATALOG);
   readonly tabs: Array<{ id: TabId; label: string }> = [
     { id: 'chat', label: 'Chat' },
     { id: 'mission', label: 'Mission Control' },
@@ -219,16 +270,15 @@ export class App implements OnDestroy {
 
   readonly selectedTab = signal<TabId>('chat');
   readonly selectedMissionView = signal<MissionViewId>('overview');
+  readonly missionTab = signal<MissionTab>('active');
   readonly now = signal(Date.now());
   readonly authorName = signal(localStorage.getItem('fireside.author') || 'human');
   readonly creatingProject = signal(false);
   readonly creatingMissionProjectId = signal<string | null>(null);
-  readonly newRoomAgents = signal<AgentId[]>([...this.agentChoices]);
-  readonly newRoomYoloAgents = signal<AgentId[]>([]);
+  readonly newRoomAgentRows = signal<DraftRoomAgent[]>(this.defaultDraftRoomAgents());
   readonly deletingRoomId = signal<string | null>(null);
   readonly editingAgents = signal(false);
-  readonly editRoomAgents = signal<AgentId[]>([]);
-  readonly editRoomYoloAgents = signal<AgentId[]>([]);
+  readonly editRoomAgentRows = signal<DraftRoomAgent[]>([]);
   readonly compactAgent = signal<AgentId | null>(null);
   readonly compactingAgent = signal<AgentId | null>(null);
   readonly compactError = signal('');
@@ -353,6 +403,8 @@ export class App implements OnDestroy {
   );
   readonly roomAgents = computed(() => this.selectedRoom()?.agents ?? []);
   readonly roomYoloAgents = computed(() => this.selectedRoom()?.yoloAgents ?? []);
+  readonly agentProviders = computed(() => this.agentCatalog().providers);
+  readonly agentPersonas = computed(() => this.agentCatalog().personas);
   readonly latestContextUsageByAgent = computed(() => {
     const usageByAgent = new Map<AgentId, AgentContextUsage>();
     const actions = [...this.runActions()].sort((a, b) => a.createdAt - b.createdAt);
@@ -406,6 +458,93 @@ export class App implements OnDestroy {
   readonly missionGraphLanes = computed(() => this.buildMissionGraphLanes());
   readonly missionGraphSummary = computed(() => this.buildMissionGraphSummary());
   readonly missionBoardSwimlanes = computed(() => this.buildMissionBoardSwimlanes());
+
+  // === Overview hero (v39) — derived data for the tabbed mission card,
+  // attention frame, and the three stat tiles to its right.
+  readonly phaseProgressLabel = computed(() => {
+    const control = this.taskControl();
+    const phases = control?.phases ?? [];
+    if (phases.length === 0) return '— of —';
+    const currentId = control?.currentPhase?.id;
+    const idx = phases.findIndex((p) => p.id === currentId);
+    const ord = idx >= 0 ? idx + 1 : 0;
+    return `${this.pad2(ord)} of ${this.pad2(phases.length)}`;
+  });
+  readonly activeTaskStartedLabel = computed(() => {
+    const task = this.activeTask();
+    if (!task) return '—';
+    return this.formatRelativeAgo(task.createdAt);
+  });
+  readonly activeTaskRepoPath = computed(() => {
+    const task = this.activeTask();
+    return task?.repoPath || 'not set';
+  });
+  readonly currentWorkItem = computed(() => {
+    return this.missionActionWorkItems().find((item) => item.status === 'open') ?? null;
+  });
+  readonly overviewBlockerItems = computed(() =>
+    this.attentionItems().filter((item) => item.tone === 'danger' || item.tone === 'warn'),
+  );
+  readonly overviewUpNextItems = computed(() => {
+    const skipIds = new Set(this.attentionItems().map((item) => item.id));
+    return this.missionActionWorkItems()
+      .filter((item) => item.status === 'open' || item.status === 'blocked')
+      .filter((item) => !skipIds.has(`work:${item.id}`))
+      .slice(0, 3);
+  });
+  readonly overviewAgentRows = computed<OverviewAgentRow[]>(() => {
+    const room = this.selectedRoom();
+    if (!room) return [];
+    return room.agents.map((agentId) => {
+      const kind = this.agentRailKind(agentId);
+      return {
+        agentId,
+        status: this.agentRailStatus(agentId),
+        detail: this.agentRailDetail(agentId),
+        kind,
+        working: kind === 'running',
+        idle: kind === 'idle' || kind === 'ready' || kind === 'waiting' || kind === 'yolo',
+      };
+    });
+  });
+  readonly overviewWorkingCount = computed(
+    () => this.overviewAgentRows().filter((row) => row.working).length,
+  );
+  readonly overviewIdleCount = computed(
+    () => this.overviewAgentRows().filter((row) => row.idle).length,
+  );
+  readonly overviewRuntimeLabel = computed(() => {
+    const rows = this.activeSessionRows();
+    if (rows.length === 0) return '—';
+    return rows[0]?.runtime ?? '—';
+  });
+  readonly overviewTokensLabel = computed(() => {
+    const rows = this.activeSessionRows();
+    if (rows.length === 0) return '0';
+    return rows[0]?.tokens ?? '0';
+  });
+  readonly overviewProgressPercent = computed(() => {
+    const summary = this.missionGraphSummary();
+    if (!summary || summary.itemsTotal === 0) return 0;
+    return Math.round((summary.itemsDone / summary.itemsTotal) * 100);
+  });
+  readonly overviewProgressDoneLabel = computed(() => {
+    const summary = this.missionGraphSummary();
+    if (!summary) return '— / —';
+    return `${this.pad2(summary.itemsDone)} / ${this.pad2(summary.itemsTotal)} items`;
+  });
+  readonly overviewPhaseMarkers = computed<OverviewPhaseMarker[]>(() => {
+    const control = this.taskControl();
+    const phases = control?.phases ?? [];
+    const currentId = control?.currentPhase?.id;
+    const currentIdx = phases.findIndex((p) => p.id === currentId);
+    return phases.map((phase, i) => ({
+      id: phase.id,
+      title: phase.title,
+      isDone: currentIdx >= 0 && i < currentIdx,
+      isCurrent: phase.id === currentId,
+    }));
+  });
   readonly taskInspectorCard = computed(() =>
     this.findMissionGraphCard(this.taskInspectorItemId()),
   );
@@ -490,6 +629,7 @@ export class App implements OnDestroy {
 
   constructor() {
     this.ws.connect();
+    this.loadAgentCatalog();
     this.loadProjects();
     this.loadRooms();
     this.loadStateSnapshot();
@@ -502,6 +642,29 @@ export class App implements OnDestroy {
         this.loadRoomDetail(roomId);
         this.ws.subscribe(roomId);
       });
+    });
+
+    // Initialize / tear down the WebGL god-rays renderer whenever the overview
+    // canvas + attention card mount or unmount (e.g. when the user navigates to
+    // a different mission view, the @if block destroys the canvas; the
+    // viewChild signals go undefined and the effect re-runs with cleanup).
+    effect(() => {
+      const canvasRef = this.overviewRaysCanvas();
+      const cardRef = this.overviewAttnCard();
+
+      if (this.overviewRaysTeardown) {
+        this.overviewRaysTeardown();
+        this.overviewRaysTeardown = null;
+      }
+
+      if (canvasRef && cardRef) {
+        untracked(() => {
+          this.overviewRaysTeardown = initOverviewRays(
+            canvasRef.nativeElement,
+            cardRef.nativeElement,
+          );
+        });
+      }
     });
 
     this.ws.stream$.subscribe((event) => {
@@ -599,8 +762,7 @@ export class App implements OnDestroy {
         this.rooms.update((rooms) => this.upsert(rooms, event.room));
         this.syncMissionActionTargets();
         if (event.room.id === roomId && this.editingAgents()) {
-          this.editRoomAgents.set(event.room.agents);
-          this.editRoomYoloAgents.set(event.room.yoloAgents ?? []);
+          this.editRoomAgentRows.set(this.draftRowsFromRoom(event.room));
         }
       }
       if (event.type === 'roomDeleted') {
@@ -614,6 +776,10 @@ export class App implements OnDestroy {
     window.clearInterval(this.clockTimer);
     if (this.scrollFrame !== null) cancelAnimationFrame(this.scrollFrame);
     if (this.deleteConfirmTimer !== null) window.clearTimeout(this.deleteConfirmTimer);
+    if (this.overviewRaysTeardown) {
+      this.overviewRaysTeardown();
+      this.overviewRaysTeardown = null;
+    }
   }
 
   selectRoom(roomId: string): void {
@@ -679,64 +845,209 @@ export class App implements OnDestroy {
 
   cancelCreateRoom(input: HTMLInputElement): void {
     input.value = '';
-    this.newRoomAgents.set([...this.agentChoices]);
-    this.newRoomYoloAgents.set([]);
+    this.newRoomAgentRows.set(this.defaultDraftRoomAgents());
     this.creatingMissionProjectId.set(null);
   }
 
-  isNewRoomAgentSelected(agentId: AgentId): boolean {
-    return this.newRoomAgents().includes(agentId);
+  addNewRoomAgent(): void {
+    this.newRoomAgentRows.update((rows) => [...rows, this.createDraftAgent('claude')]);
   }
 
-  toggleNewRoomAgent(agentId: AgentId, event: Event): void {
-    const checked = event.target instanceof HTMLInputElement ? event.target.checked : false;
-    this.newRoomAgents.update((agents) => {
-      if (checked) return agents.includes(agentId) ? agents : [...agents, agentId];
-      return agents.filter((agent) => agent !== agentId);
-    });
-    if (!checked) {
-      this.newRoomYoloAgents.update((agents) => agents.filter((agent) => agent !== agentId));
-    }
+  removeNewRoomAgent(clientId: string): void {
+    this.newRoomAgentRows.update((rows) => rows.filter((row) => row.clientId !== clientId));
   }
 
-  isNewRoomYoloAgentSelected(agentId: AgentId): boolean {
-    return this.newRoomYoloAgents().includes(agentId);
+  setNewRoomAgentProvider(clientId: string, event: Event): void {
+    const providerId = event.target instanceof HTMLSelectElement ? event.target.value : '';
+    if (!providerId) return;
+    this.newRoomAgentRows.update((rows) =>
+      rows.map((row) => (row.clientId === clientId ? { ...row, providerId } : row)),
+    );
   }
 
-  toggleNewRoomYoloAgent(agentId: AgentId, event: Event): void {
-    const checked = event.target instanceof HTMLInputElement ? event.target.checked : false;
-    this.newRoomYoloAgents.update((agents) => {
-      if (checked) return agents.includes(agentId) ? agents : [...agents, agentId];
-      return agents.filter((agent) => agent !== agentId);
-    });
-    if (checked && !this.newRoomAgents().includes(agentId)) {
-      this.newRoomAgents.update((agents) => [...agents, agentId]);
-    }
+  setNewRoomAgentPersona(clientId: string, event: Event): void {
+    const personaId = event.target instanceof HTMLSelectElement ? event.target.value : '';
+    if (!personaId) return;
+    this.newRoomAgentRows.update((rows) =>
+      rows.map((row) => (row.clientId === clientId ? { ...row, personaId } : row)),
+    );
+  }
+
+  toggleNewRoomAgentYolo(clientId: string, event: Event): void {
+    const yolo = event.target instanceof HTMLInputElement ? event.target.checked : false;
+    this.newRoomAgentRows.update((rows) =>
+      rows.map((row) => (row.clientId === clientId ? { ...row, yolo } : row)),
+    );
+  }
+
+  addEditRoomAgent(): void {
+    this.editRoomAgentRows.update((rows) => [...rows, this.createDraftAgent('claude')]);
+  }
+
+  removeEditRoomAgent(clientId: string): void {
+    this.editRoomAgentRows.update((rows) => rows.filter((row) => row.clientId !== clientId));
+  }
+
+  setEditRoomAgentProvider(clientId: string, event: Event): void {
+    const providerId = event.target instanceof HTMLSelectElement ? event.target.value : '';
+    if (!providerId) return;
+    this.editRoomAgentRows.update((rows) =>
+      rows.map((row) => (row.clientId === clientId ? { ...row, providerId } : row)),
+    );
+  }
+
+  setEditRoomAgentPersona(clientId: string, event: Event): void {
+    const personaId = event.target instanceof HTMLSelectElement ? event.target.value : '';
+    if (!personaId) return;
+    this.editRoomAgentRows.update((rows) =>
+      rows.map((row) => (row.clientId === clientId ? { ...row, personaId } : row)),
+    );
+  }
+
+  toggleEditRoomAgentYolo(clientId: string, event: Event): void {
+    const yolo = event.target instanceof HTMLInputElement ? event.target.checked : false;
+    this.editRoomAgentRows.update((rows) =>
+      rows.map((row) => (row.clientId === clientId ? { ...row, yolo } : row)),
+    );
+  }
+
+  draftProviderLabel(providerId: ProviderId): string {
+    return (
+      this.agentProviders().find((provider) => provider.id === providerId)?.displayName ??
+      providerId
+    );
+  }
+
+  draftPersonaLabel(personaId: string): string {
+    return this.personaForId(personaId).name;
+  }
+
+  draftAgentPreview(row: DraftRoomAgent): string {
+    const persona = this.personaForId(row.personaId);
+    return persona.id === 'generalist'
+      ? this.draftProviderLabel(row.providerId)
+      : `${this.draftProviderLabel(row.providerId)} ${persona.name}`;
+  }
+
+  draftProviderAvatarClass(row: DraftRoomAgent): string {
+    return `avatar avatar--sm avatar--${row.providerId}`;
   }
 
   createRoom(input: HTMLInputElement): void {
     const name = input.value.trim();
     const projectId = this.creatingMissionProjectId() ?? this.selectedProjectId();
     if (!name || !projectId) return;
+    const agentProfiles = this.buildRoomAgentProfiles(this.newRoomAgentRows());
+    const agents = agentProfiles.map((profile) => profile.id);
+    if (agents.length === 0) return;
     this.api.rooms
       .create({
         projectId,
         name,
-        agents: this.newRoomAgents(),
-        yoloAgents: this.newRoomYoloAgents().filter((agent) =>
-          this.newRoomAgents().includes(agent),
-        ),
+        agents,
+        yoloAgents: this.yoloAgentsFromDraftRows(this.newRoomAgentRows(), agentProfiles),
+        agentProfiles,
       })
       .subscribe((room) => {
         this.rooms.update((rooms) => this.upsert(rooms, room));
         this.selectedProjectId.set(room.projectId);
         this.selectedRoomId.set(room.id);
         input.value = '';
-        this.newRoomAgents.set([...this.agentChoices]);
-        this.newRoomYoloAgents.set([]);
+        this.newRoomAgentRows.set(this.defaultDraftRoomAgents());
         this.creatingMissionProjectId.set(null);
         this.loadStateSnapshot();
       });
+  }
+
+  private createDraftAgent(providerId: ProviderId, personaId = 'generalist', yolo = false): DraftRoomAgent {
+    this.draftAgentCounter += 1;
+    return {
+      clientId: `draft-${Date.now()}-${this.draftAgentCounter}`,
+      providerId,
+      personaId,
+      yolo,
+    };
+  }
+
+  private defaultDraftRoomAgents(): DraftRoomAgent[] {
+    return this.agentChoices.map((agentId) => this.createDraftAgent(agentId));
+  }
+
+  private personaForId(personaId: string): AgentPersona {
+    return (
+      this.agentPersonas().find((persona) => persona.id === personaId) ??
+      DEFAULT_AGENT_CATALOG.personas[0]!
+    );
+  }
+
+  private providerForId(providerId: ProviderId): AgentProviderCatalogItem {
+    return (
+      this.agentProviders().find((provider) => provider.id === providerId) ?? {
+        id: providerId,
+        displayName: providerId,
+        summary: '',
+      }
+    );
+  }
+
+  private buildRoomAgentProfiles(rows: DraftRoomAgent[]): RoomAgentProfile[] {
+    const seen = new Set<string>();
+    return rows.map((row) => {
+      const provider = this.providerForId(row.providerId);
+      const persona = this.personaForId(row.personaId);
+      const base =
+        persona.id === 'generalist'
+          ? row.providerId
+          : `${row.providerId}-${persona.id.replace(/-(engineer|reviewer|specialist|expert)$/i, '')}`;
+      const id = this.uniqueAgentId(base, seen);
+      return {
+        id,
+        providerId: row.providerId,
+        displayName:
+          persona.id === 'generalist' ? provider.displayName : `${provider.displayName} ${persona.name}`,
+        personaId: persona.id,
+        personaName: persona.name,
+        personaSummary: persona.summary,
+      };
+    });
+  }
+
+  private uniqueAgentId(base: string, seen: Set<string>): AgentId {
+    const cleanBase =
+      base
+        .trim()
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, '-')
+        .replace(/^-+|-+$/g, '')
+        .slice(0, 64) || 'agent';
+    let candidate = cleanBase;
+    let counter = 2;
+    while (seen.has(candidate)) {
+      candidate = `${cleanBase}-${counter}`;
+      counter += 1;
+    }
+    seen.add(candidate);
+    return candidate;
+  }
+
+  private yoloAgentsFromDraftRows(
+    rows: DraftRoomAgent[],
+    profiles: RoomAgentProfile[],
+  ): AgentId[] {
+    return rows
+      .map((row, index) => (row.yolo ? profiles[index]?.id : ''))
+      .filter((agentId): agentId is AgentId => Boolean(agentId));
+  }
+
+  private draftRowsFromRoom(room: Room): DraftRoomAgent[] {
+    return room.agents.map((agentId) => {
+      const profile = this.roomAgentProfile(room, agentId);
+      return this.createDraftAgent(
+        profile.providerId,
+        profile.personaId || 'generalist',
+        room.yoloAgents.includes(agentId),
+      );
+    });
   }
 
   deleteRoom(room: Room, event: Event): void {
@@ -771,60 +1082,75 @@ export class App implements OnDestroy {
   openEditAgents(): void {
     const room = this.selectedRoom();
     if (!room) return;
-    this.editRoomAgents.set([...room.agents]);
-    this.editRoomYoloAgents.set([...(room.yoloAgents ?? [])]);
+    this.editRoomAgentRows.set(this.draftRowsFromRoom(room));
     this.editingAgents.set(true);
   }
 
   cancelEditAgents(): void {
     this.editingAgents.set(false);
-    this.editRoomAgents.set([]);
-    this.editRoomYoloAgents.set([]);
-  }
-
-  isEditAgentSelected(agentId: AgentId): boolean {
-    return this.editRoomAgents().includes(agentId);
-  }
-
-  toggleEditAgent(agentId: AgentId, event: Event): void {
-    const checked = event.target instanceof HTMLInputElement ? event.target.checked : false;
-    this.editRoomAgents.update((agents) => {
-      if (checked) return agents.includes(agentId) ? agents : [...agents, agentId];
-      return agents.filter((agent) => agent !== agentId);
-    });
-    if (!checked) {
-      this.editRoomYoloAgents.update((agents) => agents.filter((agent) => agent !== agentId));
-    }
-  }
-
-  isEditYoloAgentSelected(agentId: AgentId): boolean {
-    return this.editRoomYoloAgents().includes(agentId);
-  }
-
-  toggleEditYoloAgent(agentId: AgentId, event: Event): void {
-    const checked = event.target instanceof HTMLInputElement ? event.target.checked : false;
-    this.editRoomYoloAgents.update((agents) => {
-      if (checked) return agents.includes(agentId) ? agents : [...agents, agentId];
-      return agents.filter((agent) => agent !== agentId);
-    });
-    if (checked && !this.editRoomAgents().includes(agentId)) {
-      this.editRoomAgents.update((agents) => [...agents, agentId]);
-    }
+    this.editRoomAgentRows.set([]);
   }
 
   saveEditAgents(): void {
     const room = this.selectedRoom();
     if (!room) return;
-    const agents = this.editRoomAgents();
+    const agentProfiles = this.buildRoomAgentProfiles(this.editRoomAgentRows());
+    const agents = agentProfiles.map((profile) => profile.id);
     this.api.rooms
       .update(room.id, {
         agents,
-        yoloAgents: this.editRoomYoloAgents().filter((agent) => agents.includes(agent)),
+        yoloAgents: this.yoloAgentsFromDraftRows(this.editRoomAgentRows(), agentProfiles),
+        agentProfiles,
       })
       .subscribe((updated) => {
         this.rooms.update((rooms) => this.upsert(rooms, updated));
         this.editingAgents.set(false);
       });
+  }
+
+  roomAgentProfile(room: Room | null | undefined, agentId: AgentId): RoomAgentProfile {
+    const providerId = this.agentProviderIdFromId(agentId);
+    const provider = this.providerForId(providerId);
+    const generalist = this.personaForId('generalist');
+    return (
+      room?.agentProfiles?.find((profile) => profile.id === agentId) ?? {
+        id: agentId,
+        providerId,
+        displayName: agentId === providerId ? provider.displayName : agentId,
+        personaId: generalist.id,
+        personaName: generalist.name,
+        personaSummary: generalist.summary,
+      }
+    );
+  }
+
+  agentProfile(agentId: AgentId): RoomAgentProfile {
+    return this.roomAgentProfile(this.selectedRoom(), agentId);
+  }
+
+  agentProviderId(agentId: AgentId): ProviderId {
+    return this.agentProfile(agentId).providerId;
+  }
+
+  agentDisplayName(agentId: AgentId): string {
+    return this.agentProfile(agentId).displayName;
+  }
+
+  agentPersonaName(agentId: AgentId): string {
+    return this.agentProfile(agentId).personaName;
+  }
+
+  avatarClass(agentId: AgentId, size: 'sm' | 'tiny' | '' = ''): string {
+    const sizeClass = size ? ` avatar--${size}` : '';
+    return `avatar${sizeClass} avatar--${this.agentProviderId(agentId)}`;
+  }
+
+  private agentProviderIdFromId(agentId: AgentId): ProviderId {
+    const lower = agentId.toLowerCase();
+    if (lower === 'claude' || lower.startsWith('claude-')) return 'claude';
+    if (lower === 'codex' || lower.startsWith('codex-')) return 'codex';
+    if (lower === 'gemini' || lower.startsWith('gemini-')) return 'gemini';
+    return lower;
   }
 
   isAgentRunning(agentId: string): boolean {
@@ -851,7 +1177,8 @@ export class App implements OnDestroy {
   }
 
   canCompactAgent(agentId: AgentId): boolean {
-    return agentId === 'claude' || agentId === 'codex';
+    const providerId = this.agentProviderId(agentId);
+    return providerId === 'claude' || providerId === 'codex';
   }
 
   agentWorkflowState(agentId: AgentId): StatusSnapshotAgentState | null {
@@ -874,9 +1201,7 @@ export class App implements OnDestroy {
     return state?.detail ?? this.agentRailStatus(agentId);
   }
 
-  agentRailKind(
-    agentId: AgentId,
-  ): 'running' | 'yolo' | 'idle' | 'ready' | 'waiting' | 'blocked' | 'stale' {
+  agentRailKind(agentId: AgentId): AgentRailKind {
     const state = this.agentWorkflowState(agentId);
     if (state?.state === 'working') return 'running';
     if (state?.state === 'stale') return 'stale';
@@ -908,10 +1233,11 @@ export class App implements OnDestroy {
   }
 
   compactAgentDescription(agentId: AgentId): string {
-    if (agentId === 'claude') {
+    const providerId = this.agentProviderId(agentId);
+    if (providerId === 'claude') {
       return 'Manual compaction asks Claude Code to compact its stored CLI session context.';
     }
-    if (agentId === 'codex') {
+    if (providerId === 'codex') {
       return 'Manual compaction asks Codex CLI to compact its stored CLI session context.';
     }
     return 'Manual compaction is not configured for this provider yet.';
@@ -981,6 +1307,19 @@ export class App implements OnDestroy {
       if (!this.selectedProjectId() && projects[0]) {
         this.selectedProjectId.set(projects[0].id);
       }
+    });
+  }
+
+  private loadAgentCatalog(): void {
+    this.api.agents.catalog().subscribe({
+      next: (catalog) => {
+        if (catalog.providers.length > 0 && catalog.personas.length > 0) {
+          this.agentCatalog.set(catalog);
+        }
+      },
+      error: () => {
+        this.agentCatalog.set(DEFAULT_AGENT_CATALOG);
+      },
     });
   }
 
@@ -1995,6 +2334,22 @@ export class App implements OnDestroy {
     return new Date(timestamp).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
   }
 
+  formatRelativeAgo(timestamp: number | undefined): string {
+    if (!timestamp) return 'unknown';
+    const delta = this.now() - timestamp;
+    if (delta < 0) return 'just now';
+    if (delta < 5_000) return 'just now';
+    return `${this.formatDurationMs(delta)} ago`;
+  }
+
+  pad2(value: number): string {
+    return String(Math.max(0, Math.floor(value))).padStart(2, '0');
+  }
+
+  selectMissionTab(tab: MissionTab): void {
+    this.missionTab.set(tab);
+  }
+
   formatDateTime(timestamp: number | undefined | null): string {
     if (!timestamp) return 'unknown';
     return new Date(timestamp).toLocaleString();
@@ -2826,7 +3181,7 @@ export class App implements OnDestroy {
       return agents.length === 1 ? 'team: 1 agent' : `team: ${agents.length} agents`;
     }
     if (agents.length === 0) return 'no agents selected';
-    return agents.join(', ');
+    return agents.map((agent) => this.agentDisplayName(agent)).join(', ');
   }
 
   canPostMissionAction(): boolean {
@@ -2915,7 +3270,7 @@ export class App implements OnDestroy {
   }
 
   isAgentOwner(ownerAgentId: string): boolean {
-    return this.agentChoices.includes(ownerAgentId);
+    return this.roomAgents().includes(ownerAgentId);
   }
 
   isChecklistItemCollapsed(item: TaskChecklistItem): boolean {

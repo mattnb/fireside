@@ -1,5 +1,5 @@
 import type { Database } from 'better-sqlite3';
-import type { AgentId } from './agents/types.js';
+import type { AgentId, RoomAgentProfile } from './agents/types.js';
 import type { AgentContextUsage } from './context-usage.js';
 import { listAllAgentRunsForRoom, type AgentRun, type AgentRunStatus } from './repos/agent-runs.js';
 import { listActiveAgentJobsForRoom, type AgentJob } from './repos/agent-jobs.js';
@@ -203,6 +203,7 @@ export interface StatusSnapshotRoom {
   name: string;
   agents: AgentId[];
   yoloAgents: AgentId[];
+  agentProfiles: RoomAgentProfile[];
   createdAt: number;
   counts: StatusSnapshotRoomCounts;
   activeMissions: StatusSnapshotTask[];
@@ -721,6 +722,7 @@ export function buildStatusSnapshot(input: BuildStatusSnapshotInput): StatusSnap
       name: room.name,
       agents: room.agents,
       yoloAgents: room.yoloAgents,
+      agentProfiles: room.agentProfiles,
       createdAt: room.createdAt,
       counts,
       activeMissions: roomActiveTasks,

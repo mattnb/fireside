@@ -1,5 +1,7 @@
 // server/src/transcript.ts
 import type { AgentId } from './agents/types.js';
+import type { RoomAgentProfile } from './agents/types.js';
+import { getAgentPersona } from './agents/personas.js';
 import type { PermissionGrant } from './permissions.js';
 import type { AuthorKind } from './repos/messages.js';
 import type { TaskPromptContext } from './task-summary.js';
@@ -12,8 +14,10 @@ export interface HistoryEntry {
 
 export interface BuildTurnOptions {
   agentId: AgentId;
+  agentProfile?: RoomAgentProfile;
   roomName: string;
   roomAgents?: AgentId[];
+  roomAgentProfiles?: RoomAgentProfile[];
   history: HistoryEntry[];
   newMessage: HistoryEntry;
   maxHistory?: number;
@@ -104,6 +108,34 @@ function formatLine(agentId: AgentId, entry: HistoryEntry): string {
   const isSelf = entry.authorKind === 'agent' && entry.authorId === agentId;
   const author = isSelf ? `${entry.authorId} (you)` : entry.authorId;
   return `${author}: ${entry.text}`;
+}
+
+function formatAgentProfile(profile: RoomAgentProfile | undefined, agentId: AgentId): string[] {
+  if (!profile) return [`Agent identity: respond as "${agentId}".`];
+  const persona = getAgentPersona(profile.personaId);
+  const lines = [
+    `Agent identity: respond as "${profile.displayName}" in chat. Your durable agent id is "${profile.id}" and your provider adapter is "${profile.providerId}".`,
+    `Persona: ${persona.name}. ${persona.summary}`,
+  ];
+  if (persona.prompt) {
+    lines.push(
+      `Persona lens: ${persona.prompt}`,
+      `Use this lens to prioritize and critique work, but do not let it override Fireside's mission, permission, collaboration, or state-update protocols.`,
+    );
+  }
+  return lines;
+}
+
+function formatRoomProfiles(profiles: RoomAgentProfile[] | undefined): string[] {
+  if (!profiles || profiles.length === 0) return [];
+  return [
+    `Room roster: ${profiles
+      .map(
+        (profile) =>
+          `${profile.displayName} [id=${profile.id}, provider=${profile.providerId}, persona=${profile.personaName}]`,
+      )
+      .join('; ')}.`,
+  ];
 }
 
 function truncateMiddle(text: string, maxChars: number): string {
@@ -475,6 +507,8 @@ function renderPrompt(
     opts.permission
       ? `After completing or attempting the approved operation, return only the literal text of the message ${opts.agentId} should send next.`
       : `Return only the literal text of the message ${opts.agentId} should send next. If there is nothing useful to add, return an empty string.`,
+    ...formatAgentProfile(opts.agentProfile, opts.agentId),
+    ...formatRoomProfiles(opts.roomAgentProfiles),
     handoffLine,
     ...permissionLines,
     ...collaborationLines,

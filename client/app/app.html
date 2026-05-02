@@ -100,36 +100,59 @@
             aria-label="Mission name"
           />
           <div class="room-create__agent-head" aria-hidden="true">
-            <span>agent</span>
+            <span>provider</span>
+            <span>persona</span>
             <span>yolo</span>
           </div>
           <div class="room-create__agents" aria-label="Agents">
-            @for (agent of agentChoices; track agent) {
+            @for (row of newRoomAgentRows(); track row.clientId) {
             <article class="room-agent-choice">
-              <label class="room-agent-listen">
-                <input
-                  type="checkbox"
-                  [checked]="isNewRoomAgentSelected(agent)"
-                  (change)="toggleNewRoomAgent(agent, $event)"
-                />
-                <span
-                  class="avatar avatar--sm"
-                  [class]="'avatar avatar--sm avatar--' + agent"
-                ></span>
-                <span>{{ agent }}</span>
+              <label class="room-agent-provider">
+                <span [class]="draftProviderAvatarClass(row)"></span>
+                <select
+                  [value]="row.providerId"
+                  aria-label="Agent provider"
+                  (change)="setNewRoomAgentProvider(row.clientId, $event)"
+                >
+                  @for (provider of agentProviders(); track provider.id) {
+                  <option [value]="provider.id">{{ provider.displayName }}</option>
+                  }
+                </select>
               </label>
-              <span class="room-agent-yolo" title="Participates in YOLO rounds">
+              <label class="room-agent-persona">
+                <select
+                  [value]="row.personaId"
+                  aria-label="Agent persona"
+                  (change)="setNewRoomAgentPersona(row.clientId, $event)"
+                >
+                  @for (persona of agentPersonas(); track persona.id) {
+                  <option [value]="persona.id">{{ persona.name }}</option>
+                  }
+                </select>
+              </label>
+              <label class="room-agent-yolo" title="Participates in YOLO rounds">
                 <input
                   type="checkbox"
-                  [checked]="isNewRoomYoloAgentSelected(agent)"
-                  (change)="toggleNewRoomYoloAgent(agent, $event)"
+                  [checked]="row.yolo"
+                  (change)="toggleNewRoomAgentYolo(row.clientId, $event)"
                 />
                 yolo
-              </span>
+              </label>
+              <button
+                class="room-agent-remove"
+                type="button"
+                title="Remove agent"
+                (click)="removeNewRoomAgent(row.clientId)"
+              >
+                x
+              </button>
             </article>
             }
           </div>
           <div class="room-create__actions">
+            <button class="room-create__cancel" type="button" (click)="addNewRoomAgent()">
+              add agent
+            </button>
             <button class="room-create__submit" type="submit">create mission</button>
             <button class="room-create__cancel" type="button" (click)="cancelCreateRoom(roomName)">
               cancel
@@ -195,10 +218,10 @@
         <div [class]="'rail-agent rail-agent--' + agent + ' rail-agent--idle rail-agent--no-usage'">
           <span
             class="avatar avatar--sm rail-agent__glyph"
-            [class]="'avatar avatar--sm avatar--' + agent + ' rail-agent__glyph'"
+            [class]="avatarClass(agent, 'sm') + ' rail-agent__glyph'"
           ></span>
           <div class="rail-agent__top">
-            <span class="rail-agent__name">{{ agent }}</span>
+            <span class="rail-agent__name">{{ agentDisplayName(agent) }}</span>
             <span class="rail-agent__sep" aria-hidden="true">·</span>
             <span class="rail-agent__status"
               >{{ selectedProjectYoloAgents().includes(agent) ? 'yolo' : 'project' }}</span
@@ -238,10 +261,10 @@
         >
           <span
             class="avatar avatar--sm rail-agent__glyph"
-            [class]="'avatar avatar--sm avatar--' + agent + ' rail-agent__glyph'"
+            [class]="avatarClass(agent, 'sm') + ' rail-agent__glyph'"
           ></span>
           <div class="rail-agent__top">
-            <span class="rail-agent__name">{{ agent }}</span>
+            <span class="rail-agent__name">{{ agentDisplayName(agent) }}</span>
             <span class="rail-agent__sep" aria-hidden="true">·</span>
             <span class="rail-agent__status">{{ agentRailStatus(agent) }}</span>
             <span class="rail-agent__pulse" aria-hidden="true"></span>
@@ -305,7 +328,7 @@
         <article class="work-card" [class.is-stale]="isRunStale(run)">
           <button class="work-row" type="button" (click)="openRunDetail(run.id)">
             <span class="work-row__top">
-              <strong>{{ run.agentId }}</strong>
+              <strong>{{ agentDisplayName(run.agentId) }}</strong>
               <em>{{ elapsedLabel(run.startedAt, run.completedAt) }}</em>
             </span>
             <span>{{ runMeta(run) }}</span>
@@ -412,13 +435,13 @@
           <p>{{ projectRoomSignal(room) }}</p>
           <div class="project-mission-card__agents">
             @for (agent of room.agents; track agent) {
-            <span class="avatar avatar--sm" [class]="'avatar avatar--sm avatar--' + agent"></span>
+            <span [class]="avatarClass(agent, 'sm')"></span>
             }
           </div>
           <footer>
             <span>{{ projectRoomMeta(room) }}</span>
             @if (projectRoomSnapshot(room.id)?.lastRun; as run) {
-            <em>{{ run.agentId }} / {{ run.status }}</em>
+            <em>{{ agentDisplayName(run.agentId) }} / {{ run.status }}</em>
             } @else {
             <em>no runs</em>
             }
@@ -440,7 +463,7 @@
           class="msg permission-request"
           [class]="'msg permission-request permission-request--' + request.status"
         >
-          <span class="avatar" [class]="'avatar avatar--' + request.agentId"></span>
+          <span [class]="avatarClass(request.agentId)"></span>
           <div class="permission-card">
             <header class="permission-card__head">
               <strong
@@ -494,7 +517,7 @@
             @if (activity.agentId) {
             <span
               class="avatar avatar--sm"
-              [class]="'avatar avatar--sm avatar--' + activity.agentId"
+              [class]="avatarClass(activity.agentId, 'sm')"
             ></span>
             } @else {
             <span class="activity-row__dot"></span>
@@ -518,14 +541,19 @@
           [class.is-grouped]="item.grouped"
           [class.is-queued]="message.authorKind === 'human' && message.deliveryStatus === 'queued'"
         >
-          <span class="avatar" [class]="'avatar avatar--' + message.authorId">
+          <span
+            class="avatar"
+            [class]="message.authorKind === 'agent' ? avatarClass(message.authorId) : 'avatar'"
+          >
             @if (message.authorKind !== 'agent') { {{ message.authorId.slice(0, 1).toUpperCase() }}
             }
           </span>
           <div class="msg__main">
             @if (!item.grouped) {
             <div class="msg__head">
-              <span class="msg__author">{{ message.authorId }}</span>
+              <span class="msg__author">{{
+                message.authorKind === 'agent' ? agentDisplayName(message.authorId) : message.authorId
+              }}</span>
               <span class="msg__time">{{ message.createdAt | date: 'shortTime' }}</span>
             </div>
             }
@@ -570,7 +598,7 @@
                 @for (agent of seenAgents; track agent) {
                 <span
                   class="avatar avatar--tiny"
-                  [class]="'avatar avatar--tiny avatar--' + agent"
+                  [class]="avatarClass(agent, 'tiny')"
                   [title]="agent"
                   aria-hidden="true"
                 ></span>
@@ -804,7 +832,7 @@
                   >
                     <span
                       class="avatar avatar--sm"
-                      [class]="'avatar avatar--sm avatar--' + item.ownerAgentId"
+                      [class]="avatarClass(item.ownerAgentId, 'sm')"
                     >
                       @if (!isAgentOwner(item.ownerAgentId)) { {{ item.ownerAgentId.slice(0,
                       1).toUpperCase() }} }
@@ -875,6 +903,7 @@
           type="button"
           class="mission-view-tab"
           [class.is-active]="selectedMissionView() === view.id"
+          [attr.title]="view.summary"
           (click)="selectMissionView(view.id)"
         >
           <strong>{{ view.label }}</strong>
@@ -909,160 +938,249 @@
       </nav>
 
       @if (selectedMissionView() === 'overview') {
-      <section class="panel panel--wide ops-board">
-        <header class="ops-board__head">
-          <div>
-            <div class="section-label">operations</div>
-            <h2>Mission health</h2>
-          </div>
-          <span class="ops-board__live">
-            <span></span>
-            live
-          </span>
-        </header>
+      <section class="ov-pane" aria-label="Mission overview">
+        <div class="ov-body">
+          <canvas class="ov-rays-canvas" #overviewRaysCanvas aria-hidden="true"></canvas>
 
-        <div class="ops-metrics">
-          @for (metric of operationMetrics(); track metric.id) {
-          <article [class]="'ops-metric ' + opsToneClass(metric.tone)">
-            <span>{{ metric.label }}</span>
-            <strong>{{ metric.value }}</strong>
-            <p>{{ metric.detail }}</p>
-          </article>
-          }
-        </div>
-
-        <div class="ops-grid">
-          <section class="ops-section ops-section--attention">
-            <header>
-              <span>attention queue</span>
-              <strong>{{ attentionItems().length }}</strong>
-            </header>
-            <div class="ops-list">
-              @for (item of attentionItems(); track item.id) {
+          <section class="ov-main" [attr.data-active-tab]="missionTab()">
+            <div
+              class="ov-mission-tabs"
+              [attr.data-active]="missionTab()"
+              role="tablist"
+              aria-label="Mission view"
+            >
               <button
                 type="button"
-                [class]="'ops-row ' + opsToneClass(item.tone)"
-                [disabled]="!item.runId"
-                (click)="openAttentionItem(item)"
+                class="ov-mtab"
+                [class.is-active]="missionTab() === 'brief'"
+                [attr.aria-selected]="missionTab() === 'brief'"
+                role="tab"
+                (click)="selectMissionTab('brief')"
               >
-                <span class="ops-row__label">{{ item.label }}</span>
-                <strong>{{ item.title }}</strong>
-                <p>{{ item.detail }}</p>
+                Mission brief
               </button>
-              } @empty {
-              <p class="empty-copy">
-                no blocked work, pending permissions, queued replies, or stalled runs
-              </p>
-              }
-            </div>
-          </section>
-
-          <section class="ops-section ops-section--sessions">
-            <header>
-              <span>active sessions</span>
-              <strong>{{ activeSessionRows().length }}</strong>
-            </header>
-            <div class="ops-session-list">
-              @for (row of activeSessionRows(); track row.run.id) {
-              <article class="ops-session" (click)="openRunDetail(row.run.id)">
-                <div class="ops-session__agent">
-                  <span
-                    class="avatar avatar--sm"
-                    [class]="'avatar avatar--sm avatar--' + row.run.agentId"
-                  ></span>
-                  <strong>{{ row.run.agentId }}</strong>
-                  <em>{{ row.run.lifecycleState || row.run.status }}</em>
-                </div>
-                <p>{{ row.signal }}</p>
-                <dl>
-                  <div>
-                    <dt>runtime</dt>
-                    <dd>{{ row.runtime }}</dd>
-                  </div>
-                  <div>
-                    <dt>turn</dt>
-                    <dd>{{ row.turns }}</dd>
-                  </div>
-                  <div>
-                    <dt>tokens</dt>
-                    <dd>{{ row.tokens }}</dd>
-                  </div>
-                </dl>
-                @if (row.run.cliSessionId) {
-                <button type="button" class="mini-btn" (click)="copyRunSession(row.run, $event)">
-                  copy session
-                </button>
-                }
-              </article>
-              } @empty {
-              <p class="empty-copy">no active sessions</p>
-              }
-            </div>
-          </section>
-
-          <section class="ops-section ops-section--capacity">
-            <header>
-              <span>provider capacity</span>
-              <strong>{{ providerCapacityRows().length }}</strong>
-            </header>
-            <div class="capacity-list">
-              @for (row of providerCapacityRows(); track row.agentId) {
-              <article
-                [class]="'capacity-row ' + opsToneClass(row.tone)"
-                [class.is-running]="row.running"
+              <button
+                type="button"
+                class="ov-mtab"
+                [class.is-active]="missionTab() === 'active'"
+                [attr.aria-selected]="missionTab() === 'active'"
+                role="tab"
+                (click)="selectMissionTab('active')"
               >
-                <div>
-                  <span
-                    class="avatar avatar--sm"
-                    [class]="'avatar avatar--sm avatar--' + row.agentId"
-                  ></span>
-                  <strong>{{ row.agentId }}</strong>
+                <span class="ov-mtab__label">Active phase</span>
+                <span class="ov-mtab__phase" aria-hidden="true">
+                  <span class="ov-mtab__mark">∗</span>
+                  <span>{{ phaseProgressLabel() }}</span>
+                </span>
+              </button>
+            </div>
+
+            <div class="ov-facts">
+              <div class="ov-fact">
+                <span class="ov-fact__label">status</span>
+                <span class="ov-fact__value">{{ activeTask()?.status ?? '—' }}</span>
+              </div>
+              <div class="ov-fact">
+                <span class="ov-fact__label">profile</span>
+                <span class="ov-fact__value">{{ activeTask()?.capabilityProfile ?? '—' }}</span>
+              </div>
+              <div class="ov-fact">
+                <span class="ov-fact__label">started</span>
+                <span class="ov-fact__value">{{ activeTaskStartedLabel() }}</span>
+              </div>
+              <div class="ov-fact">
+                <span class="ov-fact__label">repo path</span>
+                <span class="ov-fact__value">{{ activeTaskRepoPath() }}</span>
+              </div>
+            </div>
+
+            <div class="ov-mission-pane" role="tabpanel">
+              <section
+                class="ov-mission-view ov-mission-view--brief"
+                [hidden]="missionTab() !== 'brief'"
+              >
+                @if (activeTask(); as task) {
+                <h1 class="ov-title">{{ task.title }}</h1>
+                <p class="ov-lede">{{ task.goal || 'No goal written yet.' }}</p>
+                @if (task.acceptanceCriteria) {
+                <p class="ov-accept">{{ task.acceptanceCriteria }}</p>
+                } } @else {
+                <h1 class="ov-title">No active mission</h1>
+                <p class="ov-lede">
+                  Create the mission brief in Setup; agents will receive it in future turns.
+                </p>
+                }
+              </section>
+
+              <section
+                class="ov-mission-view ov-mission-view--active"
+                [hidden]="missionTab() !== 'active'"
+              >
+                @if (taskControl()?.currentPhase; as phase) {
+                <h1 class="ov-title">{{ phase.title }}</h1>
+                @if (phase.description) {
+                <p class="ov-lede">{{ phase.description }}</p>
+                } @if (currentWorkItem(); as item) {
+                <div class="ov-current-item">
+                  <div class="ov-current-item__head">
+                    <span class="ov-current-item__pulse"></span>
+                    <span>working on now</span>
+                  </div>
+                  <h3>{{ item.title }}</h3>
+                  @if (item.detail || item.statusNote) {
+                  <p>{{ oneLine(item.detail || item.statusNote, 200) }}</p>
+                  }
                 </div>
-                <span>{{ row.label }}</span>
-                <p>{{ row.detail }}</p>
-                <div class="capacity-bar" aria-hidden="true">
-                  <span [style.width.%]="row.percent"></span>
-                </div>
-              </article>
-              } @empty {
-              <p class="empty-copy">no agents configured for this room</p>
-              }
+                } @if (phase.gate) {
+                <p class="ov-accept">Phase gate: {{ phase.gate }}</p>
+                } } @else if (activeTask(); as task) {
+                <h1 class="ov-title">{{ task.title }}</h1>
+                <p class="ov-lede">No phase set yet for this mission.</p>
+                } @else {
+                <h1 class="ov-title">No active phase</h1>
+                <p class="ov-lede">Configure phases in the plan tab.</p>
+                }
+              </section>
             </div>
           </section>
-        </div>
-      </section>
 
-      <section class="mission-card mission-card--focus mission-overview-card">
-        <div class="mission-card__head">
-          <div class="section-label">mission brief</div>
+          <div class="ov-attn-frame">
+            <aside class="ov-card-shell ov-attn-card" #overviewAttnCard>
+              <div class="ov-attn-section">
+                <header class="ov-attn-head is-primary">
+                  <strong>Attention</strong>
+                  <small>{{ pad2(overviewBlockerItems().length) }}</small>
+                </header>
+                @for (item of overviewBlockerItems(); track item.id) {
+                <button
+                  type="button"
+                  [class]="
+                    'ov-card ov-card--' + (item.tone === 'danger' ? 'block' : 'warn')
+                  "
+                  [disabled]="!item.runId"
+                  (click)="openAttentionItem(item)"
+                >
+                  <span class="ov-card__bar"></span>
+                  <div>
+                    <div class="ov-card__title">{{ item.label }} · {{ item.title }}</div>
+                    <span class="ov-card__detail">{{ item.detail }}</span>
+                  </div>
+                </button>
+                } @empty {
+                <p class="empty-copy">nothing blocking</p>
+                }
+              </div>
+
+              <div class="ov-attn-section">
+                <header class="ov-attn-head">
+                  <strong>Up next</strong>
+                  <small>{{ pad2(overviewUpNextItems().length) }}</small>
+                </header>
+                @for (item of overviewUpNextItems(); track item.id) {
+                <div class="ov-card ov-card--info">
+                  <span class="ov-card__bar"></span>
+                  <div>
+                    <div class="ov-card__title">{{ item.title }}</div>
+                    <span class="ov-card__detail">{{
+                      item.detail ? oneLine(item.detail, 80) : item.status
+                    }}</span>
+                  </div>
+                </div>
+                } @empty {
+                <p class="empty-copy">queue is clear</p>
+                }
+              </div>
+            </aside>
+          </div>
+
+          <section class="ov-stats" aria-label="Mission telemetry">
+            <article class="ov-stat ov-stat--agents">
+              <header class="ov-stat__head">
+                <span class="ov-stat__label">Active agents</span>
+                <span class="ov-stat__count"
+                  >{{ pad2(overviewWorkingCount()) }} working /
+                  {{ pad2(overviewIdleCount()) }} idle</span
+                >
+              </header>
+              <div class="ov-stat__agents">
+                @for (row of overviewAgentRows(); track row.agentId) {
+                <div
+                  [class]="
+                    'ov-stat__agent ov-stat__agent--' + (row.working ? 'working' : 'idle')
+                  "
+                >
+                  <span
+                    [class]="avatarClass(row.agentId, 'sm') + ' ov-stat__agent__glyph'"
+                  ></span>
+                  <strong>{{ agentDisplayName(row.agentId) }}</strong>
+                  <em>{{ row.status }}</em>
+                </div>
+                } @empty {
+                <p class="empty-copy">no agents in this room</p>
+                }
+              </div>
+            </article>
+
+            <article class="ov-stat ov-stat--telemetry">
+              <header class="ov-stat__head">
+                <span class="ov-stat__label">Runtime / tokens</span>
+                <span class="ov-stat__count">live</span>
+              </header>
+              <div class="ov-stat__metrics">
+                <div class="ov-stat__metric">
+                  <strong>{{ overviewRuntimeLabel() }}</strong>
+                  <span>runtime</span>
+                </div>
+                <div class="ov-stat__metric">
+                  <strong>{{ overviewTokensLabel() }}</strong>
+                  <span>tokens</span>
+                </div>
+              </div>
+              <svg
+                class="ov-stat__spark"
+                viewBox="0 0 120 24"
+                preserveAspectRatio="none"
+                aria-hidden="true"
+              >
+                <polyline
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.4"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  points="0,18 6,16 12,17 18,12 24,14 30,9 36,11 42,7 48,10 54,4 60,7 66,3 72,5 78,8 84,5 90,3 96,6 102,2 108,4 114,3 120,2"
+                />
+              </svg>
+            </article>
+
+            <article class="ov-stat ov-stat--progress">
+              <header class="ov-stat__head">
+                <span class="ov-stat__label">Mission progress</span>
+                <span class="ov-stat__count">{{ overviewProgressDoneLabel() }}</span>
+              </header>
+              <div class="ov-stat__progress">
+                <div class="ov-stat__bar">
+                  <span [style.width.%]="overviewProgressPercent()"></span>
+                </div>
+                <strong class="ov-stat__pct"
+                  >{{ overviewProgressPercent() }}<small>%</small></strong
+                >
+              </div>
+              <div class="ov-stat__phases">
+                @for (marker of overviewPhaseMarkers(); track marker.id) {
+                <span
+                  class="ov-phase-marker"
+                  [class.is-done]="marker.isDone"
+                  [class.is-current]="marker.isCurrent"
+                  >{{ marker.title }}</span
+                >
+                } @empty {
+                <span class="ov-phase-marker">no phases yet</span>
+                }
+              </div>
+            </article>
+          </section>
         </div>
-        @if (activeTask(); as task) {
-        <h2>{{ task.title }}</h2>
-        <p>{{ task.goal || 'No goal written yet.' }}</p>
-        <dl class="facts">
-          <div>
-            <dt>status</dt>
-            <dd>{{ task.status }}</dd>
-          </div>
-          <div>
-            <dt>profile</dt>
-            <dd>{{ task.capabilityProfile }}</dd>
-          </div>
-          <div>
-            <dt>phase</dt>
-            <dd>{{ taskControl()?.currentPhase?.title || 'not set' }}</dd>
-          </div>
-          <div>
-            <dt>path</dt>
-            <dd>{{ task.repoPath || 'not set' }}</dd>
-          </div>
-        </dl>
-        @if (task.acceptanceCriteria) {
-        <p class="panel-note">{{ task.acceptanceCriteria }}</p>
-        } } @else {
-        <h2>no active mission</h2>
-        <p>Create the mission brief in Setup; agents will receive it in future turns.</p>
-        }
       </section>
 
       <section class="panel panel--controls mission-actions">
@@ -1109,7 +1227,7 @@
             (change)="setMissionActionAgent($event)"
           >
             @for (agent of roomAgents(); track agent) {
-            <option [value]="agent">{{ agent }}</option>
+            <option [value]="agent">{{ agentDisplayName(agent) }}</option>
             }
           </select>
           } @if (missionActionScope() === 'selected') {
@@ -1121,7 +1239,7 @@
                 [checked]="isMissionActionAgentSelected(agent)"
                 (change)="toggleMissionActionAgent(agent, $event)"
               />
-              {{ agent }}
+              {{ agentDisplayName(agent) }}
             </label>
             }
           </div>
@@ -1230,7 +1348,7 @@
                 <span class="mission-graph-owner" [title]="'Owner: ' + card.item.ownerAgentId">
                   <span
                     class="avatar avatar--sm"
-                    [class]="'avatar avatar--sm avatar--' + card.item.ownerAgentId"
+                    [class]="avatarClass(card.item.ownerAgentId, 'sm')"
                   >
                     @if (!isAgentOwner(card.item.ownerAgentId)) { {{ card.item.ownerAgentId.slice(0,
                     1).toUpperCase() }} }
@@ -1373,7 +1491,7 @@
                   <span class="mission-graph-owner" [title]="'Owner: ' + card.item.ownerAgentId">
                     <span
                       class="avatar avatar--sm"
-                      [class]="'avatar avatar--sm avatar--' + card.item.ownerAgentId"
+                      [class]="avatarClass(card.item.ownerAgentId, 'sm')"
                     >
                       @if (!isAgentOwner(card.item.ownerAgentId)) { {{
                       card.item.ownerAgentId.slice(0, 1).toUpperCase() }} }
@@ -1804,7 +1922,7 @@
               >
                 <span
                   class="avatar avatar--sm"
-                  [class]="'avatar avatar--sm avatar--' + item.ownerAgentId"
+                  [class]="avatarClass(item.ownerAgentId, 'sm')"
                 >
                   @if (!isAgentOwner(item.ownerAgentId)) { {{ item.ownerAgentId.slice(0,
                   1).toUpperCase() }} }
@@ -1826,11 +1944,11 @@
                 <option value="" [selected]="!item.ownerAgentId">unassigned</option>
                 @if (item.ownerAgentId && !roomAgents().includes(item.ownerAgentId)) {
                 <option [value]="item.ownerAgentId" [selected]="true">
-                  {{ item.ownerAgentId }}
+                  {{ agentDisplayName(item.ownerAgentId) }}
                 </option>
                 } @for (agent of roomAgents(); track agent) {
                 <option [value]="agent" [selected]="agent === item.ownerAgentId">
-                  {{ agent }}
+                  {{ agentDisplayName(agent) }}
                 </option>
                 }
               </select>
@@ -1879,7 +1997,7 @@
           <select #checkOwner>
             <option value="">unassigned</option>
             @for (agent of roomAgents(); track agent) {
-            <option [value]="agent">{{ agent }}</option>
+            <option [value]="agent">{{ agentDisplayName(agent) }}</option>
             }
           </select>
           <button class="control-btn" type="submit">add item</button>
@@ -1955,7 +2073,7 @@
         <div class="run-list">
           @for (run of completedRuns(); track run.id) {
           <button class="run-row" type="button" (click)="openRunDetail(run.id)">
-            <span>{{ run.agentId }}</span>
+            <span>{{ agentDisplayName(run.agentId) }}</span>
             <strong>{{ run.status }}</strong>
             <p>{{ runMeta(run) }}</p>
             <small>{{ runActionSignal(run) }}</small>
@@ -2014,7 +2132,7 @@
         <div class="run-list">
           @for (run of completedRuns(); track run.id) {
           <button class="run-row" type="button" (click)="openRunDetail(run.id)">
-            <span>{{ run.agentId }}</span>
+            <span>{{ agentDisplayName(run.agentId) }}</span>
             <strong>{{ run.status }}</strong>
             <p>{{ runMeta(run) }}</p>
             <small>{{ runActionSignal(run) }}</small>
@@ -2031,42 +2149,64 @@
 @if (editingAgents()) {
 <div class="modal">
   <div class="modal__scrim" (click)="cancelEditAgents()"></div>
-  <section class="modal__panel" role="dialog" aria-modal="true" aria-labelledby="edit-agents-title">
+  <section class="modal__panel modal__panel--agents" role="dialog" aria-modal="true" aria-labelledby="edit-agents-title">
     <header class="modal__head">
       <h2 id="edit-agents-title">agents in #{{ selectedRoom()?.name }}</h2>
       <p>Choose who participates in the room, then choose who joins autonomous YOLO rounds.</p>
     </header>
     <div class="agent-editor">
-      @for (agent of agentChoices; track agent) {
+      @for (row of editRoomAgentRows(); track row.clientId) {
       <article class="agent-toggle">
-        <span class="avatar avatar--sm" [class]="'avatar avatar--sm avatar--' + agent"></span>
+        <span [class]="draftProviderAvatarClass(row)"></span>
         <div class="agent-toggle__body">
-          <strong>{{ agent }}</strong>
-          <span
-            >{{ isEditAgentSelected(agent) ? 'listens and responds in this room' : 'not in this
-            room' }}</span
-          >
+          <strong>{{ draftAgentPreview(row) }}</strong>
+          <span>{{ draftProviderLabel(row.providerId) }} / {{ draftPersonaLabel(row.personaId) }}</span>
         </div>
-        <label class="agent-toggle__check">
-          <input
-            type="checkbox"
-            [checked]="isEditAgentSelected(agent)"
-            (change)="toggleEditAgent(agent, $event)"
-          />
-          in room
+        <label class="agent-toggle__select">
+          <span>provider</span>
+          <select
+            [value]="row.providerId"
+            aria-label="Agent provider"
+            (change)="setEditRoomAgentProvider(row.clientId, $event)"
+          >
+            @for (provider of agentProviders(); track provider.id) {
+            <option [value]="provider.id">{{ provider.displayName }}</option>
+            }
+          </select>
+        </label>
+        <label class="agent-toggle__select agent-toggle__select--persona">
+          <span>persona</span>
+          <select
+            [value]="row.personaId"
+            aria-label="Agent persona"
+            (change)="setEditRoomAgentPersona(row.clientId, $event)"
+          >
+            @for (persona of agentPersonas(); track persona.id) {
+            <option [value]="persona.id">{{ persona.name }}</option>
+            }
+          </select>
         </label>
         <label class="agent-toggle__yolo" title="Participates in YOLO rounds">
           <input
             type="checkbox"
-            [checked]="isEditYoloAgentSelected(agent)"
-            (change)="toggleEditYoloAgent(agent, $event)"
+            [checked]="row.yolo"
+            (change)="toggleEditRoomAgentYolo(row.clientId, $event)"
           />
           yolo
         </label>
+        <button
+          class="room-agent-remove"
+          type="button"
+          title="Remove agent"
+          (click)="removeEditRoomAgent(row.clientId)"
+        >
+          x
+        </button>
       </article>
       }
     </div>
     <footer class="modal__foot">
+      <button type="button" class="control-btn" (click)="addEditRoomAgent()">add agent</button>
       <button type="button" class="control-btn" (click)="cancelEditAgents()">cancel</button>
       <button type="button" class="control-btn control-btn--primary" (click)="saveEditAgents()">
         save
@@ -2084,14 +2224,14 @@
     aria-labelledby="compact-agent-title"
   >
     <header class="modal__head">
-      <h2 id="compact-agent-title">compact {{ agent }} context</h2>
+      <h2 id="compact-agent-title">compact {{ agentDisplayName(agent) }} context</h2>
       <p>{{ compactAgentDescription(agent) }}</p>
     </header>
     <div class="compact-agent">
       <div class="compact-agent__agent">
-        <span class="avatar avatar--sm" [class]="'avatar avatar--sm avatar--' + agent"></span>
+        <span [class]="avatarClass(agent, 'sm')"></span>
         <div>
-          <strong>{{ agent }}</strong>
+          <strong>{{ agentDisplayName(agent) }}</strong>
           <span>{{ isAgentRunning(agent) ? 'working now' : 'idle and eligible' }}</span>
         </div>
       </div>
@@ -2189,7 +2329,7 @@
         <div class="task-inspector__grid">
           <div>
             <span>owner</span>
-            <strong>{{ card.item.ownerAgentId || 'unassigned' }}</strong>
+            <strong>{{ card.item.ownerAgentId ? agentDisplayName(card.item.ownerAgentId) : 'unassigned' }}</strong>
           </div>
           <div>
             <span>phase</span>
@@ -2261,9 +2401,9 @@
           >
             <option value="">unassigned</option>
             @if (card.item.ownerAgentId && !roomAgents().includes(card.item.ownerAgentId)) {
-            <option [value]="card.item.ownerAgentId">{{ card.item.ownerAgentId }}</option>
+            <option [value]="card.item.ownerAgentId">{{ agentDisplayName(card.item.ownerAgentId) }}</option>
             } @for (agent of roomAgents(); track agent) {
-            <option [value]="agent">{{ agent }}</option>
+            <option [value]="agent">{{ agentDisplayName(agent) }}</option>
             }
           </select>
         </label>
@@ -2342,7 +2482,7 @@
               class="run-row"
               (click)="closeTaskInspector(); openRunDetail(run.id)"
             >
-              <span>{{ run.agentId }}</span>
+              <span>{{ agentDisplayName(run.agentId) }}</span>
               <strong>{{ run.status }}</strong>
               <p>{{ runMeta(run) }}</p>
               <small>{{ runActionSignal(run) }}</small>

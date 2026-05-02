@@ -45,6 +45,47 @@ describe('buildTurnPrompt', () => {
     expect(prompt).toContain('claude (you)');
   });
 
+  it('includes agent instance persona and room roster metadata', () => {
+    const prompt = buildTurnPrompt({
+      agentId: 'claude-security',
+      agentProfile: {
+        id: 'claude-security',
+        providerId: 'claude',
+        displayName: 'Claude Security',
+        personaId: 'security-engineer',
+        personaName: 'Security Engineer',
+        personaSummary: 'Find risks.',
+      },
+      roomName: 'general',
+      roomAgents: ['claude-security', 'codex-architecture'],
+      roomAgentProfiles: [
+        {
+          id: 'claude-security',
+          providerId: 'claude',
+          displayName: 'Claude Security',
+          personaId: 'security-engineer',
+          personaName: 'Security Engineer',
+          personaSummary: 'Find risks.',
+        },
+        {
+          id: 'codex-architecture',
+          providerId: 'codex',
+          displayName: 'Codex Architecture',
+          personaId: 'architecture-reviewer',
+          personaName: 'Architecture Reviewer',
+          personaSummary: 'Review architecture.',
+        },
+      ],
+      history: [],
+      newMessage: { authorId: 'human', authorKind: 'human', text: 'review this' },
+    });
+
+    expect(prompt).toContain('Agent identity: respond as "Claude Security"');
+    expect(prompt).toContain('Persona: Security Engineer');
+    expect(prompt).toContain('Room roster: Claude Security');
+    expect(prompt).toContain('codex-architecture');
+  });
+
   it('does not tell the model to avoid JSON (CLI handles JSON wrapping)', () => {
     const prompt = buildTurnPrompt({
       agentId: 'claude',

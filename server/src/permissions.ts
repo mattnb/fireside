@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { providerIdFromAgentId } from './agents/profiles.js';
 import type { AgentId } from './agents/types.js';
 
 export const PERMISSION_MODES = ['plan', 'edit', 'full-auto'] as const;
@@ -253,7 +254,7 @@ export function providerPermissionProfile(input: {
     capabilities.includes('run-command') &&
     Boolean(input.requestedMode && isCommandPermissionAlias(input.requestedMode)) &&
     !capabilities.includes('delete-file');
-  switch (input.agentId) {
+  switch (providerIdFromAgentId(input.agentId)) {
     case 'claude':
       if (commandGrant) {
         const gitOnly = capabilities.includes('git-commit') || capabilities.includes('git-push');
@@ -279,6 +280,7 @@ export function providerPermissionProfile(input: {
     case 'echo':
       return 'Echo: no provider tools';
   }
+  return 'Unknown provider: no provider tools';
 }
 
 export function buildPermissionGrant(input: {
