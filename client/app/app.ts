@@ -2,6 +2,7 @@ import { DatePipe } from '@angular/common';
 import {
   Component,
   ElementRef,
+  HostListener,
   OnDestroy,
   ViewChild,
   computed,
@@ -23,6 +24,8 @@ import {
   AgentRun,
   AgentRunAction,
   AgentRunDetail,
+  AgentQuotaUsage,
+  AgentQuotaWindowUsage,
   Artifact,
   ArtifactListing,
   CapabilityProfile,
@@ -54,6 +57,7 @@ import { VfxSmokeAndEmbersComponent } from './vfx-smoke-and-embers/vfx-smoke-and
 type TabId = 'chat' | 'mission' | 'briefings';
 type MissionViewId = 'overview' | 'board' | 'checklist' | 'roadmap' | 'plan' | 'evidence' | 'setup';
 type MissionTab = 'brief' | 'active';
+type RoadmapStatusFilter = 'ready' | 'in-progress' | 'blocked' | 'done';
 type AgentRailKind = 'running' | 'yolo' | 'idle' | 'ready' | 'waiting' | 'blocked' | 'stale';
 type OverviewAgentRow = {
   agentId: AgentId;
@@ -125,6 +129,17 @@ type ProviderCapacityRow = {
   label: string;
   detail: string;
   tone: OpsTone;
+};
+type ComposerMentionToken = {
+  query: string;
+  start: number;
+  end: number;
+};
+type MentionSuggestion = {
+  agentId: AgentId;
+  handle: string;
+  label: string;
+  detail: string;
 };
 type MissionGraphTone = 'active' | 'ready' | 'waiting' | 'blocked' | 'done' | 'open' | 'skipped';
 type MissionGraphDependency = {
@@ -200,7 +215,9 @@ type MissionActionDefinition = {
 };
 type DraftRoomAgent = {
   clientId: string;
+  agentId?: AgentId;
   providerId: ProviderId;
+  displayName: string;
   personaId: string;
   yolo: boolean;
 };
@@ -222,6 +239,32 @@ const DEFAULT_AGENT_CATALOG: AgentCatalog = {
     },
   ],
 };
+const FRIENDLY_AGENT_NAMES = [
+  'Ada',
+  'Grace',
+  'Katherine',
+  'Margaret',
+  'Radia',
+  'Barbara',
+  'Frances',
+  'Mary',
+  'Dorothy',
+  'Joan',
+  'Edsger',
+  'Ken',
+  'Dennis',
+  'Donald',
+  'Niklaus',
+  'Tim',
+  'Vint',
+  'Leslie',
+  'Evelyn',
+  'Sophie',
+  'Emmy',
+  'Alan',
+  'Anita',
+  'Francesco',
+];
 
 @Component({
   selector: 'fs-root',
@@ -241,6 +284,7 @@ export class App implements OnDestroy {
   private readonly ws = inject(FiresideWs);
   private scrollFrame: number | null = null;
   private deleteConfirmTimer: number | null = null;
+  private mentionCloseTimer: number | null = null;
   private draftAgentCounter = 0;
   private readonly clockTimer = window.setInterval(() => this.now.set(Date.now()), 1000);
 
@@ -271,11 +315,20 @@ export class App implements OnDestroy {
   readonly selectedTab = signal<TabId>('chat');
   readonly selectedMissionView = signal<MissionViewId>('overview');
   readonly missionTab = signal<MissionTab>('active');
+  readonly roadmapStatusFilter = signal<RoadmapStatusFilter | null>(null);
+  readonly roadmapSelectedPhaseId = signal<string | null>(null);
+  readonly missionActionPopoverOpen = signal(false);
+  readonly collapsedBoardPhases = signal<Set<string>>(new Set());
+  private autoCollapsedBoardPhases = new Set<string>();
+  readonly collapsedChecklistPhases = signal<Set<string>>(new Set());
+  private autoCollapsedChecklistPhases = new Set<string>();
   readonly now = signal(Date.now());
   readonly authorName = signal(localStorage.getItem('fireside.author') || 'human');
   readonly creatingProject = signal(false);
   readonly creatingMissionProjectId = signal<string | null>(null);
   readonly newRoomAgentRows = signal<DraftRoomAgent[]>(this.defaultDraftRoomAgents());
+  readonly composerMentionToken = signal<ComposerMentionToken | null>(null);
+  readonly mentionSelectedIndex = signal(0);
   readonly deletingRoomId = signal<string | null>(null);
   readonly editingAgents = signal(false);
   readonly editRoomAgentRows = signal<DraftRoomAgent[]>([]);
@@ -405,12 +458,82 @@ export class App implements OnDestroy {
   readonly roomYoloAgents = computed(() => this.selectedRoom()?.yoloAgents ?? []);
   readonly agentProviders = computed(() => this.agentCatalog().providers);
   readonly agentPersonas = computed(() => this.agentCatalog().personas);
+  readonly mentionSuggestions = computed(() => {
+    const token = this.composerMentionToken();
+    const room = this.selectedRoom();
+    if (!token || !room) return [];
+    const query = token.query.toLowerCase();
+    const providerCounts = new Map<ProviderId, number>();
+    for (const agentId of room.agents) {
+      const providerId = this.roomAgentProfile(room, agentId).providerId;
+      providerCounts.set(providerId, (providerCounts.get(providerId) ?? 0) + 1);
+    }
+    return room.agents
+      .map((agentId): MentionSuggestion => {
+        const profile = this.roomAgentProfile(room, agentId);
+        const handle = this.mentionHandleForProfile(profile, providerCounts);
+        return {
+          agentId,
+          handle,
+          label: profile.displayName,
+          detail:
+            profile.personaId === 'generalist'
+              ? `${this.draftProviderLabel(profile.providerId)} / ${agentId}`
+              : `${this.draftProviderLabel(profile.providerId)} ${profile.personaName} / ${agentId}`,
+        };
+      })
+      .filter((suggestion) =>
+        [
+          suggestion.handle,
+          suggestion.label,
+          suggestion.agentId,
+          this.agentProviderId(suggestion.agentId),
+          this.agentPersonaName(suggestion.agentId),
+        ].some((value) => value.toLowerCase().includes(query)),
+      )
+      .slice(0, 8);
+  });
   readonly latestContextUsageByAgent = computed(() => {
     const usageByAgent = new Map<AgentId, AgentContextUsage>();
+    const mergeQuota = (
+      existing: AgentQuotaUsage | undefined,
+      next: AgentQuotaUsage | undefined,
+    ): AgentQuotaUsage | undefined => {
+      if (!next) return existing;
+      const mergeWindow = (
+        current: AgentQuotaWindowUsage | undefined,
+        incoming: AgentQuotaWindowUsage | undefined,
+      ): AgentQuotaWindowUsage | undefined =>
+        incoming ? { ...(current ?? {}), ...incoming } : current;
+      const merged: AgentQuotaUsage = {
+        ...(existing ?? {}),
+        ...next,
+        source: next.source,
+      };
+      const fiveHour = mergeWindow(existing?.fiveHour, next.fiveHour);
+      const sevenDay = mergeWindow(existing?.sevenDay, next.sevenDay);
+      if (fiveHour) merged.fiveHour = fiveHour;
+      if (sevenDay) merged.sevenDay = sevenDay;
+      return merged;
+    };
+    for (const entry of this.stateSnapshot()?.contextUsage?.byAgent ?? []) {
+      usageByAgent.set(entry.agentId, { ...entry.usage });
+    }
     const actions = [...this.runActions()].sort((a, b) => a.createdAt - b.createdAt);
     for (const action of actions) {
-      if (action.agentId && action.contextUsage)
-        usageByAgent.set(action.agentId, action.contextUsage);
+      if (!action.agentId || !action.contextUsage) continue;
+      const existing = usageByAgent.get(action.agentId);
+      if (action.contextUsage.quotaOnly && existing) {
+        const merged = { ...existing };
+        const quota = mergeQuota(existing.quota, action.contextUsage.quota);
+        if (quota) merged.quota = quota;
+        usageByAgent.set(action.agentId, merged);
+        continue;
+      }
+      const merged = { ...action.contextUsage };
+      const quota = mergeQuota(existing?.quota, merged.quota);
+      if (quota) merged.quota = quota;
+      usageByAgent.set(action.agentId, merged);
     }
     return usageByAgent;
   });
@@ -459,12 +582,65 @@ export class App implements OnDestroy {
   readonly missionGraphSummary = computed(() => this.buildMissionGraphSummary());
   readonly missionBoardSwimlanes = computed(() => this.buildMissionBoardSwimlanes());
 
+  // Board swimlanes sorted on two axes: status group (active → queued → done),
+  // then phase sortOrder within each group.
+  readonly sortedBoardSwimlanes = computed<MissionBoardSwimlane[]>(() => {
+    const lanes = this.missionBoardSwimlanes();
+    const graphLanes = this.missionGraphLanes();
+    const sortOrderById = new Map<string, number>(
+      graphLanes.map((l, i) => [l.id, l.phase?.sortOrder ?? i] as const),
+    );
+    const groupRank = (status: string): number => {
+      if (status === 'active') return 0;
+      if (status === 'done') return 2;
+      return 1;
+    };
+    return [...lanes].sort((a, b) => {
+      const ra = groupRank(a.status);
+      const rb = groupRank(b.status);
+      if (ra !== rb) return ra - rb;
+      const sa = sortOrderById.get(a.id) ?? 0;
+      const sb = sortOrderById.get(b.id) ?? 0;
+      return sa - sb;
+    });
+  });
+
+  // === Roadmap (master-detail) ===
+  readonly selectedRoadmapLane = computed<MissionGraphLane | null>(() => {
+    const lanes = this.missionGraphLanes();
+    if (lanes.length === 0) return null;
+    const selectedId = this.roadmapSelectedPhaseId();
+    if (selectedId) {
+      const found = lanes.find((l) => l.id === selectedId);
+      if (found) return found;
+    }
+    const activePhaseId = this.taskControl()?.currentPhase?.id;
+    if (activePhaseId) {
+      const active = lanes.find((l) => l.phase?.id === activePhaseId);
+      if (active) return active;
+    }
+    return lanes[0] ?? null;
+  });
+
+  readonly roadmapFilteredCards = computed<MissionGraphCard[]>(() => {
+    const lane = this.selectedRoadmapLane();
+    if (!lane) return [];
+    const filter = this.roadmapStatusFilter();
+    if (!filter) return lane.cards;
+    return lane.cards.filter((card) => {
+      if (filter === 'ready') return card.ready;
+      if (filter === 'in-progress') return !!card.activeRun;
+      if (filter === 'blocked') return card.item.status === 'blocked' || card.waiting;
+      return card.item.status === 'done';
+    });
+  });
+
   // === Overview hero (v39) — derived data for the tabbed mission card,
   // attention frame, and the three stat tiles to its right.
   readonly phaseProgressLabel = computed(() => {
     const control = this.taskControl();
     const phases = control?.phases ?? [];
-    if (phases.length === 0) return '— of —';
+    if (phases.length === 0) return 'none';
     const currentId = control?.currentPhase?.id;
     const idx = phases.findIndex((p) => p.id === currentId);
     const ord = idx >= 0 ? idx + 1 : 0;
@@ -667,6 +843,48 @@ export class App implements OnDestroy {
       }
     });
 
+    // Auto-collapse done board phases the first time they appear. The user can
+    // expand them after that and we won't auto-recollapse — autoCollapsedBoardPhases
+    // tracks which phases we've already auto-collapsed so subsequent state
+    // refreshes leave the user's choice alone.
+    effect(() => {
+      const lanes = this.missionBoardSwimlanes();
+      untracked(() => {
+        const seen = this.autoCollapsedBoardPhases;
+        const newlyCollapse: string[] = [];
+        for (const lane of lanes) {
+          if (lane.status === 'done' && !seen.has(lane.id)) {
+            seen.add(lane.id);
+            newlyCollapse.push(lane.id);
+          }
+        }
+        if (newlyCollapse.length > 0) {
+          const set = new Set(this.collapsedBoardPhases());
+          for (const id of newlyCollapse) set.add(id);
+          this.collapsedBoardPhases.set(set);
+        }
+      });
+    });
+
+    effect(() => {
+      const phases = this.taskControl()?.phases ?? [];
+      untracked(() => {
+        const seen = this.autoCollapsedChecklistPhases;
+        const newlyCollapse: string[] = [];
+        for (const phase of phases) {
+          if (phase.status === 'done' && !seen.has(phase.id)) {
+            seen.add(phase.id);
+            newlyCollapse.push(phase.id);
+          }
+        }
+        if (newlyCollapse.length > 0) {
+          const set = new Set(this.collapsedChecklistPhases());
+          for (const id of newlyCollapse) set.add(id);
+          this.collapsedChecklistPhases.set(set);
+        }
+      });
+    });
+
     this.ws.stream$.subscribe((event) => {
       const roomId = this.selectedRoomId();
       if (event.type === 'messageAppended' && event.message.roomId === roomId) {
@@ -776,6 +994,7 @@ export class App implements OnDestroy {
     window.clearInterval(this.clockTimer);
     if (this.scrollFrame !== null) cancelAnimationFrame(this.scrollFrame);
     if (this.deleteConfirmTimer !== null) window.clearTimeout(this.deleteConfirmTimer);
+    if (this.mentionCloseTimer !== null) window.clearTimeout(this.mentionCloseTimer);
     if (this.overviewRaysTeardown) {
       this.overviewRaysTeardown();
       this.overviewRaysTeardown = null;
@@ -843,14 +1062,21 @@ export class App implements OnDestroy {
     );
   }
 
-  cancelCreateRoom(input: HTMLInputElement): void {
-    input.value = '';
+  cancelCreateRoom(input?: HTMLInputElement): void {
+    if (input) input.value = '';
     this.newRoomAgentRows.set(this.defaultDraftRoomAgents());
     this.creatingMissionProjectId.set(null);
   }
 
+  projectName(projectId: string | null): string {
+    return this.projects().find((project) => project.id === projectId)?.name ?? 'this project';
+  }
+
   addNewRoomAgent(): void {
-    this.newRoomAgentRows.update((rows) => [...rows, this.createDraftAgent('claude')]);
+    this.newRoomAgentRows.update((rows) => [
+      ...rows,
+      this.createDraftAgent('claude', 'generalist', false, this.suggestDraftAgentName('claude', rows)),
+    ]);
   }
 
   removeNewRoomAgent(clientId: string): void {
@@ -861,7 +1087,15 @@ export class App implements OnDestroy {
     const providerId = event.target instanceof HTMLSelectElement ? event.target.value : '';
     if (!providerId) return;
     this.newRoomAgentRows.update((rows) =>
-      rows.map((row) => (row.clientId === clientId ? { ...row, providerId } : row)),
+      rows.map((row) =>
+        row.clientId === clientId
+          ? {
+              ...row,
+              providerId,
+              displayName: this.nextDraftDisplayName(row, rows, providerId, row.personaId),
+            }
+          : row,
+      ),
     );
   }
 
@@ -869,7 +1103,22 @@ export class App implements OnDestroy {
     const personaId = event.target instanceof HTMLSelectElement ? event.target.value : '';
     if (!personaId) return;
     this.newRoomAgentRows.update((rows) =>
-      rows.map((row) => (row.clientId === clientId ? { ...row, personaId } : row)),
+      rows.map((row) =>
+        row.clientId === clientId
+          ? {
+              ...row,
+              personaId,
+              displayName: this.nextDraftDisplayName(row, rows, row.providerId, personaId),
+            }
+          : row,
+      ),
+    );
+  }
+
+  setNewRoomAgentName(clientId: string, event: Event): void {
+    const displayName = event.target instanceof HTMLInputElement ? event.target.value : '';
+    this.newRoomAgentRows.update((rows) =>
+      rows.map((row) => (row.clientId === clientId ? { ...row, displayName } : row)),
     );
   }
 
@@ -881,7 +1130,10 @@ export class App implements OnDestroy {
   }
 
   addEditRoomAgent(): void {
-    this.editRoomAgentRows.update((rows) => [...rows, this.createDraftAgent('claude')]);
+    this.editRoomAgentRows.update((rows) => [
+      ...rows,
+      this.createDraftAgent('claude', 'generalist', false, this.suggestDraftAgentName('claude', rows)),
+    ]);
   }
 
   removeEditRoomAgent(clientId: string): void {
@@ -892,7 +1144,15 @@ export class App implements OnDestroy {
     const providerId = event.target instanceof HTMLSelectElement ? event.target.value : '';
     if (!providerId) return;
     this.editRoomAgentRows.update((rows) =>
-      rows.map((row) => (row.clientId === clientId ? { ...row, providerId } : row)),
+      rows.map((row) =>
+        row.clientId === clientId
+          ? {
+              ...row,
+              providerId,
+              displayName: this.nextDraftDisplayName(row, rows, providerId, row.personaId),
+            }
+          : row,
+      ),
     );
   }
 
@@ -900,7 +1160,22 @@ export class App implements OnDestroy {
     const personaId = event.target instanceof HTMLSelectElement ? event.target.value : '';
     if (!personaId) return;
     this.editRoomAgentRows.update((rows) =>
-      rows.map((row) => (row.clientId === clientId ? { ...row, personaId } : row)),
+      rows.map((row) =>
+        row.clientId === clientId
+          ? {
+              ...row,
+              personaId,
+              displayName: this.nextDraftDisplayName(row, rows, row.providerId, personaId),
+            }
+          : row,
+      ),
+    );
+  }
+
+  setEditRoomAgentName(clientId: string, event: Event): void {
+    const displayName = event.target instanceof HTMLInputElement ? event.target.value : '';
+    this.editRoomAgentRows.update((rows) =>
+      rows.map((row) => (row.clientId === clientId ? { ...row, displayName } : row)),
     );
   }
 
@@ -923,10 +1198,8 @@ export class App implements OnDestroy {
   }
 
   draftAgentPreview(row: DraftRoomAgent): string {
-    const persona = this.personaForId(row.personaId);
-    return persona.id === 'generalist'
-      ? this.draftProviderLabel(row.providerId)
-      : `${this.draftProviderLabel(row.providerId)} ${persona.name}`;
+    const name = this.cleanDisplayName(row.displayName);
+    return name || this.draftDefaultDisplayName(row.providerId, row.personaId);
   }
 
   draftProviderAvatarClass(row: DraftRoomAgent): string {
@@ -959,30 +1232,49 @@ export class App implements OnDestroy {
       });
   }
 
-  private createDraftAgent(providerId: ProviderId, personaId = 'generalist', yolo = false): DraftRoomAgent {
+  private createDraftAgent(
+    providerId: ProviderId,
+    personaId = 'generalist',
+    yolo = false,
+    displayName = '',
+    agentId?: AgentId,
+  ): DraftRoomAgent {
     this.draftAgentCounter += 1;
     return {
       clientId: `draft-${Date.now()}-${this.draftAgentCounter}`,
+      ...(agentId ? { agentId } : {}),
       providerId,
+      displayName: displayName || this.draftDefaultDisplayName(providerId, personaId),
       personaId,
       yolo,
     };
   }
 
   private defaultDraftRoomAgents(): DraftRoomAgent[] {
-    return this.agentChoices.map((agentId) => this.createDraftAgent(agentId));
+    const rows: DraftRoomAgent[] = [];
+    for (const agentId of this.agentChoices) {
+      rows.push(
+        this.createDraftAgent(
+          agentId,
+          'generalist',
+          false,
+          this.suggestDraftAgentName(agentId, rows),
+        ),
+      );
+    }
+    return rows;
   }
 
   private personaForId(personaId: string): AgentPersona {
     return (
-      this.agentPersonas().find((persona) => persona.id === personaId) ??
+      this.agentCatalog().personas.find((persona) => persona.id === personaId) ??
       DEFAULT_AGENT_CATALOG.personas[0]!
     );
   }
 
   private providerForId(providerId: ProviderId): AgentProviderCatalogItem {
     return (
-      this.agentProviders().find((provider) => provider.id === providerId) ?? {
+      this.agentCatalog().providers.find((provider) => provider.id === providerId) ?? {
         id: providerId,
         displayName: providerId,
         summary: '',
@@ -992,24 +1284,87 @@ export class App implements OnDestroy {
 
   private buildRoomAgentProfiles(rows: DraftRoomAgent[]): RoomAgentProfile[] {
     const seen = new Set<string>();
+    const seenDisplayNames = new Set<string>();
     return rows.map((row) => {
       const provider = this.providerForId(row.providerId);
       const persona = this.personaForId(row.personaId);
+      const displayName = this.uniqueDisplayName(
+        this.cleanDisplayName(row.displayName) ||
+          (persona.id === 'generalist' ? provider.displayName : `${provider.displayName} ${persona.name}`),
+        seenDisplayNames,
+      );
       const base =
-        persona.id === 'generalist'
+        row.agentId ||
+        (persona.id === 'generalist'
           ? row.providerId
-          : `${row.providerId}-${persona.id.replace(/-(engineer|reviewer|specialist|expert)$/i, '')}`;
+          : `${row.providerId}-${persona.id.replace(/-(engineer|reviewer|specialist|expert)$/i, '')}`);
       const id = this.uniqueAgentId(base, seen);
       return {
         id,
         providerId: row.providerId,
-        displayName:
-          persona.id === 'generalist' ? provider.displayName : `${provider.displayName} ${persona.name}`,
+        displayName,
         personaId: persona.id,
         personaName: persona.name,
         personaSummary: persona.summary,
       };
     });
+  }
+
+  private draftDefaultDisplayName(providerId: ProviderId, personaId: string): string {
+    const provider = this.providerForId(providerId);
+    const persona = this.personaForId(personaId);
+    return persona.id === 'generalist' ? provider.displayName : `${provider.displayName} ${persona.name}`;
+  }
+
+  private nextDraftDisplayName(
+    row: DraftRoomAgent,
+    rows: DraftRoomAgent[],
+    providerId: ProviderId,
+    personaId: string,
+  ): string {
+    const current = this.cleanDisplayName(row.displayName);
+    const currentDefault = this.draftDefaultDisplayName(row.providerId, row.personaId);
+    if (current && current !== currentDefault) return row.displayName;
+    return this.suggestDraftAgentName(providerId, rows, row.clientId, personaId);
+  }
+
+  private suggestDraftAgentName(
+    providerId: ProviderId,
+    rows: DraftRoomAgent[],
+    excludeClientId?: string,
+    personaId = 'generalist',
+  ): string {
+    const existing = new Set(
+      rows
+        .filter((row) => row.clientId !== excludeClientId)
+        .map((row) => this.cleanDisplayName(row.displayName).toLowerCase())
+        .filter(Boolean),
+    );
+    const providerName = this.draftDefaultDisplayName(providerId, personaId);
+    if (!existing.has(providerName.toLowerCase())) return providerName;
+    for (const name of FRIENDLY_AGENT_NAMES) {
+      if (!existing.has(name.toLowerCase())) return name;
+    }
+    const providerLabel = this.providerForId(providerId).displayName;
+    let counter = 2;
+    while (existing.has(`${providerLabel} ${counter}`.toLowerCase())) counter += 1;
+    return `${providerLabel} ${counter}`;
+  }
+
+  private cleanDisplayName(value: string): string {
+    return value.replace(/\s+/g, ' ').trim().slice(0, 80);
+  }
+
+  private uniqueDisplayName(base: string, seen: Set<string>): string {
+    const cleanBase = this.cleanDisplayName(base) || 'Agent';
+    let candidate = cleanBase;
+    let counter = 2;
+    while (seen.has(candidate.toLowerCase())) {
+      candidate = `${cleanBase} ${counter}`;
+      counter += 1;
+    }
+    seen.add(candidate.toLowerCase());
+    return candidate;
   }
 
   private uniqueAgentId(base: string, seen: Set<string>): AgentId {
@@ -1046,6 +1401,8 @@ export class App implements OnDestroy {
         profile.providerId,
         profile.personaId || 'generalist',
         room.yoloAgents.includes(agentId),
+        profile.displayName,
+        agentId,
       );
     });
   }
@@ -1104,6 +1461,7 @@ export class App implements OnDestroy {
       })
       .subscribe((updated) => {
         this.rooms.update((rooms) => this.upsert(rooms, updated));
+        this.loadStateSnapshot();
         this.editingAgents.set(false);
       });
   }
@@ -1136,8 +1494,24 @@ export class App implements OnDestroy {
     return this.agentProfile(agentId).displayName;
   }
 
+  agentDisplayNameForRoom(room: Room | null | undefined, agentId: AgentId): string {
+    return this.roomAgentProfile(room, agentId).displayName;
+  }
+
   agentPersonaName(agentId: AgentId): string {
     return this.agentProfile(agentId).personaName;
+  }
+
+  isTemporaryAgent(agentId: AgentId): boolean {
+    return this.agentProfile(agentId).temporary === true;
+  }
+
+  temporaryAgentTitle(agentId: AgentId): string {
+    const profile = this.agentProfile(agentId);
+    if (!profile.temporary) return '';
+    const by = profile.spawnedBy ? ` by ${this.agentDisplayName(profile.spawnedBy)}` : '';
+    const scope = profile.spawnedScope ? ` for ${profile.spawnedScope}` : '';
+    return `Temporary agent${by}${scope}`;
   }
 
   avatarClass(agentId: AgentId, size: 'sm' | 'tiny' | '' = ''): string {
@@ -1174,6 +1548,11 @@ export class App implements OnDestroy {
       ...roomOrder.filter((agentId) => seen.has(agentId)),
       ...[...seen].filter((agentId) => !roomOrder.includes(agentId)).sort(),
     ];
+  }
+
+  seenAgentsLabel(agents: AgentId[]): string {
+    if (agents.length === 0) return 'Seen by nobody';
+    return `Seen by ${agents.map((agentId) => this.agentDisplayName(agentId)).join(', ')}`;
   }
 
   canCompactAgent(agentId: AgentId): boolean {
@@ -1369,6 +1748,82 @@ export class App implements OnDestroy {
     if (!roomId || !text) return;
     this.ws.postMessage(roomId, this.authorName(), text);
     input.value = '';
+    this.closeMentionAutocomplete();
+  }
+
+  refreshMentionAutocomplete(input: HTMLInputElement): void {
+    if (this.mentionCloseTimer !== null) {
+      window.clearTimeout(this.mentionCloseTimer);
+      this.mentionCloseTimer = null;
+    }
+    const token = this.detectComposerMentionToken(input);
+    this.composerMentionToken.set(token);
+    const suggestions = token ? this.mentionSuggestions() : [];
+    if (this.mentionSelectedIndex() >= suggestions.length) this.mentionSelectedIndex.set(0);
+  }
+
+  handleComposerKeydown(event: KeyboardEvent, input: HTMLInputElement): void {
+    const suggestions = this.mentionSuggestions();
+    if (suggestions.length === 0) {
+      if (event.key === 'Escape') this.closeMentionAutocomplete();
+      return;
+    }
+    if (event.key === 'ArrowDown') {
+      event.preventDefault();
+      this.mentionSelectedIndex.update((index) => (index + 1) % suggestions.length);
+      return;
+    }
+    if (event.key === 'ArrowUp') {
+      event.preventDefault();
+      this.mentionSelectedIndex.update((index) =>
+        (index - 1 + suggestions.length) % suggestions.length,
+      );
+      return;
+    }
+    if (event.key === 'Enter' || event.key === 'Tab') {
+      event.preventDefault();
+      this.applyMentionSuggestion(input, suggestions[this.mentionSelectedIndex()] ?? suggestions[0]!);
+      return;
+    }
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      this.closeMentionAutocomplete();
+    }
+  }
+
+  handleComposerKeyup(event: KeyboardEvent, input: HTMLInputElement): void {
+    if (['ArrowUp', 'ArrowDown', 'Enter', 'Tab', 'Escape'].includes(event.key)) return;
+    this.refreshMentionAutocomplete(input);
+  }
+
+  applyMentionSuggestion(input: HTMLInputElement, suggestion: MentionSuggestion): void {
+    const token = this.composerMentionToken();
+    if (!token) return;
+    const before = input.value.slice(0, token.start);
+    const after = input.value.slice(token.end);
+    const suffix = after && /^\s/.test(after) ? '' : ' ';
+    const insert = `@${suggestion.handle}${suffix}`;
+    input.value = `${before}${insert}${after}`;
+    const cursor = before.length + insert.length;
+    this.closeMentionAutocomplete();
+    input.focus();
+    input.setSelectionRange(cursor, cursor);
+  }
+
+  closeMentionAutocomplete(): void {
+    if (this.mentionCloseTimer !== null) {
+      window.clearTimeout(this.mentionCloseTimer);
+      this.mentionCloseTimer = null;
+    }
+    this.composerMentionToken.set(null);
+    this.mentionSelectedIndex.set(0);
+  }
+
+  closeMentionAutocompleteSoon(): void {
+    if (this.mentionCloseTimer !== null) window.clearTimeout(this.mentionCloseTimer);
+    this.mentionCloseTimer = window.setTimeout(() => {
+      this.closeMentionAutocomplete();
+    }, 120);
   }
 
   canManageQueuedMessage(message: Message): boolean {
@@ -1564,7 +2019,7 @@ export class App implements OnDestroy {
         id: `permission:${request.id}`,
         tone: 'warn',
         label: 'permission',
-        title: `${request.agentId} needs ${this.permissionRequestLabel(request)}`,
+        title: `${this.activityActor(request.agentId)} needs ${this.permissionRequestLabel(request)}`,
         detail: `${request.target}: ${this.oneLine(request.reason, 180)}`,
         createdAt: request.createdAt,
         agentId: request.agentId,
@@ -1588,7 +2043,7 @@ export class App implements OnDestroy {
         id: `retry:${run.id}`,
         tone: 'warn',
         label: 'retry',
-        title: `${run.agentId} retry queued`,
+        title: `${this.activityActor(run.agentId)} retry queued`,
         detail: `${run.attempt && run.attempt > 1 ? `attempt ${run.attempt}; ` : ''}${retryMs ? `due in ${this.formatDurationMs(retryMs)}; ` : ''}${this.oneLine(run.lifecycleReason || run.error || 'waiting for retry window', 180)}`,
         createdAt:
           run.retryAfter || run.lifecycleUpdatedAt || run.completedAt || run.startedAt || 0,
@@ -1603,7 +2058,7 @@ export class App implements OnDestroy {
         id: `stalled:${run.id}`,
         tone: 'danger',
         label: 'stalled',
-        title: `${run.agentId} may be stalled`,
+        title: `${this.activityActor(run.agentId)} may be stalled`,
         detail: this.oneLine(
           run.lifecycleReason ||
             `no provider signal for ${this.formatDurationMs(this.runIdleMs(run))}`,
@@ -1620,7 +2075,7 @@ export class App implements OnDestroy {
         id: `failed:${run.id}`,
         tone: 'danger',
         label: 'failed',
-        title: `${run.agentId} run failed`,
+        title: `${this.activityActor(run.agentId)} run failed`,
         detail: this.oneLine(
           run.error || run.lifecycleReason || 'failure recorded without detail',
           180,
@@ -2136,18 +2591,110 @@ export class App implements OnDestroy {
     return `is-${card.tone}`;
   }
 
+  toggleBoardPhaseCollapsed(phaseId: string): void {
+    const set = new Set(this.collapsedBoardPhases());
+    if (set.has(phaseId)) set.delete(phaseId);
+    else set.add(phaseId);
+    this.collapsedBoardPhases.set(set);
+  }
+
+  isBoardPhaseCollapsed(phaseId: string): boolean {
+    return this.collapsedBoardPhases().has(phaseId);
+  }
+
+  boardPhaseGroup(lane: MissionBoardSwimlane): 'active' | 'queued' | 'done' {
+    if (lane.status === 'active') return 'active';
+    if (lane.status === 'done') return 'done';
+    return 'queued';
+  }
+
+  boardLaneSortOrder(lane: MissionBoardSwimlane): number {
+    const graphLane = this.missionGraphLanes().find((l) => l.id === lane.id);
+    return graphLane?.phase?.sortOrder ?? 0;
+  }
+
+  boardLaneCounts(lane: MissionBoardSwimlane): {
+    ready: number;
+    active: number;
+    blocked: number;
+    review: number;
+    done: number;
+    total: number;
+  } {
+    const r = lane.cardsByColumn.ready.length;
+    const a = lane.cardsByColumn.active.length;
+    const b = lane.cardsByColumn.blocked.length;
+    const v = lane.cardsByColumn.review.length;
+    const d = lane.cardsByColumn.done.length;
+    return { ready: r, active: a, blocked: b, review: v, done: d, total: r + a + b + v + d };
+  }
+
   missionGraphRunLabel(card: MissionGraphCard): string {
     const run = card.activeRun ?? card.latestRun;
     if (!run) return '';
     const prefix = run.status === 'running' ? 'running' : run.status;
     const duration = this.elapsedLabel(run.startedAt, run.completedAt);
-    return `${prefix} / ${run.agentId} / ${duration}`;
+    return `${prefix} / ${this.activityActor(run.agentId)} / ${duration}`;
+  }
+
+  toggleChecklistPhaseCollapsed(phaseId: string): void {
+    const set = new Set(this.collapsedChecklistPhases());
+    if (set.has(phaseId)) set.delete(phaseId);
+    else set.add(phaseId);
+    this.collapsedChecklistPhases.set(set);
+  }
+
+  isChecklistPhaseCollapsed(phaseId: string): boolean {
+    return this.collapsedChecklistPhases().has(phaseId);
+  }
+
+  checklistPhaseItems(phaseId: string): TaskChecklistItem[] {
+    return this.taskControl()?.checklistItems.filter((item) => item.phaseId === phaseId) ?? [];
+  }
+
+  unphasedChecklistItems(): TaskChecklistItem[] {
+    const control = this.taskControl();
+    if (!control) return [];
+    const phaseIds = new Set(control.phases.map((p) => p.id));
+    return control.checklistItems.filter((item) => !item.phaseId || !phaseIds.has(item.phaseId));
+  }
+
+  checklistPhaseProgressPercent(phaseId: string): number {
+    const items = this.checklistPhaseItems(phaseId);
+    if (items.length === 0) return 0;
+    const done = items.filter(
+      (item) => item.status === 'done' || item.status === 'skipped',
+    ).length;
+    return Math.round((done / items.length) * 100);
+  }
+
+  checklistPhaseProgressLabel(phaseId: string): string {
+    const items = this.checklistPhaseItems(phaseId);
+    const done = items.filter(
+      (item) => item.status === 'done' || item.status === 'skipped',
+    ).length;
+    return `${done} of ${items.length}`;
+  }
+
+  checklistPhaseStatusLabel(status: string): string {
+    if (status === 'active') return 'active';
+    if (status === 'done') return 'complete';
+    if (status === 'blocked') return 'blocked';
+    return 'queued';
+  }
+
+  checklistItemStatusLabel(item: TaskChecklistItem): string {
+    if (item.status === 'blocked') return 'blocked';
+    if (item.status === 'done') return 'done';
+    if (item.status === 'skipped') return 'skipped';
+    if (this.isWaitingOnDependencies(item)) return 'waiting';
+    return 'open';
   }
 
   missionGraphNotePreview(card: MissionGraphCard): string {
     const note = card.latestNote;
     if (!note) return '';
-    return `${note.authorId} / ${note.kind}: ${this.oneLine(note.body, 160)}`;
+    return `${this.activityActor(note.authorId)} / ${note.kind}: ${this.oneLine(note.body, 160)}`;
   }
 
   focusMissionGraphItem(item: TaskChecklistItem): void {
@@ -2162,6 +2709,50 @@ export class App implements OnDestroy {
 
   shortTaskId(id: string): string {
     return id.length > 10 ? id.slice(0, 10) : id;
+  }
+
+  selectRoadmapPhase(laneId: string): void {
+    this.roadmapSelectedPhaseId.set(laneId);
+    this.roadmapStatusFilter.set(null);
+  }
+
+  toggleRoadmapStatusFilter(filter: RoadmapStatusFilter): void {
+    this.roadmapStatusFilter.update((current) => (current === filter ? null : filter));
+  }
+
+  clearRoadmapStatusFilter(): void {
+    this.roadmapStatusFilter.set(null);
+  }
+
+  roadmapPhaseProgressPercent(lane: MissionGraphLane): number {
+    if (!lane.counts.total) return 0;
+    return Math.round((lane.counts.done / lane.counts.total) * 100);
+  }
+
+  roadmapPhaseSubline(lane: MissionGraphLane): string {
+    const parts: string[] = [];
+    parts.push(lane.status);
+    if (lane.counts.ready) parts.push(`${lane.counts.ready} ready`);
+    if (lane.counts.blocked) parts.push(`${lane.counts.blocked} blocked`);
+    return parts.join(' · ');
+  }
+
+  roadmapStatusBucketCount(lane: MissionGraphLane | null, bucket: RoadmapStatusFilter): number {
+    if (!lane) return 0;
+    if (bucket === 'ready') return lane.cards.filter((c) => c.ready).length;
+    if (bucket === 'in-progress') return lane.cards.filter((c) => !!c.activeRun).length;
+    if (bucket === 'blocked')
+      return lane.cards.filter((c) => c.item.status === 'blocked' || c.waiting).length;
+    return lane.cards.filter((c) => c.item.status === 'done').length;
+  }
+
+  copyTaskId(id: string, event: Event): void {
+    event.stopPropagation();
+    if (typeof navigator !== 'undefined' && navigator.clipboard) {
+      navigator.clipboard.writeText(id).catch((err) => {
+        console.warn('Failed to copy task id', err);
+      });
+    }
   }
 
   taskInspectorPhaseLabel(item: TaskChecklistItem): string {
@@ -2405,7 +2996,8 @@ export class App implements OnDestroy {
   }
 
   agentContextUsage(agentId: AgentId): AgentContextUsage | null {
-    return this.latestContextUsageByAgent().get(agentId) ?? null;
+    const usage = this.latestContextUsageByAgent().get(agentId) ?? null;
+    return usage?.quotaOnly ? null : usage;
   }
 
   agentContextPercent(usage: AgentContextUsage): number {
@@ -2430,6 +3022,11 @@ export class App implements OnDestroy {
     const window = usage.contextWindow ? this.formatTokenCount(usage.contextWindow) : 'unknown';
     const prefix = this.agentContextIsEstimated(usage) ? '~' : '';
     return `${model} · ${prefix}${this.formatTokenCount(this.agentContextUsedTokens(usage))}/${window}`;
+  }
+
+  agentContextModelLabel(usage: AgentContextUsage): string {
+    if (!usage.model) return '';
+    return usage.reasoningEffort ? `${usage.model}/${usage.reasoningEffort}` : usage.model;
   }
 
   agentContextTitle(usage: AgentContextUsage): string {
@@ -2482,6 +3079,144 @@ export class App implements OnDestroy {
     return usage.estimated === true || this.agentContextUsedTokens(usage) !== usage.usedTokens;
   }
 
+  agentFiveHourUsage(agentId: AgentId): AgentQuotaWindowUsage | null {
+    return this.agentQuotaUsage(agentId)?.fiveHour ?? null;
+  }
+
+  agentSevenDayUsage(agentId: AgentId): AgentQuotaWindowUsage | null {
+    return this.agentQuotaUsage(agentId)?.sevenDay ?? null;
+  }
+
+  agentQuotaUsage(agentId: AgentId): AgentQuotaUsage | null {
+    const direct = this.latestContextUsageByAgent().get(agentId)?.quota;
+    if (direct) return direct;
+    const providerId = this.roomAgentProfile(this.selectedRoom(), agentId).providerId;
+    const actions = [...this.runActions()].sort((a, b) => b.createdAt - a.createdAt);
+    for (const action of actions) {
+      if (!action.agentId || !action.contextUsage?.quota) continue;
+      const profile = this.roomAgentProfile(this.selectedRoom(), action.agentId);
+      if (profile.providerId === providerId) return action.contextUsage.quota;
+    }
+    return null;
+  }
+
+  // Ring geometry: r=26, C=2π·26=163.36; wedge spans 116° = 52.64 of arc, 4° gaps.
+  private static readonly RING_CIRCUMFERENCE = 163.36;
+  private static readonly RING_WEDGE_ARC = 52.64;
+
+  agentRingTrackDash(): string {
+    const arc = App.RING_WEDGE_ARC;
+    const gap = App.RING_CIRCUMFERENCE - arc;
+    return `${arc.toFixed(2)} ${gap.toFixed(2)}`;
+  }
+
+  agentRingDash(percent: number | null | undefined): string {
+    const safe = Math.max(0, Math.min(100, percent ?? 0));
+    const fill = (safe / 100) * App.RING_WEDGE_ARC;
+    const remainder = App.RING_CIRCUMFERENCE - fill;
+    return `${fill.toFixed(2)} ${remainder.toFixed(2)}`;
+  }
+
+  agentRingCtxPercent(agentId: AgentId): number {
+    const usage = this.agentContextUsage(agentId);
+    return usage ? this.agentContextPercent(usage) : 0;
+  }
+
+  agentRingCtxPercentRounded(agentId: AgentId): number {
+    const usage = this.agentContextUsage(agentId);
+    return usage ? this.agentContextPercentRounded(usage) : 0;
+  }
+
+  agentRingCtxDash(agentId: AgentId): string {
+    return this.agentRingDash(this.agentRingCtxPercent(agentId));
+  }
+
+  agentRingFiveHourPercent(agentId: AgentId): number | null {
+    return this.agentFiveHourUsage(agentId)?.percent ?? null;
+  }
+
+  agentRingFiveHourPercentRounded(agentId: AgentId): string {
+    const percent = this.agentRingFiveHourPercent(agentId);
+    return percent === null ? '—' : `${Math.round(percent)}%`;
+  }
+
+  agentRingFiveHourDash(agentId: AgentId): string {
+    return this.agentRingDash(this.agentRingFiveHourPercent(agentId));
+  }
+
+  agentRingSevenDayPercent(agentId: AgentId): number | null {
+    return this.agentSevenDayUsage(agentId)?.percent ?? null;
+  }
+
+  agentRingSevenDayPercentRounded(agentId: AgentId): string {
+    const percent = this.agentRingSevenDayPercent(agentId);
+    return percent === null ? '—' : `${Math.round(percent)}%`;
+  }
+
+  agentRingSevenDayDash(agentId: AgentId): string {
+    return this.agentRingDash(this.agentRingSevenDayPercent(agentId));
+  }
+
+  agentRingCtxTooltip(agentId: AgentId): string {
+    const usage = this.agentContextUsage(agentId);
+    if (!usage) return 'Compact context (no usage data yet)';
+    const pct = this.agentContextPercentRounded(usage);
+    const used = this.formatTokenCount(this.agentContextUsedTokens(usage));
+    const window = usage.contextWindow ? this.formatTokenCount(usage.contextWindow) : '?';
+    const action = this.canCompactAgent(agentId)
+      ? this.isAgentRunning(agentId)
+        ? ' — compact when this agent is idle'
+        : this.compactingAgent() === agentId
+          ? ' — compacting…'
+          : ' — click to compact'
+      : '';
+    return `Context: ${pct}% used · ${used} / ${window} tokens${action}`;
+  }
+
+  agentRingFiveHourTooltip(agentId: AgentId): string {
+    const data = this.agentFiveHourUsage(agentId);
+    if (!data) return '5h quota usage: not yet tracked';
+    const reset = data.resetsAt ? ` (resets in ${this.formatResetWindow(data.resetsAt - Date.now())})` : '';
+    const status = data.status ? ` / ${data.status}` : '';
+    return data.percent === undefined
+      ? `5h quota${reset}: usage percent unavailable${status}`
+      : `5h quota usage${reset}: ${Math.round(data.percent)}%${status}`;
+  }
+
+  agentRingSevenDayTooltip(agentId: AgentId): string {
+    const data = this.agentSevenDayUsage(agentId);
+    if (!data) return '7d quota usage: not yet tracked';
+    const reset = data.resetsAt ? ` (resets in ${this.formatResetWindow(data.resetsAt - Date.now())})` : '';
+    const status = data.status ? ` / ${data.status}` : '';
+    return data.percent === undefined
+      ? `7d quota${reset}: usage percent unavailable${status}`
+      : `7d quota usage${reset}: ${Math.round(data.percent)}%${status}`;
+  }
+
+  agentModelLabel(agentId: AgentId): string {
+    const usage = this.agentContextUsage(agentId);
+    if (!usage?.model) return '';
+    return usage.reasoningEffort ? `${usage.model} · ${usage.reasoningEffort}` : usage.model;
+  }
+
+  ringCtxClick(agentId: AgentId, event: Event): void {
+    if (!this.canCompactAgent(agentId)) return;
+    if (this.isAgentRunning(agentId) || this.compactingAgent() === agentId) return;
+    this.openCompactAgent(agentId, event);
+  }
+
+  private formatResetWindow(ms: number): string {
+    if (!Number.isFinite(ms) || ms <= 0) return 'now';
+    const totalMin = Math.round(ms / 60000);
+    const days = Math.floor(totalMin / (60 * 24));
+    const remain = totalMin - days * 60 * 24;
+    const hours = Math.floor(remain / 60);
+    const mins = remain - hours * 60;
+    if (days > 0) return hours > 0 ? `${days}d ${hours}h` : `${days}d`;
+    if (hours > 0) return mins > 0 ? `${hours}h${this.pad2(mins)}m` : `${hours}h`;
+    return `${mins}m`;
+  }
+
   formatTokenCount(tokens: number | undefined): string {
     if (!Number.isFinite(tokens)) return 'unknown';
     const value = Math.max(0, tokens ?? 0);
@@ -2517,6 +3252,7 @@ export class App implements OnDestroy {
       const lane = laneByRun.get(run.id);
       if (lane && run.completedAt && run.status !== 'running') {
         const elapsed = this.elapsedLabel(run.startedAt, run.completedAt);
+        const actor = this.activityActor(run.agentId);
         events.push({
           id: `lane-finish:${run.id}:${run.status}`,
           createdAt: run.completedAt,
@@ -2524,8 +3260,8 @@ export class App implements OnDestroy {
           tone: run.status === 'completed' || run.status === 'empty' ? 'done' : 'blocked',
           title:
             run.status === 'completed' || run.status === 'empty'
-              ? `${run.agentId} finished "${lane.title}" in ${elapsed}`
-              : `${run.agentId} hit a failure on "${lane.title}" after ${elapsed}`,
+              ? `${actor} finished "${lane.title}" in ${elapsed}`
+              : `${actor} hit a failure on "${lane.title}" after ${elapsed}`,
           detail: run.error ? this.oneLine(run.error, 180) : '',
           runId: run.id,
         });
@@ -2536,7 +3272,7 @@ export class App implements OnDestroy {
           createdAt: run.lifecycleUpdatedAt,
           agentId: run.agentId,
           tone: 'blocked',
-          title: `${run.agentId} may be stalled`,
+          title: `${this.activityActor(run.agentId)} may be stalled`,
           detail: run.lifecycleReason || 'no provider signal recently',
           runId: run.id,
         });
@@ -2711,7 +3447,7 @@ export class App implements OnDestroy {
   }
 
   private activityActor(agentId: AgentId | undefined): string {
-    return agentId || 'agent';
+    return agentId ? this.agentDisplayName(agentId) : 'agent';
   }
 
   private isActivityRunAction(action: AgentRunAction): boolean {
@@ -3199,9 +3935,31 @@ export class App implements OnDestroy {
         this.tasks.update((tasks) => this.upsert(tasks, updated));
         this.ws.postMessage(roomId, this.authorName(), prompt);
       });
+      this.closeMissionActionPopover();
       return;
     }
     this.ws.postMessage(roomId, this.authorName(), prompt);
+    this.closeMissionActionPopover();
+  }
+
+  toggleMissionActionPopover(): void {
+    this.missionActionPopoverOpen.update((open) => !open);
+  }
+
+  closeMissionActionPopover(): void {
+    this.missionActionPopoverOpen.set(false);
+  }
+
+  missionActionItemLabel(): string {
+    const id = this.missionActionChecklistItemId();
+    if (!id) return 'next unblocked item';
+    const item = this.missionActionWorkItems().find((i) => i.id === id);
+    return item ? item.title : 'next unblocked item';
+  }
+
+  @HostListener('document:keydown.escape')
+  onMissionActionEscape(): void {
+    if (this.missionActionPopoverOpen()) this.closeMissionActionPopover();
   }
 
   yoloTurnCounterText(): string {
@@ -3263,7 +4021,7 @@ export class App implements OnDestroy {
       .updateChecklistItem(roomId, task.id, item.id, {
         ownerAgentId,
         statusNote: ownerAgentId
-          ? `${ownerAgentId} took ownership of this work item.`
+          ? `${this.agentDisplayName(ownerAgentId)} took ownership of this work item.`
           : `${this.authorName()} cleared the owner.`,
       })
       .subscribe(() => this.loadTaskControl(roomId, task.id));
@@ -3554,7 +4312,10 @@ export class App implements OnDestroy {
 
   private isVisibleProviderSignal(label: string, detail: string | undefined): boolean {
     if (!this.isNoisyProviderLabel(label)) return true;
-    return Boolean(this.readableDetailText(detail, 1));
+    const readable = this.readableDetailText(detail, 320);
+    if (!readable) return false;
+    if (/assistant message ready|agent_message/i.test(label)) return true;
+    return this.isSubstantiveProviderSignalDetail(readable);
   }
 
   private isNoisyProviderLabel(label: string): boolean {
@@ -3562,15 +4323,54 @@ export class App implements OnDestroy {
     return [
       /\bmessage_start\b/,
       /\bmessage_delta\b/,
+      /\bmessage delta\b/,
       /\bmessage_stop\b/,
+      /\bmessage stop\b/,
       /\bcontent_block_start\b/,
       /\bcontent_block_delta\b/,
       /\bcontent_block_stop\b/,
+      /\bcontent block (?:start|delta|stop)\b/,
       /\btool_use\b/,
+      /\btool use\b/,
+      /\bcommand_execution\b/,
+      /\bcommand execution\b/,
+      /\bthread\.started\b/,
+      /\bthread started\b/,
       /\bturn started\b/,
+      /\bturn\.started\b/,
+      /\bturn\.completed\b/,
       /\bassistant message ready\b/,
+      /\bagent_message\b/,
+      /^agent process started$/,
+      /^still working$/,
+      /^(?:claude|codex|gemini)\s+user$/,
       /^(?:claude|codex|gemini)?\s*status$/,
     ].some((pattern) => pattern.test(normalized));
+  }
+
+  private isSubstantiveProviderSignalDetail(text: string): boolean {
+    const normalized = text.trim();
+    if (!normalized) return false;
+    const lowered = normalized.toLowerCase();
+    if (/last provider signal .*process still running/i.test(normalized)) return false;
+    if (/^running$/i.test(normalized)) return false;
+    const toolNameOnly = new Set([
+      'bash',
+      'edit',
+      'glob',
+      'grep',
+      'ls',
+      'multiedit',
+      'read',
+      'todowrite',
+      'webfetch',
+      'websearch',
+      'write',
+    ]);
+    if (toolNameOnly.has(lowered)) return false;
+    if (/^[0-9a-f-]{20,}$/i.test(normalized)) return false;
+    const words = normalized.split(/\s+/).filter(Boolean);
+    return words.length >= 4 || normalized.length >= 40;
   }
 
   private actionDetailText(action: AgentRunAction, maxChars: number): string {
@@ -3616,6 +4416,40 @@ export class App implements OnDestroy {
     input.setSelectionRange(cursor, cursor);
   }
 
+  private detectComposerMentionToken(input: HTMLInputElement): ComposerMentionToken | null {
+    const cursor = input.selectionStart ?? input.value.length;
+    const selectionEnd = input.selectionEnd ?? cursor;
+    if (selectionEnd !== cursor) return null;
+    const beforeCursor = input.value.slice(0, cursor);
+    const prefixMatch = beforeCursor.match(/(?:^|\s)@([A-Za-z0-9-]*)$/);
+    if (!prefixMatch) return null;
+    const prefix = prefixMatch[1] ?? '';
+    const suffix = input.value.slice(cursor).match(/^[A-Za-z0-9-]*/)?.[0] ?? '';
+    const start = cursor - prefix.length - 1;
+    const end = cursor + suffix.length;
+    return { query: `${prefix}${suffix}`.toLowerCase(), start, end };
+  }
+
+  private mentionHandleForProfile(
+    profile: RoomAgentProfile,
+    providerCounts: Map<ProviderId, number>,
+  ): string {
+    const displaySlug = this.mentionSlug(profile.displayName);
+    const providerIsAmbiguous = (providerCounts.get(profile.providerId) ?? 0) > 1;
+    if (displaySlug && (!providerIsAmbiguous || displaySlug !== profile.providerId)) {
+      return displaySlug;
+    }
+    return this.mentionSlug(profile.id) || profile.id.toLowerCase();
+  }
+
+  private mentionSlug(value: string): string {
+    return value
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-+|-+$/g, '');
+  }
+
   private apiErrorText(err: unknown, fallback: string): string {
     if (err instanceof Error && err.message) return err.message;
     if (typeof err === 'object' && err !== null && 'error' in err) {
@@ -3659,7 +4493,7 @@ export class App implements OnDestroy {
 
   private renderInlineMessageHtml(text: string): string {
     return text
-      .split(/(`[^`]+`|@file\("[^"]+"\)|@(?:claude|codex|gemini)\b)/gi)
+      .split(/(`[^`]+`|@file\("[^"]+"\)|@[a-z][a-z0-9-]*(?![.\w-]))/gi)
       .map((part) => {
         if (!part) return '';
         if (part.startsWith('`') && part.endsWith('`') && part.length >= 2) {
@@ -3669,14 +4503,44 @@ export class App implements OnDestroy {
           const filePath = part.slice(7, -2);
           return `<span class="file-mention" title="${this.escapeHtml(filePath)}">@file ${this.escapeHtml(this.basename(filePath))}</span>`;
         }
-        const mention = part.match(/^@(claude|codex|gemini)\b/i);
+        const mention = part.match(/^@([a-z][a-z0-9-]*)$/i);
         if (mention) {
-          const agent = mention[1]!.toLowerCase();
-          return `<span class="mention mention--${agent}">${this.escapeHtml(part)}</span>`;
+          const providerId = this.mentionProviderForHandle(mention[1]!);
+          if (providerId) {
+            return `<span class="mention mention--${providerId}">${this.escapeHtml(part)}</span>`;
+          }
         }
         return this.renderInlineMarkdown(part);
       })
       .join('');
+  }
+
+  private mentionProviderForHandle(handle: string): ProviderId | null {
+    const normalized = this.mentionSlug(handle);
+    if (!normalized) return null;
+    const room = this.selectedRoom();
+    if (room) {
+      const providerCounts = new Map<ProviderId, number>();
+      for (const agentId of room.agents) {
+        const providerId = this.roomAgentProfile(room, agentId).providerId;
+        providerCounts.set(providerId, (providerCounts.get(providerId) ?? 0) + 1);
+      }
+      for (const agentId of room.agents) {
+        const profile = this.roomAgentProfile(room, agentId);
+        const aliases = new Set([
+          this.mentionSlug(profile.id),
+          this.mentionSlug(profile.displayName),
+        ]);
+        if ((providerCounts.get(profile.providerId) ?? 0) === 1) {
+          aliases.add(profile.providerId);
+        }
+        if (aliases.has(normalized)) return profile.providerId;
+      }
+    }
+    if (normalized === 'claude' || normalized === 'codex' || normalized === 'gemini') {
+      return normalized;
+    }
+    return null;
   }
 
   private renderInlineMarkdown(text: string): string {

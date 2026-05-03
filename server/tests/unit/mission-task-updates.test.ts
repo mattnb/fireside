@@ -94,6 +94,32 @@ note: Closed as non-blocking/superseded for mission acceptance.
     ]);
   });
 
+  it('extracts task blocks wrapped in html comment syntax', () => {
+    const extracted = extractMissionTaskUpdates(`Sequencing plan is committed.
+
+<!-- /mission-task
+action: update
+id: 0oIT5mTUIJRGrR
+status: done
+owner: claude-engineering-manager
+note: Sequencing & ownership plan committed.
+/end-mission-task -->
+
+Continuing with the next lane.`);
+
+    expect(extracted.visibleText).toContain('Sequencing plan is committed.');
+    expect(extracted.visibleText).toContain('Continuing with the next lane.');
+    expect(extracted.visibleText).not.toContain('<!--');
+    expect(extracted.updates).toMatchObject([
+      {
+        id: '0oIT5mTUIJRGrR',
+        status: 'done',
+        ownerAgentId: 'claude-engineering-manager',
+        note: 'Sequencing & ownership plan committed.',
+      },
+    ]);
+  });
+
   it('extracts parallel work scope contracts from task blocks', () => {
     const extracted = extractMissionTaskUpdates(`Planned parallel work.
 

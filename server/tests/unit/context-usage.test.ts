@@ -4,6 +4,8 @@ import os from 'node:os';
 import path from 'node:path';
 import {
   claudeContextUsage,
+  claudeDebugQuotaUsage,
+  claudeQuotaUsage,
   codexContextUsage,
   codexContextWindowForModel,
   readCodexConfig,
@@ -154,6 +156,20 @@ describe('context usage telemetry', () => {
               },
               model_context_window: 258_400,
             },
+            rate_limits: {
+              primary: {
+                used_percent: 9.2,
+                window_minutes: 300,
+                resets_at: 1777610101,
+              },
+              secondary: {
+                used_percent: 26.4,
+                window_minutes: 10080,
+                resets_at: 1777977444,
+              },
+              plan_type: 'prolite',
+              rate_limit_reached_type: null,
+            },
           },
         }),
       ].join('\n'),
@@ -187,6 +203,12 @@ describe('context usage telemetry', () => {
       cachedInputTokens: 205_696,
       outputTokens: 1_420,
       contextWindow: 258_400,
+      quota: {
+        fiveHour: { percent: 9.2, windowMinutes: 300, resetsAt: 1777610101000 },
+        sevenDay: { percent: 26.4, windowMinutes: 10080, resetsAt: 1777977444000 },
+        planType: 'prolite',
+        rateLimitReachedType: null,
+      },
     });
     expect(usage?.estimated).toBeUndefined();
     expect(usage?.percentUsed).toBeCloseTo(80.34, 1);
@@ -211,6 +233,94 @@ describe('context usage telemetry', () => {
       usedTokens: 41467,
       contextWindow: 1_000_000,
       remainingTokens: 958_533,
+    });
+  });
+
+  it('attaches Claude quota windows when result metadata includes rate limits', () => {
+    const usage = claudeContextUsage({
+      rate_limits: {
+        five_hour: { used_percentage: 43, resets_at: 1777610101 },
+        seven_day: { used_percentage: 12, resets_at: 1777977444 },
+      },
+      modelUsage: {
+        'claude-opus-4-7[1m]': {
+          inputTokens: 6,
+          outputTokens: 6,
+          cacheReadInputTokens: 0,
+          cacheCreationInputTokens: 0,
+          contextWindow: 1_000_000,
+        },
+      },
+    });
+
+    expect(usage).toMatchObject({
+      provider: 'claude',
+      quota: {
+        fiveHour: { percent: 43, windowMinutes: 300, resetsAt: 1777610101000 },
+        sevenDay: { percent: 12, windowMinutes: 10080, resetsAt: 1777977444000 },
+      },
+    });
+  });
+
+  it('captures Claude reset-only rate limit events', () => {
+    const usage = claudeQuotaUsage({
+      type: 'rate_limit_event',
+      rate_limit_info: {
+        status: 'allowed',
+        resetsAt: 1777776000,
+        rateLimitType: 'five_hour',
+      },
+    });
+
+    expect(usage).toMatchObject({
+      provider: 'claude',
+      quotaOnly: true,
+      quota: {
+        fiveHour: {
+          windowMinutes: 300,
+          resetsAt: 1777776000000,
+          status: 'allowed',
+        },
+      },
+    });
+    expect(usage?.quota?.fiveHour?.percent).toBeUndefined();
+  });
+
+  it('captures Claude quota utilization from debug response headers', () => {
+    const usage = claudeDebugQuotaUsage(
+      [
+        '"anthropic-ratelimit-unified-5h-utilization": "0.13"',
+        '"anthropic-ratelimit-unified-5h-reset": "1777776000"',
+        '"anthropic-ratelimit-unified-5h-status": "allowed"',
+        '"anthropic-ratelimit-unified-7d-utilization": "0.23"',
+        '"anthropic-ratelimit-unified-7d-reset": "1778101200"',
+        '"anthropic-ratelimit-unified-7d-status": "allowed"',
+        '"anthropic-ratelimit-unified-representative-claim": "five_hour"',
+        '"anthropic-ratelimit-unified-overage-status": "rejected"',
+      ].join('\n'),
+      'claude-opus-4-7[1m]',
+    );
+
+    expect(usage).toMatchObject({
+      provider: 'claude',
+      model: 'claude-opus-4-7[1m]',
+      quotaOnly: true,
+      quota: {
+        fiveHour: {
+          percent: 13,
+          windowMinutes: 300,
+          resetsAt: 1777776000000,
+          status: 'allowed',
+        },
+        sevenDay: {
+          percent: 23,
+          windowMinutes: 10080,
+          resetsAt: 1778101200000,
+          status: 'allowed',
+        },
+        representativeClaim: 'five_hour',
+        overageStatus: 'rejected',
+      },
     });
   });
 

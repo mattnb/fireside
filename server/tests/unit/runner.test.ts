@@ -113,6 +113,18 @@ describe('runAgentTurn — cwd resolution', () => {
     expect(callArgs.args).toEqual(['--with-permission']);
   });
 
+  it('passes adapter env overrides to runSubprocess', async () => {
+    const buildEnv = vi.fn(() => ({ ANTHROPIC_LOG: 'debug' }));
+    const spec = makeSpec({ buildEnv });
+    await runAgentTurn({ spec, prompt: 'hi', sessionId: 'session-1' });
+
+    expect(buildEnv).toHaveBeenCalledWith('hi', 'session-1');
+    const firstCall = runSubprocessMock.mock.calls[0];
+    expect(firstCall).toBeDefined();
+    const callArgs = (firstCall as unknown as [{ env?: Record<string, string> }])[0];
+    expect(callArgs.env).toEqual({ ANTHROPIC_LOG: 'debug' });
+  });
+
   it('forwards parsed stream events from runSubprocess callbacks', async () => {
     runSubprocessMock.mockImplementationOnce(async (opts: unknown) => {
       const callbacks = opts as { onStdoutLine?: (line: string) => void };

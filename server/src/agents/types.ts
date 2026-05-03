@@ -20,6 +20,14 @@ export interface RoomAgentProfile {
   personaId: string;
   personaName: string;
   personaSummary: string;
+  temporary?: boolean;
+  spawnedBy?: AgentId;
+  spawnedByPersonaId?: string;
+  spawnedAt?: number;
+  spawnedReason?: string;
+  spawnedScope?: string;
+  dismissWhen?: string;
+  maxTurns?: number;
 }
 
 export interface AgentRunContext {
@@ -47,6 +55,8 @@ export interface AgentSpec {
   /** Optional pre-formatted text written to stdin. If undefined, the prompt
    *  goes via the CLI's argv (per the CLI's contract). */
   buildStdin?: (prompt: string, sessionId: string | null, context?: AgentRunContext) => string;
+  /** Optional per-turn environment overrides merged into the subprocess env. */
+  buildEnv?: (prompt: string, sessionId: string | null, context?: AgentRunContext) => Record<string, string>;
   /** Converts live stdout/stderr lines into provider-neutral progress events. */
   parseStreamLine?: (
     line: string,

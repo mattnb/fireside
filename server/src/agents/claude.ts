@@ -2,7 +2,12 @@
 import type { AgentReply, AgentRunContext, AgentSpec, AgentStreamEvent } from './types.js';
 import { AgentParseError } from './types.js';
 import { extractTopLevelJsonObject } from './json-extract.js';
-import { claudeContextUsage, formatContextUsage } from '../context-usage.js';
+import {
+  claudeContextUsage,
+  claudeDebugQuotaUsage,
+  claudeQuotaUsage,
+  formatContextUsage,
+} from '../context-usage.js';
 import { permissionTargetDirectory } from '../permissions.js';
 
 // Field names captured from Phase 2 fixture (claude-headless.json):
@@ -10,6 +15,11 @@ import { permissionTargetDirectory } from '../permissions.js';
 //   top-level `session_id` carries the session id
 const RESULT_FIELD = 'result';
 const SESSION_FIELD = 'session_id';
+const CLAUDE_QUOTA_DEBUG_INTERVAL_MS = 10 * 60 * 1000;
+const CLAUDE_DEBUG_REDACTION =
+  '[claude debug log redacted; quota headers parsed into telemetry]';
+
+let nextClaudeQuotaDebugAt = 0;
 
 function excerpt(text: unknown, maxChars = 320): string {
   if (typeof text !== 'string') return '';
@@ -30,6 +40,60 @@ function parseJsonLine(line: string): Record<string, unknown> | null {
   } catch {
     return null;
   }
+}
+
+function shouldCaptureClaudeQuotaHeaders(): boolean {
+  if (process.env.FIRESIDE_CLAUDE_QUOTA_DEBUG_HEADERS === '0') return false;
+  if (process.env.ANTHROPIC_LOG === 'debug') return false;
+  const now = Date.now();
+  if (now < nextClaudeQuotaDebugAt) return false;
+  nextClaudeQuotaDebugAt = now + CLAUDE_QUOTA_DEBUG_INTERVAL_MS;
+  return true;
+}
+
+function isClaudeStreamJsonLine(line: string): boolean {
+  const obj = parseJsonLine(line);
+  if (!obj) return false;
+  const type = typeof obj.type === 'string' ? obj.type : '';
+  if (['system', 'assistant', 'result', 'stream_event', 'rate_limit_event'].includes(type)) {
+    return true;
+  }
+  return typeof obj[RESULT_FIELD] === 'string' || typeof obj[SESSION_FIELD] === 'string';
+}
+
+function hasClaudeDebugOutput(stdout: string, stderr: string): boolean {
+  return /anthropic-ratelimit-unified-|anthropic_log|response headers|request headers|x-api-key|authorization/i.test(
+    `${stdout}\n${stderr}`,
+  );
+}
+
+function isClaudeDebugLine(line: string): boolean {
+  return /anthropic-ratelimit-unified-|anthropic_log|response headers|request headers|x-api-key|authorization|anthropic-version|anthropic-beta|api-key/i.test(
+    line,
+  );
+}
+
+function sanitizeClaudeDebugOutput(text: string): string {
+  const kept: string[] = [];
+  let removed = 0;
+  for (const line of text.split('\n')) {
+    if (!line.trim()) continue;
+    if (isClaudeStreamJsonLine(line)) {
+      kept.push(line);
+      continue;
+    }
+    removed += 1;
+  }
+  if (removed > 0) kept.push(CLAUDE_DEBUG_REDACTION);
+  return kept.length > 0 ? `${kept.join('\n')}\n` : '';
+}
+
+function sanitizeClaudeRaw(stdout: string, stderr: string): { stdout: string; stderr: string } {
+  if (!hasClaudeDebugOutput(stdout, stderr)) return { stdout, stderr };
+  return {
+    stdout: sanitizeClaudeDebugOutput(stdout),
+    stderr: sanitizeClaudeDebugOutput(stderr),
+  };
 }
 
 function textFromContent(value: unknown): string | null {
@@ -186,7 +250,15 @@ function claudeStreamEvents(line: string): AgentStreamEvent[] {
   }
 
   if (type === 'rate_limit_event') {
-    return [{ kind: 'usage', status: 'info', label: 'claude rate limit update' }];
+    const contextUsage = claudeQuotaUsage(obj);
+    return [
+      {
+        kind: 'usage',
+        status: 'info',
+        label: 'claude rate limit update',
+        ...(contextUsage ? { detail: formatContextUsage(contextUsage), contextUsage } : {}),
+      },
+    ];
   }
 
   return [{ kind: 'event', status: 'running', label: `claude ${type}` }];
@@ -279,17 +351,38 @@ export const claudeSpec: AgentSpec = {
   buildStdin(prompt) {
     return prompt;
   },
+  buildEnv() {
+    return shouldCaptureClaudeQuotaHeaders() ? { ANTHROPIC_LOG: 'debug' } : {};
+  },
   parseStreamLine(line, stream): AgentStreamEvent[] {
-    if (stream === 'stderr') return [];
+    const debugQuotaUsage = claudeDebugQuotaUsage(line);
+    if (debugQuotaUsage) {
+      return [
+        {
+          kind: 'usage',
+          status: 'info',
+          label: 'claude rate limit headers',
+          detail: formatContextUsage(debugQuotaUsage),
+          contextUsage: debugQuotaUsage,
+        },
+      ];
+    }
+    if (stream === 'stderr') {
+      if (isClaudeDebugLine(line)) {
+        return [{ kind: 'event', status: 'running', label: 'claude status' }];
+      }
+      return [];
+    }
     return claudeStreamEvents(line);
   },
   parseOutput(stdout, stderr): AgentReply {
+    const raw = sanitizeClaudeRaw(stdout, stderr);
     if (!stdout.trim()) {
-      throw new AgentParseError('claude', 'empty stdout', stdout, stderr);
+      throw new AgentParseError('claude', 'empty stdout', raw.stdout, raw.stderr);
     }
     const streamed = parseClaudeStreamReply(stdout);
     if (streamed) {
-      return { text: streamed.text, sessionId: streamed.sessionId, raw: { stdout, stderr } };
+      return { text: streamed.text, sessionId: streamed.sessionId, raw };
     }
     // Claude can emit a session-startup greeting (per CLAUDE.md instructions)
     // before the JSON object on stdout. Use a tolerant extractor so the
@@ -299,8 +392,8 @@ export const claudeSpec: AgentSpec = {
       throw new AgentParseError(
         'claude',
         'no top-level JSON object found in stdout',
-        stdout,
-        stderr,
+        raw.stdout,
+        raw.stderr,
       );
     }
     const obj = parsed as Record<string, unknown>;
@@ -311,10 +404,10 @@ export const claudeSpec: AgentSpec = {
       throw new AgentParseError(
         'claude',
         `missing field "${RESULT_FIELD}" in output`,
-        stdout,
-        stderr,
+        raw.stdout,
+        raw.stderr,
       );
     }
-    return { text, sessionId, raw: { stdout, stderr } };
+    return { text, sessionId, raw };
   },
 };

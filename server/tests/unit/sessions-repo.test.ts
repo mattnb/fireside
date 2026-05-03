@@ -1,7 +1,12 @@
 // server/tests/unit/sessions-repo.test.ts
 import { describe, it, expect, beforeEach } from 'vitest';
 import { openDatabase } from '../../src/db.js';
-import { getCliSessionId, upsertCliSessionId } from '../../src/repos/sessions.js';
+import {
+  deleteCliSessionId,
+  getCliSession,
+  getCliSessionId,
+  upsertCliSessionId,
+} from '../../src/repos/sessions.js';
 
 describe('sessions repo', () => {
   let db: ReturnType<typeof openDatabase>;
@@ -14,8 +19,12 @@ describe('sessions repo', () => {
   });
 
   it('upserts a new session id', () => {
-    upsertCliSessionId(db, 'r1', 'claude', 'cs-abc');
+    upsertCliSessionId(db, 'r1', 'claude', 'cs-abc', 'claude');
     expect(getCliSessionId(db, 'r1', 'claude')).toBe('cs-abc');
+    expect(getCliSession(db, 'r1', 'claude')).toMatchObject({
+      cliSessionId: 'cs-abc',
+      providerId: 'claude',
+    });
   });
 
   it('updates an existing session id (latest wins)', () => {
@@ -31,5 +40,11 @@ describe('sessions repo', () => {
     expect(getCliSessionId(db, 'r1', 'claude')).toBe('A');
     expect(getCliSessionId(db, 'r1', 'codex')).toBe('B');
     expect(getCliSessionId(db, 'r2', 'claude')).toBe('C');
+  });
+
+  it('deletes a stored session id', () => {
+    upsertCliSessionId(db, 'r1', 'claude', 'cs-abc', 'claude');
+    deleteCliSessionId(db, 'r1', 'claude');
+    expect(getCliSessionId(db, 'r1', 'claude')).toBeNull();
   });
 });

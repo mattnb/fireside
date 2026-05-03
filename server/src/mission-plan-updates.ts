@@ -1,4 +1,5 @@
 import type { TaskPlanStatus } from './repos/task-plans.js';
+import { hiddenBlockRegex } from './hidden-blocks.js';
 
 export type MissionPlanAction = 'create' | 'update';
 
@@ -15,8 +16,7 @@ export interface ExtractedMissionPlanUpdates {
   updates: ParsedMissionPlanUpdate[];
 }
 
-const PLAN_RE =
-  /(^|\n)\/mission-plan\s*\n([\s\S]*?)\n[/@]end-(?:mission-plan|collab-note)(?=\s|$)/gi;
+const PLAN_RE = hiddenBlockRegex('mission-plan', ['mission-plan', 'collab-note']);
 const STATUSES = new Set(['draft', 'active', 'superseded', 'archived']);
 
 function normalizeAction(value: string): MissionPlanAction {

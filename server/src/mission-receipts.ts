@@ -1,3 +1,5 @@
+import { hiddenBlockRegex } from './hidden-blocks.js';
+
 export type MissionReceiptStatus =
   | 'completed'
   | 'blocked'
@@ -20,8 +22,7 @@ export interface ExtractedMissionReceipts {
   receipts: ParsedMissionReceipt[];
 }
 
-const RECEIPT_RE =
-  /(^|\n)\/mission-receipt\s*\n([\s\S]*?)\n[/@]end-(?:mission-receipt|collab-note)(?=\s|$)/gi;
+const RECEIPT_RE = hiddenBlockRegex('mission-receipt', ['mission-receipt', 'collab-note']);
 const STATUSES = new Set<MissionReceiptStatus>([
   'completed',
   'blocked',

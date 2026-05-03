@@ -16,7 +16,7 @@ function insertRun(
     taskId?: string | null;
     triggerMessageId: string;
     replyMessageId?: string | null;
-    agentId: 'claude' | 'codex' | 'gemini' | 'echo';
+    agentId: string;
     status?: AgentRunStatus;
     permissionMode?: 'plan' | 'edit' | 'full-auto';
     promptChars?: number;
@@ -246,6 +246,274 @@ describe('status snapshot', () => {
       usage: { provider: 'codex', model: 'gpt-5.5', usedTokens: 123 },
     });
     expect(snapshot.rooms[0]?.contextUsage.byAgent).toHaveLength(1);
+  });
+
+  it('merges quota-only context updates into the latest agent usage row', () => {
+    const room = createRoom(db, { name: 'quota-room', agents: ['claude'] });
+    const run = insertRun(db, {
+      roomId: room.id,
+      triggerMessageId: 'msg-1',
+      agentId: 'claude',
+      status: 'completed',
+      completedAt: Date.now(),
+    });
+    vi.setSystemTime(new Date(1_800_000_000_100));
+    createAgentRunAction(db, {
+      roomId: room.id,
+      taskId: null,
+      runId: run.id,
+      agentId: 'claude',
+      kind: 'adapter',
+      status: 'completed',
+      label: 'claude result received',
+      detail: 'usage',
+      contextUsage: {
+        provider: 'claude',
+        model: 'claude-opus-4-7[1m]',
+        usedTokens: 50_000,
+        contextWindow: 1_000_000,
+        source: 'claude:usage',
+      },
+    });
+    vi.setSystemTime(new Date(1_800_000_000_200));
+    createAgentRunAction(db, {
+      roomId: room.id,
+      taskId: null,
+      runId: run.id,
+      agentId: 'claude',
+      kind: 'adapter',
+      status: 'info',
+      label: 'claude rate limit update',
+      detail: 'quota',
+      contextUsage: {
+        provider: 'claude',
+        model: 'claude',
+        usedTokens: 0,
+        quotaOnly: true,
+        quota: {
+          fiveHour: { windowMinutes: 300, resetsAt: 1_800_001_000_000, status: 'allowed' },
+          source: 'claude:rate_limit_info',
+        },
+        source: 'claude:rate_limit_info',
+      },
+    });
+
+    const snapshot = buildStatusSnapshot({ db });
+
+    expect(snapshot.contextUsage.byAgent).toMatchObject([
+      {
+        agentId: 'claude',
+        usage: {
+          provider: 'claude',
+          usedTokens: 50_000,
+          quota: {
+            fiveHour: {
+              windowMinutes: 300,
+              resetsAt: 1_800_001_000_000,
+              status: 'allowed',
+            },
+          },
+        },
+      },
+    ]);
+    expect(snapshot.contextUsage.byAgent[0]?.usage.quotaOnly).toBeUndefined();
+  });
+
+  it('merges partial quota window fragments without losing existing fields', () => {
+    const room = createRoom(db, { name: 'quota-fragments', agents: ['claude'] });
+    const run = insertRun(db, {
+      roomId: room.id,
+      triggerMessageId: 'msg-1',
+      agentId: 'claude',
+      status: 'completed',
+      completedAt: Date.now(),
+    });
+    vi.setSystemTime(new Date(1_800_000_000_100));
+    createAgentRunAction(db, {
+      roomId: room.id,
+      taskId: null,
+      runId: run.id,
+      agentId: 'claude',
+      kind: 'adapter',
+      status: 'completed',
+      label: 'claude result received',
+      contextUsage: {
+        provider: 'claude',
+        model: 'claude-opus-4-7[1m]',
+        usedTokens: 50_000,
+        contextWindow: 1_000_000,
+        source: 'claude:usage',
+      },
+    });
+    vi.setSystemTime(new Date(1_800_000_000_200));
+    createAgentRunAction(db, {
+      roomId: room.id,
+      taskId: null,
+      runId: run.id,
+      agentId: 'claude',
+      kind: 'adapter',
+      status: 'info',
+      label: 'claude rate limit headers',
+      contextUsage: {
+        provider: 'claude',
+        model: 'claude',
+        usedTokens: 0,
+        quotaOnly: true,
+        quota: {
+          fiveHour: { percent: 15, windowMinutes: 300 },
+          sevenDay: { percent: 23, windowMinutes: 10_080 },
+          source: 'claude:debug-rate-limit-headers',
+        },
+        source: 'claude:debug-rate-limit-headers',
+      },
+    });
+    vi.setSystemTime(new Date(1_800_000_000_300));
+    createAgentRunAction(db, {
+      roomId: room.id,
+      taskId: null,
+      runId: run.id,
+      agentId: 'claude',
+      kind: 'adapter',
+      status: 'info',
+      label: 'claude rate limit headers',
+      contextUsage: {
+        provider: 'claude',
+        model: 'claude',
+        usedTokens: 0,
+        quotaOnly: true,
+        quota: {
+          fiveHour: { windowMinutes: 300, resetsAt: 1_800_001_000_000, status: 'allowed' },
+          sevenDay: { windowMinutes: 10_080, resetsAt: 1_800_100_000_000, status: 'allowed' },
+          source: 'claude:debug-rate-limit-headers',
+        },
+        source: 'claude:debug-rate-limit-headers',
+      },
+    });
+
+    const snapshot = buildStatusSnapshot({ db });
+
+    expect(snapshot.contextUsage.byAgent[0]?.usage.quota).toMatchObject({
+      fiveHour: {
+        percent: 15,
+        windowMinutes: 300,
+        resetsAt: 1_800_001_000_000,
+        status: 'allowed',
+      },
+      sevenDay: {
+        percent: 23,
+        windowMinutes: 10_080,
+        resetsAt: 1_800_100_000_000,
+        status: 'allowed',
+      },
+    });
+  });
+
+  it('shares Claude account quota across Claude-backed room agents', () => {
+    const room = createRoom(db, {
+      name: 'multi-claude-quota',
+      agents: ['sean', 'alexander', 'codex-reviewer'],
+      agentProfiles: [
+        {
+          id: 'sean',
+          providerId: 'claude',
+          displayName: 'Sean',
+          personaId: 'technical-lead',
+          personaName: 'Technical Lead',
+          personaSummary: 'Owns technical direction.',
+        },
+        {
+          id: 'alexander',
+          providerId: 'claude',
+          displayName: 'Alexander',
+          personaId: 'engineering-manager',
+          personaName: 'Engineering Manager',
+          personaSummary: 'Keeps the team moving.',
+        },
+        {
+          id: 'codex-reviewer',
+          providerId: 'codex',
+          displayName: 'Reviewer',
+          personaId: 'principal-software-engineer',
+          personaName: 'Principal Software Engineer',
+          personaSummary: 'Reviews implementation quality.',
+        },
+      ],
+    });
+    const seanRun = insertRun(db, {
+      roomId: room.id,
+      triggerMessageId: 'msg-sean',
+      agentId: 'sean',
+      status: 'completed',
+      completedAt: Date.now(),
+    });
+    vi.setSystemTime(new Date(1_800_000_000_100));
+    createAgentRunAction(db, {
+      roomId: room.id,
+      taskId: null,
+      runId: seanRun.id,
+      agentId: 'sean',
+      kind: 'adapter',
+      status: 'completed',
+      label: 'claude result received',
+      contextUsage: {
+        provider: 'claude',
+        model: 'claude-opus-4-7[1m]',
+        usedTokens: 92_000,
+        contextWindow: 1_000_000,
+        source: 'claude:usage',
+      },
+    });
+    const alexanderRun = insertRun(db, {
+      roomId: room.id,
+      triggerMessageId: 'msg-alexander',
+      agentId: 'alexander',
+      status: 'completed',
+      completedAt: Date.now(),
+    });
+    vi.setSystemTime(new Date(1_800_000_000_200));
+    createAgentRunAction(db, {
+      roomId: room.id,
+      taskId: null,
+      runId: alexanderRun.id,
+      agentId: 'alexander',
+      kind: 'adapter',
+      status: 'info',
+      label: 'claude rate limit headers',
+      contextUsage: {
+        provider: 'claude',
+        model: 'claude',
+        usedTokens: 0,
+        quotaOnly: true,
+        quota: {
+          fiveHour: { percent: 15, windowMinutes: 300, resetsAt: 1_800_001_000_000 },
+          sevenDay: { percent: 23, windowMinutes: 10_080, resetsAt: 1_800_100_000_000 },
+          source: 'claude:debug-rate-limit-headers',
+        },
+        source: 'claude:debug-rate-limit-headers',
+      },
+    });
+
+    const snapshot = buildStatusSnapshot({ db });
+    const byAgent = new Map(snapshot.rooms[0]!.contextUsage.byAgent.map((entry) => [entry.agentId, entry]));
+
+    expect(byAgent.get('sean')?.usage).toMatchObject({
+      provider: 'claude',
+      model: 'claude-opus-4-7[1m]',
+      usedTokens: 92_000,
+      quota: {
+        fiveHour: { percent: 15, resetsAt: 1_800_001_000_000 },
+        sevenDay: { percent: 23, resetsAt: 1_800_100_000_000 },
+      },
+    });
+    expect(byAgent.get('alexander')?.usage).toMatchObject({
+      provider: 'claude',
+      quotaOnly: true,
+      quota: {
+        fiveHour: { percent: 15 },
+        sevenDay: { percent: 23 },
+      },
+    });
+    expect(byAgent.has('codex-reviewer')).toBe(false);
   });
 
   it('projects per-agent workflow state from runs, permissions, and checklist ownership', () => {

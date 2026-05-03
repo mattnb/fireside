@@ -8,6 +8,7 @@ import {
 } from '../agents/profiles.js';
 import type { AgentId, RoomAgentProfile } from '../agents/types.js';
 import { ensureDefaultProject, getProject } from './projects.js';
+import { deleteCliSessionId } from './sessions.js';
 
 export interface Room {
   id: string;
@@ -131,6 +132,12 @@ export function setRoomAgents(
   });
   const nextAgents = nextProfiles.map((profile) => profile.id);
   const removed = room.agents.filter((a) => !nextAgents.includes(a));
+  const currentProfilesById = new Map(room.agentProfiles.map((profile) => [profile.id, profile]));
+  const providerChanged = nextProfiles
+    .filter((profile) => currentProfilesById.get(profile.id)?.providerId !== undefined)
+    .filter((profile) => currentProfilesById.get(profile.id)!.providerId !== profile.providerId)
+    .map((profile) => profile.id);
+  const sessionsToDelete = [...new Set([...removed, ...providerChanged])];
   const nextYoloAgents = (yoloAgents ?? room.yoloAgents).filter((agent) =>
     nextAgents.includes(agent),
   );
@@ -141,9 +148,8 @@ export function setRoomAgents(
        SET agents_json = ?, yolo_agents_json = ?, agent_profiles_json = ?
        WHERE id = ?`,
     ).run(JSON.stringify(newAgents), JSON.stringify(nextYoloAgents), JSON.stringify(nextProfiles), roomId);
-    if (removed.length > 0) {
-      const stmt = db.prepare(`DELETE FROM sessions WHERE room_id = ? AND agent_id = ?`);
-      for (const a of removed) stmt.run(roomId, a);
+    if (sessionsToDelete.length > 0) {
+      for (const agentId of sessionsToDelete) deleteCliSessionId(db, roomId, agentId);
     }
   });
   tx(nextAgents);

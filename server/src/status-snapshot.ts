@@ -176,6 +176,21 @@ export interface StatusSnapshotContextUsage {
   byAgent: StatusSnapshotAgentContextUsage[];
 }
 
+interface ContextUsageBuildOptions {
+  agentIds?: AgentId[];
+  agentProviderById?: Map<AgentId, string>;
+}
+
+interface SharedProviderQuota {
+  providerId: string;
+  actionId: string;
+  runId: string;
+  createdAt: number;
+  quota: NonNullable<AgentContextUsage['quota']>;
+}
+
+type AgentQuotaWindow = NonNullable<NonNullable<AgentContextUsage['quota']>['fiveHour']>;
+
 export type StatusSnapshotAgentWorkflowState =
   | 'working'
   | 'stale'
@@ -473,16 +488,155 @@ function contextUsageEntry(
   };
 }
 
-function buildContextUsage(actions: StatusSnapshotRunAction[]): StatusSnapshotContextUsage {
+function fallbackProviderId(agentId: AgentId): string {
+  if (agentId === 'claude' || agentId.startsWith('claude-')) return 'claude';
+  if (agentId === 'codex' || agentId.startsWith('codex-')) return 'codex';
+  if (agentId === 'gemini' || agentId.startsWith('gemini-')) return 'gemini';
+  return agentId;
+}
+
+function providerIdForAgent(
+  agentId: AgentId,
+  agentProviderById: Map<AgentId, string> | undefined,
+): string {
+  return agentProviderById?.get(agentId) ?? fallbackProviderId(agentId);
+}
+
+function providerIdForRoomAgent(room: Room, agentId: AgentId): string {
+  return (
+    room.agentProfiles.find((profile) => profile.id === agentId)?.providerId ??
+    fallbackProviderId(agentId)
+  );
+}
+
+function mergeQuotaWindow(
+  existing: AgentQuotaWindow | undefined,
+  incoming: AgentQuotaWindow | undefined,
+  preferIncoming: boolean,
+): AgentQuotaWindow | undefined {
+  if (!incoming) return existing;
+  if (!existing) return incoming;
+  return preferIncoming ? { ...existing, ...incoming } : { ...incoming, ...existing };
+}
+
+function mergeQuota(
+  existing: AgentContextUsage['quota'] | undefined,
+  incoming: AgentContextUsage['quota'] | undefined,
+  preferIncoming: boolean,
+): AgentContextUsage['quota'] | undefined {
+  if (!incoming) return existing;
+  if (!existing) return incoming;
+  const merged = preferIncoming
+    ? { ...existing, ...incoming, source: incoming.source }
+    : { ...incoming, ...existing, source: existing.source };
+  const fiveHour = mergeQuotaWindow(existing.fiveHour, incoming.fiveHour, preferIncoming);
+  const sevenDay = mergeQuotaWindow(existing.sevenDay, incoming.sevenDay, preferIncoming);
+  if (fiveHour) merged.fiveHour = fiveHour;
+  if (sevenDay) merged.sevenDay = sevenDay;
+  return merged;
+}
+
+function mergeQuotaUsage(
+  usage: AgentContextUsage,
+  quota: AgentContextUsage['quota'] | undefined,
+  preferIncoming: boolean,
+): AgentContextUsage {
+  if (!quota) return usage;
+  const mergedQuota = mergeQuota(usage.quota, quota, preferIncoming);
+  if (!mergedQuota) return usage;
+  return {
+    ...usage,
+    quota: mergedQuota,
+  };
+}
+
+function buildSharedProviderQuotas(
+  actions: StatusSnapshotRunAction[],
+  options: ContextUsageBuildOptions,
+): Map<string, SharedProviderQuota> {
+  const byProvider = new Map<string, SharedProviderQuota>();
+  for (const action of actions) {
+    const quota = action.contextUsage?.quota;
+    if (!quota) continue;
+    const providerId = providerIdForAgent(action.agentId, options.agentProviderById);
+    if (providerId !== 'claude') continue;
+    const existing = byProvider.get(providerId);
+    if (!existing) {
+      byProvider.set(providerId, {
+        providerId,
+        actionId: action.id,
+        runId: action.runId,
+        createdAt: action.createdAt,
+        quota,
+      });
+      continue;
+    }
+    existing.quota = mergeQuota(existing.quota, quota, false) ?? existing.quota;
+  }
+  return byProvider;
+}
+
+function applySharedProviderQuotas(
+  byAgent: Map<AgentId, StatusSnapshotAgentContextUsage>,
+  sharedQuotas: Map<string, SharedProviderQuota>,
+  options: ContextUsageBuildOptions,
+): void {
+  for (const agentId of options.agentIds ?? []) {
+    const providerId = providerIdForAgent(agentId, options.agentProviderById);
+    const shared = sharedQuotas.get(providerId);
+    if (!shared) continue;
+    const existing = byAgent.get(agentId);
+    if (existing) {
+      existing.usage = mergeQuotaUsage(existing.usage, shared.quota, true);
+      continue;
+    }
+    byAgent.set(agentId, {
+      agentId,
+      actionId: shared.actionId,
+      runId: shared.runId,
+      createdAt: shared.createdAt,
+      usage: {
+        provider: providerId,
+        model: providerId,
+        usedTokens: 0,
+        quota: shared.quota,
+        quotaOnly: true,
+        source: shared.quota.source,
+      },
+    });
+  }
+}
+
+function buildContextUsage(
+  actions: StatusSnapshotRunAction[],
+  options: ContextUsageBuildOptions = {},
+): StatusSnapshotContextUsage {
   const withUsage = actions.filter((action) => action.contextUsage).sort(compareActionsDesc);
   const latestAction = withUsage[0];
   const latest = latestAction ? contextUsageEntry(latestAction) : null;
   const byAgent = new Map<AgentId, StatusSnapshotAgentContextUsage>();
   for (const action of withUsage) {
-    if (byAgent.has(action.agentId)) continue;
     const entry = contextUsageEntry(action);
-    if (entry) byAgent.set(action.agentId, entry);
+    if (!entry) continue;
+    const existing = byAgent.get(action.agentId);
+    if (!existing) {
+      byAgent.set(action.agentId, entry);
+      continue;
+    }
+
+    if (existing.usage.quotaOnly && !entry.usage.quotaOnly) {
+      byAgent.set(action.agentId, {
+        ...entry,
+        usage: mergeQuotaUsage(entry.usage, existing.usage.quota, true),
+      });
+      continue;
+    }
+
+    if (entry.usage.quota) {
+      existing.usage = mergeQuotaUsage(existing.usage, entry.usage.quota, false);
+    }
   }
+  applySharedProviderQuotas(byAgent, buildSharedProviderQuotas(withUsage, options), options);
   return { latest, byAgent: Array.from(byAgent.values()) };
 }
 
@@ -656,6 +810,7 @@ export function buildStatusSnapshot(input: BuildStatusSnapshotInput): StatusSnap
   const recentLimit = boundedRecentLimit(input.recentLimit);
   const now = Date.now();
   const agents = new Set<AgentId>();
+  const agentProviderById = new Map<AgentId, string>();
   const taskCounts = zeroTaskCounts();
   const runCounts = zeroRunCounts();
   const actionCounts = zeroRunActionCounts();
@@ -665,7 +820,13 @@ export function buildStatusSnapshot(input: BuildStatusSnapshotInput): StatusSnap
   const allAgentStates: StatusSnapshotAgentState[] = [];
 
   const roomSnapshots = rooms.map((room) => {
-    for (const agent of room.agents) agents.add(agent);
+    const roomAgentProviderById = new Map<AgentId, string>();
+    for (const agent of room.agents) {
+      agents.add(agent);
+      const providerId = providerIdForRoomAgent(room, agent);
+      agentProviderById.set(agent, providerId);
+      roomAgentProviderById.set(agent, providerId);
+    }
 
     const roomTaskCounts = zeroTaskCounts();
     const roomRunCounts = zeroRunCounts();
@@ -729,7 +890,10 @@ export function buildStatusSnapshot(input: BuildStatusSnapshotInput): StatusSnap
       activeTasks: roomActiveTasks,
       lastRun: roomSortedRuns[0] ?? null,
       lastAction: roomSortedActions[0] ?? null,
-      contextUsage: buildContextUsage(roomActionSummaries),
+      contextUsage: buildContextUsage(roomActionSummaries, {
+        agentIds: room.agents,
+        agentProviderById: roomAgentProviderById,
+      }),
       agentStates: roomAgentStates,
     } satisfies StatusSnapshotRoom;
   });
@@ -769,7 +933,10 @@ export function buildStatusSnapshot(input: BuildStatusSnapshotInput): StatusSnap
       recent: sortedActions.slice(0, recentLimit),
       summary: actionCounts,
     },
-    contextUsage: buildContextUsage(allActions),
+    contextUsage: buildContextUsage(allActions, {
+      agentIds: Array.from(agents),
+      agentProviderById,
+    }),
     agentStates: allAgentStates,
   };
 }

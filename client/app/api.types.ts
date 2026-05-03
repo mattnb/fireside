@@ -102,6 +102,14 @@ export interface RoomAgentProfile {
   personaId: string;
   personaName: string;
   personaSummary: string;
+  temporary?: boolean;
+  spawnedBy?: AgentId;
+  spawnedByPersonaId?: string;
+  spawnedAt?: number;
+  spawnedReason?: string;
+  spawnedScope?: string;
+  dismissWhen?: string;
+  maxTurns?: number;
 }
 
 export interface Room {
@@ -164,6 +172,19 @@ export interface StatusSnapshotAgentState {
   checklistItemId: string | null;
 }
 
+export interface StatusSnapshotAgentContextUsage {
+  agentId: AgentId;
+  actionId: string;
+  runId: string;
+  createdAt: number;
+  usage: AgentContextUsage;
+}
+
+export interface StatusSnapshotContextUsage {
+  latest: StatusSnapshotAgentContextUsage | null;
+  byAgent: StatusSnapshotAgentContextUsage[];
+}
+
 export interface StatusSnapshotRoom {
   id: string;
   projectId: string;
@@ -190,6 +211,7 @@ export interface StatusSnapshotRoom {
   }>;
   lastRun: AgentRun | null;
   lastAction: AgentRunAction | null;
+  contextUsage: StatusSnapshotContextUsage;
   agentStates: StatusSnapshotAgentState[];
 }
 
@@ -204,6 +226,7 @@ export interface StatusSnapshot {
     runs: StatusSnapshotRunCounts;
   };
   rooms: StatusSnapshotRoom[];
+  contextUsage: StatusSnapshotContextUsage;
   agentStates: StatusSnapshotAgentState[];
 }
 
@@ -425,6 +448,21 @@ export interface AgentRunAction {
   createdAt: number;
 }
 
+export interface AgentQuotaWindowUsage {
+  percent?: number;
+  windowMinutes?: number;
+  resetsAt?: number;
+  status?: string;
+}
+
+export interface AgentQuotaUsage {
+  fiveHour?: AgentQuotaWindowUsage;
+  sevenDay?: AgentQuotaWindowUsage;
+  planType?: string;
+  rateLimitReachedType?: string | null;
+  source: string;
+}
+
 export interface AgentContextUsage {
   provider: string;
   model: string;
@@ -442,6 +480,8 @@ export interface AgentContextUsage {
   percentUsed?: number;
   reportedUsedTokens?: number;
   estimated?: boolean;
+  quota?: AgentQuotaUsage;
+  quotaOnly?: boolean;
   source: string;
 }
 

@@ -93,4 +93,23 @@ note: Evidence recorded.
       },
     ]);
   });
+
+  it('extracts phase blocks wrapped in html comment syntax', () => {
+    const extracted = extractMissionPhaseUpdates(`Gate closed.
+
+<!-- /mission-phase
+action: update
+name: M0 sequencing
+status: done
+/end-mission-phase -->`);
+
+    expect(extracted.visibleText).toBe('Gate closed.');
+    expect(extracted.updates).toMatchObject([
+      {
+        action: 'update',
+        title: 'M0 sequencing',
+        status: 'done',
+      },
+    ]);
+  });
 });

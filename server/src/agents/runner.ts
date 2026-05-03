@@ -25,6 +25,7 @@ function emitStreamEvents(
   stream: AgentStreamName,
   sessionId: string | null,
   callback: ((event: AgentStreamEvent) => void) | undefined,
+  suppressStderrFallback = false,
 ): void {
   if (!callback) return;
   let events: AgentStreamEvent[] = [];
@@ -33,7 +34,7 @@ function emitStreamEvents(
   } catch {
     events = [];
   }
-  if (events.length === 0 && stream === 'stderr' && line.trim()) {
+  if (events.length === 0 && stream === 'stderr' && line.trim() && !suppressStderrFallback) {
     events = [
       {
         kind: 'stderr',
@@ -63,6 +64,9 @@ export async function runAgentTurn(opts: RunAgentOptions): Promise<AgentReply> {
   const stdin = context
     ? spec.buildStdin?.(prompt, sessionId, context)
     : spec.buildStdin?.(prompt, sessionId);
+  const env = context
+    ? spec.buildEnv?.(prompt, sessionId, context)
+    : spec.buildEnv?.(prompt, sessionId);
   // Caller-supplied cwd wins; otherwise let the adapter create a per-turn cwd;
   // otherwise use the adapter's static defaultCwd if set.
   const builtCwd =
@@ -72,6 +76,9 @@ export async function runAgentTurn(opts: RunAgentOptions): Promise<AgentReply> {
         : spec.buildCwd?.(prompt, sessionId)
       : undefined;
   const effectiveCwd = opts.cwd ?? builtCwd ?? spec.defaultCwd;
+  const suppressStderrFallback =
+    spec.id === 'claude' &&
+    (env?.ANTHROPIC_LOG === 'debug' || process.env.ANTHROPIC_LOG === 'debug');
   const result = await runSubprocess({
     command: spec.command,
     args,
@@ -79,12 +86,20 @@ export async function runAgentTurn(opts: RunAgentOptions): Promise<AgentReply> {
     timeoutMs: opts.timeoutMs === undefined ? spec.defaultTimeoutMs : opts.timeoutMs,
     ...(opts.cancelSignal !== undefined ? { cancelSignal: opts.cancelSignal } : {}),
     ...(effectiveCwd !== undefined ? { cwd: effectiveCwd } : {}),
+    ...(env !== undefined && Object.keys(env).length > 0 ? { env } : {}),
     ...(opts.onStreamEvent !== undefined
       ? {
           onStdoutLine: (line: string) =>
             emitStreamEvents(spec, line, 'stdout', sessionId, opts.onStreamEvent),
           onStderrLine: (line: string) =>
-            emitStreamEvents(spec, line, 'stderr', sessionId, opts.onStreamEvent),
+            emitStreamEvents(
+              spec,
+              line,
+              'stderr',
+              sessionId,
+              opts.onStreamEvent,
+              suppressStderrFallback,
+            ),
         }
       : {}),
   });

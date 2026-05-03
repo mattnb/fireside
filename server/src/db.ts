@@ -54,6 +54,7 @@ CREATE TABLE IF NOT EXISTS sessions (
   room_id TEXT NOT NULL,
   agent_id TEXT NOT NULL,
   cli_session_id TEXT,
+  provider_id TEXT NOT NULL DEFAULT '',
   updated_at INTEGER NOT NULL,
   PRIMARY KEY (room_id, agent_id)
 );
@@ -359,6 +360,24 @@ function ensureMessageColumns(db: DbType): void {
       `ALTER TABLE messages ADD COLUMN delivery_status TEXT NOT NULL DEFAULT 'delivered'`,
     ).run();
   }
+}
+
+function ensureSessionColumns(db: DbType): void {
+  const columns = columnNames(db, 'sessions');
+  if (!columns.has('provider_id')) {
+    db.prepare(`ALTER TABLE sessions ADD COLUMN provider_id TEXT NOT NULL DEFAULT ''`).run();
+  }
+  db.prepare(
+    `UPDATE sessions
+     SET provider_id = CASE
+       WHEN lower(agent_id) = 'claude' OR lower(agent_id) LIKE 'claude-%' THEN 'claude'
+       WHEN lower(agent_id) = 'codex' OR lower(agent_id) LIKE 'codex-%' THEN 'codex'
+       WHEN lower(agent_id) = 'gemini' OR lower(agent_id) LIKE 'gemini-%' THEN 'gemini'
+       WHEN lower(agent_id) = 'echo' OR lower(agent_id) LIKE 'echo-%' THEN 'echo'
+       ELSE provider_id
+     END
+     WHERE provider_id = ''`,
+  ).run();
 }
 
 function ensureMessageReadReceiptTables(db: DbType): void {
@@ -936,6 +955,7 @@ export function openDatabase(filename: string): DbType {
   ensureProjects(db);
   ensureRoomColumns(db);
   ensureMessageColumns(db);
+  ensureSessionColumns(db);
   ensureMessageReadReceiptTables(db);
   ensurePermissionRequestColumns(db);
   ensureTaskColumns(db);

@@ -32,7 +32,7 @@
   --radius-sm: 6px;
   --radius-md: 8px;
   --chat-content-max: 1120px;
-  --scrollbar-tint: 142, 160, 232;
+  --scrollbar-tint: 229, 169, 26;
   --scrollbar-size: 10px;
 }
 
@@ -136,7 +136,7 @@ select {
 
 * {
   scrollbar-width: thin;
-  scrollbar-color: rgba(var(--scrollbar-tint), 0.72) transparent;
+  scrollbar-color: rgba(var(--scrollbar-tint), 0.38) transparent;
 }
 
 *::-webkit-scrollbar {
@@ -149,7 +149,7 @@ select {
 }
 
 *::-webkit-scrollbar-thumb {
-  background: linear-gradient(135deg, rgba(var(--scrollbar-tint), 0.72), rgba(var(--scrollbar-tint), 0.55));
+  background: rgba(var(--scrollbar-tint), 0.38);
   background-clip: padding-box;
   border: 2px solid transparent;
   border-radius: 999px;

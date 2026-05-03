@@ -20,6 +20,25 @@ export interface AgentContextUsage {
   percentUsed?: number;
   reportedUsedTokens?: number;
   estimated?: boolean;
+  quota?: AgentQuotaUsage;
+  quotaOnly?: boolean;
+  source: string;
+}
+
+export interface AgentQuotaWindowUsage {
+  percent?: number;
+  windowMinutes?: number;
+  resetsAt?: number;
+  status?: string;
+}
+
+export interface AgentQuotaUsage {
+  fiveHour?: AgentQuotaWindowUsage;
+  sevenDay?: AgentQuotaWindowUsage;
+  planType?: string;
+  rateLimitReachedType?: string | null;
+  representativeClaim?: string;
+  overageStatus?: string;
   source: string;
 }
 
@@ -38,6 +57,7 @@ interface CodexRolloutTokenUsage {
   reasoningOutputTokens?: number;
   totalTokens: number;
   contextWindow?: number;
+  quota?: AgentQuotaUsage;
   source: string;
 }
 
@@ -52,6 +72,16 @@ function asRecord(value: unknown): Record<string, unknown> | null {
 
 function numberValue(value: unknown): number | undefined {
   return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+}
+
+function boundedPercent(value: unknown): number | undefined {
+  const number = numberValue(value) ?? positiveInteger(value);
+  if (number === undefined) return undefined;
+  return Math.max(0, Math.min(100, number));
+}
+
+function stringValue(value: unknown): string | undefined {
+  return typeof value === 'string' && value.trim() ? value.trim() : undefined;
 }
 
 function positiveInteger(value: unknown): number | undefined {
@@ -211,6 +241,157 @@ function numberFromRecord(record: Record<string, unknown>, key: string): number 
   return numberValue(record[key]) ?? positiveInteger(record[key]);
 }
 
+function epochMs(value: unknown): number | undefined {
+  const number = numberValue(value) ?? positiveInteger(value);
+  if (number === undefined) return undefined;
+  return number > 10_000_000_000 ? number : number * 1000;
+}
+
+function parseQuotaWindow(
+  raw: unknown,
+  percentKeys: string[],
+  windowMinutes?: number,
+): AgentQuotaWindowUsage | undefined {
+  const record = asRecord(raw);
+  if (!record) return undefined;
+  let percent: number | undefined;
+  for (const key of percentKeys) {
+    percent = boundedPercent(record[key]);
+    if (percent !== undefined) break;
+  }
+  if (percent === undefined) return undefined;
+  const configuredWindow =
+    positiveInteger(record.window_minutes) ??
+    positiveInteger(record.windowMinutes) ??
+    windowMinutes;
+  const resetsAt = epochMs(record.resets_at ?? record.resetsAt);
+  return {
+    percent,
+    ...(configuredWindow !== undefined ? { windowMinutes: configuredWindow } : {}),
+    ...(resetsAt !== undefined ? { resetsAt } : {}),
+  };
+}
+
+function parseCodexQuota(raw: unknown, source: string): AgentQuotaUsage | undefined {
+  const record = asRecord(raw);
+  if (!record) return undefined;
+  const primary = parseQuotaWindow(record.primary, ['used_percent', 'usedPercentage'], 300);
+  const secondary = parseQuotaWindow(record.secondary, ['used_percent', 'usedPercentage'], 10_080);
+  if (!primary && !secondary) return undefined;
+  const planType = typeof record.plan_type === 'string' ? record.plan_type : undefined;
+  const rateLimitReachedType =
+    typeof record.rate_limit_reached_type === 'string'
+      ? record.rate_limit_reached_type
+      : record.rate_limit_reached_type === null
+        ? null
+        : undefined;
+  return {
+    ...(primary ? { fiveHour: primary } : {}),
+    ...(secondary ? { sevenDay: secondary } : {}),
+    ...(planType ? { planType } : {}),
+    ...(rateLimitReachedType !== undefined ? { rateLimitReachedType } : {}),
+    source,
+  };
+}
+
+function parseClaudeQuota(raw: unknown, source: string): AgentQuotaUsage | undefined {
+  const record = asRecord(raw);
+  if (!record) return undefined;
+  const fiveHour = parseQuotaWindow(record.five_hour ?? record.fiveHour, ['used_percentage'], 300);
+  const sevenDay = parseQuotaWindow(record.seven_day ?? record.sevenDay, ['used_percentage'], 10_080);
+  if (!fiveHour && !sevenDay) return undefined;
+  return {
+    ...(fiveHour ? { fiveHour } : {}),
+    ...(sevenDay ? { sevenDay } : {}),
+    source,
+  };
+}
+
+function parseClaudeRateLimitInfo(raw: unknown, source: string): AgentQuotaUsage | undefined {
+  const record = asRecord(raw);
+  if (!record) return undefined;
+  const rateLimitType =
+    typeof record.rateLimitType === 'string'
+      ? record.rateLimitType
+      : typeof record.rate_limit_type === 'string'
+        ? record.rate_limit_type
+        : '';
+  const resetsAt = epochMs(record.resetsAt ?? record.resets_at);
+  const status = typeof record.status === 'string' ? record.status : undefined;
+  const window: AgentQuotaWindowUsage = {
+    ...(resetsAt !== undefined ? { resetsAt } : {}),
+    ...(status ? { status } : {}),
+  };
+  if (Object.keys(window).length === 0) return undefined;
+  if (rateLimitType === 'five_hour') {
+    return { fiveHour: { ...window, windowMinutes: 300 }, source };
+  }
+  if (rateLimitType === 'seven_day') {
+    return { sevenDay: { ...window, windowMinutes: 10_080 }, source };
+  }
+  return undefined;
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function debugHeaderValue(raw: string, header: string): string | undefined {
+  const headerPattern = escapeRegExp(header);
+  const jsonMatch = raw.match(new RegExp(`"${headerPattern}"\\s*:\\s*"([^"]+)"`, 'i'));
+  if (jsonMatch?.[1]) return jsonMatch[1].trim();
+  const bareMatch = raw.match(
+    new RegExp(`(?:^|[\\s,{])${headerPattern}\\s*[:=]\\s*"?([^"\\s,}]+)"?`, 'im'),
+  );
+  return bareMatch?.[1]?.trim();
+}
+
+function utilizationPercent(value: string | undefined): number | undefined {
+  if (!value) return undefined;
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return undefined;
+  const percent = parsed <= 1 ? parsed * 100 : parsed;
+  return Math.max(0, Math.min(100, percent));
+}
+
+function parseClaudeDebugQuotaWindow(
+  raw: string,
+  key: '5h' | '7d',
+  windowMinutes: number,
+): AgentQuotaWindowUsage | undefined {
+  const prefix = `anthropic-ratelimit-unified-${key}`;
+  const percent = utilizationPercent(debugHeaderValue(raw, `${prefix}-utilization`));
+  const resetsAt = epochMs(debugHeaderValue(raw, `${prefix}-reset`));
+  const status = stringValue(debugHeaderValue(raw, `${prefix}-status`));
+  if (percent === undefined && resetsAt === undefined && status === undefined) return undefined;
+  return {
+    ...(percent !== undefined ? { percent } : {}),
+    windowMinutes,
+    ...(resetsAt !== undefined ? { resetsAt } : {}),
+    ...(status ? { status } : {}),
+  };
+}
+
+function parseClaudeDebugQuotaHeaders(raw: string, source: string): AgentQuotaUsage | undefined {
+  if (!raw.includes('anthropic-ratelimit-unified-')) return undefined;
+  const fiveHour = parseClaudeDebugQuotaWindow(raw, '5h', 300);
+  const sevenDay = parseClaudeDebugQuotaWindow(raw, '7d', 10_080);
+  if (!fiveHour && !sevenDay) return undefined;
+  const representativeClaim = stringValue(
+    debugHeaderValue(raw, 'anthropic-ratelimit-unified-representative-claim'),
+  );
+  const overageStatus = stringValue(
+    debugHeaderValue(raw, 'anthropic-ratelimit-unified-overage-status'),
+  );
+  return {
+    ...(fiveHour ? { fiveHour } : {}),
+    ...(sevenDay ? { sevenDay } : {}),
+    ...(representativeClaim ? { representativeClaim } : {}),
+    ...(overageStatus ? { overageStatus } : {}),
+    source,
+  };
+}
+
 function parseCodexRolloutTokenLine(
   line: string,
   source: string,
@@ -236,6 +417,7 @@ function parseCodexRolloutTokenLine(
   const totalTokens =
     numberFromRecord(last, 'total_tokens') ?? Math.max(0, (inputTokens ?? 0) + (outputTokens ?? 0));
   const contextWindow = positiveInteger(info?.model_context_window);
+  const quota = parseCodexQuota(payload.rate_limits, source);
   if (totalTokens <= 0 && contextWindow === undefined) return null;
 
   return {
@@ -245,6 +427,7 @@ function parseCodexRolloutTokenLine(
     ...(reasoningOutputTokens !== undefined ? { reasoningOutputTokens } : {}),
     totalTokens,
     ...(contextWindow !== undefined ? { contextWindow } : {}),
+    ...(quota ? { quota } : {}),
     source,
   };
 }
@@ -358,6 +541,7 @@ export function codexContextUsage(
   const config = readCodexConfig();
   const model = config.model ?? 'codex';
   const rollout = readLatestCodexRolloutTokenUsage(opts.threadId, opts.codexHome);
+  const quota = rollout?.quota ?? parseCodexQuota(usage.rate_limits, 'codex:usage');
   const configuredContextWindow = config.contextWindow ?? codexContextWindowForModel(model);
   if (rollout) {
     const reportedUsedTokens = Math.max(0, (inputTokens ?? 0) + (outputTokens ?? 0));
@@ -377,6 +561,7 @@ export function codexContextUsage(
       ...(rollout.reasoningOutputTokens !== undefined
         ? { reasoningOutputTokens: rollout.reasoningOutputTokens }
         : {}),
+      ...(quota ? { quota } : {}),
       ...(rollout.contextWindow !== undefined
         ? { contextWindow: rollout.contextWindow }
         : configuredContextWindow !== undefined
@@ -409,6 +594,7 @@ export function codexContextUsage(
     ...(cachedInputTokens !== undefined ? { cachedInputTokens } : {}),
     ...(outputTokens !== undefined ? { outputTokens } : {}),
     ...(reasoningOutputTokens !== undefined ? { reasoningOutputTokens } : {}),
+    ...(quota ? { quota } : {}),
     ...(contextWindow !== undefined ? { contextWindow } : {}),
     ...(config.autoCompactAtTokens !== undefined
       ? { autoCompactAtTokens: config.autoCompactAtTokens }
@@ -438,6 +624,7 @@ export function claudeContextUsage(obj: Record<string, unknown>): AgentContextUs
     numberValue(usage.cacheCreationInputTokens) ??
     0;
   const contextWindow = numberValue(modelUsageRecord.contextWindow);
+  const quota = parseClaudeQuota(obj.rate_limits ?? obj.rateLimits, 'claude:rate_limits');
   const effective = effectiveClaudeUsedTokens({
     inputTokens,
     outputTokens,
@@ -459,6 +646,7 @@ export function claudeContextUsage(obj: Record<string, unknown>): AgentContextUs
     outputTokens,
     cacheReadInputTokens,
     cacheCreationInputTokens,
+    ...(quota ? { quota } : {}),
     ...(contextWindow !== undefined ? { contextWindow } : {}),
     source: `claude:${asRecord(obj.usage) ? 'usage' : 'modelUsage'}${
       effective.estimated ? ':cache-adjusted' : ''
@@ -466,11 +654,67 @@ export function claudeContextUsage(obj: Record<string, unknown>): AgentContextUs
   });
 }
 
+export function claudeQuotaUsage(obj: Record<string, unknown>): AgentContextUsage | null {
+  const quota =
+    parseClaudeQuota(obj.rate_limits ?? obj.rateLimits, 'claude:rate_limits') ??
+    parseClaudeRateLimitInfo(obj.rate_limit_info ?? obj.rateLimitInfo, 'claude:rate_limit_info');
+  if (!quota) return null;
+  const model =
+    typeof obj.model === 'string'
+      ? obj.model
+      : typeof obj.model_id === 'string'
+        ? obj.model_id
+        : 'claude';
+  return {
+    provider: 'claude',
+    model,
+    usedTokens: 0,
+    quota,
+    quotaOnly: true,
+    source: quota.source,
+  };
+}
+
+export function claudeDebugQuotaUsage(raw: string, model = 'claude'): AgentContextUsage | null {
+  const quota = parseClaudeDebugQuotaHeaders(raw, 'claude:debug-rate-limit-headers');
+  if (!quota) return null;
+  return {
+    provider: 'claude',
+    model,
+    usedTokens: 0,
+    quota,
+    quotaOnly: true,
+    source: quota.source,
+  };
+}
+
 export function formatContextUsage(usage: AgentContextUsage): string {
+  const quota = usage.quota ? formatQuotaUsage(usage.quota) : '';
+  if (usage.quotaOnly) return quota || `${usage.model}: quota update`;
   const used = `${usage.usedTokens}${usage.estimated ? ' estimated' : ''} used`;
   const window = usage.contextWindow ? `${usage.contextWindow} window` : 'window unknown';
   const model = usage.reasoningEffort
     ? `${usage.model}/${usage.reasoningEffort}`
     : usage.model;
-  return `${model}: ${used} / ${window}`;
+  return `${model}: ${used} / ${window}${quota ? ` / ${quota}` : ''}`;
+}
+
+export function formatQuotaUsage(quota: AgentQuotaUsage): string {
+  const parts: string[] = [];
+  if (quota.fiveHour) {
+    parts.push(
+      quota.fiveHour.percent !== undefined
+        ? `5h ${Math.round(quota.fiveHour.percent)}%`
+        : '5h reset tracked',
+    );
+  }
+  if (quota.sevenDay) {
+    parts.push(
+      quota.sevenDay.percent !== undefined
+        ? `7d ${Math.round(quota.sevenDay.percent)}%`
+        : '7d reset tracked',
+    );
+  }
+  if (quota.planType) parts.push(quota.planType);
+  return parts.length > 0 ? `quota ${parts.join(' / ')}` : 'quota update';
 }

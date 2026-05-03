@@ -1,4 +1,5 @@
 import type { TaskPhaseStatus } from './repos/task-phases.js';
+import { hiddenBlockRegex } from './hidden-blocks.js';
 
 export type MissionPhaseAction = 'create' | 'update';
 
@@ -18,8 +19,7 @@ export interface ExtractedMissionPhaseUpdates {
   updates: ParsedMissionPhaseUpdate[];
 }
 
-const PHASE_RE =
-  /(^|\n)\/mission-phase\s*\n([\s\S]*?)\n[/@]end-(?:mission-phase|collab-note)(?=\s|$)/gi;
+const PHASE_RE = hiddenBlockRegex('mission-phase', ['mission-phase', 'collab-note']);
 const ACTIONS = new Set(['create', 'update']);
 const STATUSES = new Set(['planned', 'active', 'blocked', 'done']);
 const STATUS_ALIASES = new Map<string, TaskPhaseStatus>([

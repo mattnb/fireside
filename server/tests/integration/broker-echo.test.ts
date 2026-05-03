@@ -11,16 +11,17 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { openDatabase } from '../../src/db.js';
-import { createRoom } from '../../src/repos/rooms.js';
-import { listMessages } from '../../src/repos/messages.js';
+import { createRoom, getRoom } from '../../src/repos/rooms.js';
+import { addMessage, listMessages } from '../../src/repos/messages.js';
 import { listAgentJobsForRoom } from '../../src/repos/agent-jobs.js';
 import { listPermissionRequests } from '../../src/repos/permission-requests.js';
-import { createAgentRun, listAgentRuns } from '../../src/repos/agent-runs.js';
+import { createAgentRun, listAgentRuns, updateAgentRun } from '../../src/repos/agent-runs.js';
 import { listAgentRunActions } from '../../src/repos/run-actions.js';
 import { listTaskPhases } from '../../src/repos/task-phases.js';
 import { createTaskChecklistItem, listTaskChecklistItems } from '../../src/repos/task-checklist.js';
 import { listTaskPlans } from '../../src/repos/task-plans.js';
 import { listTasks } from '../../src/repos/tasks.js';
+import { getCliSessionId } from '../../src/repos/sessions.js';
 import { Broker } from '../../src/broker.js';
 import type { AgentId, AgentReply, AgentSpec } from '../../src/agents/types.js';
 import type { PermissionGrant } from '../../src/permissions.js';
@@ -92,6 +93,75 @@ describe('Broker', () => {
     expect(runs.map((r) => r.agentId)).toEqual(['claude']);
   });
 
+  it('requires a named reference when multiple room participants share one provider', async () => {
+    const room = createRoom(db, {
+      name: 'g',
+      agentProfiles: [
+        {
+          id: 'claude-ada',
+          providerId: 'claude',
+          displayName: 'Ada',
+          personaId: 'generalist',
+          personaName: 'Generalist',
+          personaSummary: '',
+        },
+        {
+          id: 'claude-grace',
+          providerId: 'claude',
+          displayName: 'Grace',
+          personaId: 'generalist',
+          personaName: 'Generalist',
+          personaSummary: '',
+        },
+      ],
+    });
+
+    await broker.postHumanMessage(room.id, 'human', '@claude hey');
+    expect(listAgentRuns(db, room.id)).toEqual([]);
+
+    await broker.postHumanMessage(room.id, 'human', '@ada hey');
+    expect(listAgentRuns(db, room.id).map((run) => run.agentId)).toEqual(['claude-ada']);
+  });
+
+  it('routes an exact room-local handle even when another participant shares the provider', async () => {
+    const room = createRoom(db, {
+      name: 'g',
+      agentProfiles: [
+        {
+          id: 'claude',
+          providerId: 'claude',
+          displayName: 'claude',
+          personaId: 'generalist',
+          personaName: 'Generalist',
+          personaSummary: '',
+        },
+        {
+          id: 'codex',
+          providerId: 'codex',
+          displayName: 'codex',
+          personaId: 'generalist',
+          personaName: 'Generalist',
+          personaSummary: '',
+        },
+        {
+          id: 'claude-reliability',
+          providerId: 'claude',
+          displayName: 'claude-reliability',
+          personaId: 'reliability-engineer',
+          personaName: 'Reliability Engineer',
+          personaSummary: '',
+        },
+      ],
+    });
+
+    await broker.postHumanMessage(room.id, 'human', '@claude hey');
+
+    expect(runs.map((run) => run.agentId)).toEqual(['claude']);
+    expect(listAgentRuns(db, room.id).map((run) => run.agentId)).toEqual(['claude']);
+    const [humanMessage] = listMessages(db, room.id);
+    expect(humanMessage).toMatchObject({ authorId: 'human', seenBy: ['claude'] });
+  });
+
   it('records read receipts when an agent turn begins, even if the reply is empty', async () => {
     const receiptUpdates: Array<{
       roomId: string;
@@ -131,6 +201,157 @@ describe('Broker', () => {
       seenBy: ['claude'],
     });
     expect(receiptUpdates[0]!.runId).toBeTruthy();
+  });
+
+  it('lets an engineering manager add a visible temporary agent with a focused assignment', async () => {
+    let added = false;
+    const rosterBroker = new Broker({
+      db,
+      runAgent: async (spec) => {
+        if (spec.id === 'claude' && !added) {
+          added = true;
+          return {
+            text: [
+              'Adding a temporary reviewer now.',
+              '',
+              '/agent-roster',
+              'action: add',
+              'id: codex-regression',
+              'name: Codex Regression',
+              'provider: codex',
+              'persona: quality-assurance-engineer',
+              'scope: regression review for checklist item A',
+              'reason: implementation agents are busy',
+              'yolo: true',
+              'max_turns: 1',
+              'prompt:',
+              'Review the regression surface and report evidence.',
+              '/end-agent-roster',
+            ].join('\n'),
+            sessionId: `${spec.id}-sess`,
+            raw: { stdout: '', stderr: '' },
+          };
+        }
+        return {
+          text: `${spec.id} temp review complete`,
+          sessionId: `${spec.id}-sess`,
+          raw: { stdout: '', stderr: '' },
+        };
+      },
+      getSpec: (id) => {
+        const map: Record<string, AgentSpec> = {
+          claude: fakeSpec('claude', 'claude reply'),
+          codex: fakeSpec('codex', 'codex reply'),
+        };
+        return map[id];
+      },
+      maxAgentRepliesPerThread: 1,
+    });
+    const room = createRoom(db, {
+      name: 'temp-roster',
+      agentProfiles: [
+        {
+          id: 'em',
+          providerId: 'claude',
+          displayName: 'Engineering Manager',
+          personaId: 'engineering-manager',
+          personaName: 'Engineering Manager',
+          personaSummary: '',
+        },
+      ],
+    });
+
+    await rosterBroker.postHumanMessage(room.id, 'human', '@em add a reviewer');
+
+    const updated = getRoom(db, room.id)!;
+    expect(updated.agents).toContain('codex-regression');
+    expect(updated.yoloAgents).toContain('codex-regression');
+    expect(updated.agentProfiles.find((profile) => profile.id === 'codex-regression')).toMatchObject(
+      {
+        providerId: 'codex',
+        personaId: 'quality-assurance-engineer',
+        temporary: true,
+        spawnedBy: 'em',
+        maxTurns: 1,
+      },
+    );
+    const runAgentIds = listAgentRuns(db, room.id, { limit: 10 }).map((run) => run.agentId);
+    expect(runAgentIds).toEqual(expect.arrayContaining(['em', 'codex-regression']));
+    expect(listMessages(db, room.id).map((message) => message.authorId)).toContain(
+      'codex-regression',
+    );
+  });
+
+  it('enforces the per-lead temporary agent limit without a mission-wide cap', async () => {
+    const rosterBroker = new Broker({
+      db,
+      temporaryAgentLimitPerLead: 1,
+      runAgent: async (spec) => {
+        if (spec.id !== 'claude') {
+          return {
+            text: '',
+            sessionId: null,
+            raw: { stdout: '', stderr: '' },
+          };
+        }
+        return {
+          text: [
+            '/agent-roster',
+            'action: add',
+            'id: codex-one',
+            'provider: codex',
+            'persona: quality-assurance-engineer',
+            'max_turns: 1',
+            'prompt: first review',
+            '/end-agent-roster',
+            '',
+            '/agent-roster',
+            'action: add',
+            'id: codex-two',
+            'provider: codex',
+            'persona: quality-assurance-engineer',
+            'max_turns: 1',
+            'prompt: second review',
+            '/end-agent-roster',
+          ].join('\n'),
+          sessionId: null,
+          raw: { stdout: '', stderr: '' },
+        };
+      },
+      getSpec: (id) => {
+        const map: Record<string, AgentSpec> = {
+          claude: fakeSpec('claude', 'claude reply'),
+          codex: fakeSpec('codex', ''),
+        };
+        return map[id];
+      },
+      maxAgentRepliesPerThread: 1,
+    });
+    const room = createRoom(db, {
+      name: 'temp-limit',
+      agentProfiles: [
+        {
+          id: 'qa-lead',
+          providerId: 'claude',
+          displayName: 'QA Lead',
+          personaId: 'qa-lead',
+          personaName: 'QA Lead',
+          personaSummary: '',
+        },
+      ],
+    });
+
+    await rosterBroker.postHumanMessage(room.id, 'human', '@qa-lead add reviewers');
+
+    const updated = getRoom(db, room.id)!;
+    expect(updated.agents).toContain('codex-one');
+    expect(updated.agents).not.toContain('codex-two');
+    const qaLeadRun = listAgentRuns(db, room.id, { limit: 10 }).find(
+      (run) => run.agentId === 'qa-lead',
+    );
+    expect(qaLeadRun).toBeTruthy();
+    const actions = listAgentRunActions(db, qaLeadRun!.id);
+    expect(actions.map((action) => action.label)).toContain('temporary agent limit reached');
   });
 
   it('records read receipts for prompt history messages that survived the budget', async () => {
@@ -613,6 +834,158 @@ describe('Broker', () => {
     );
     expect(actionLabels).toContain('YOLO lane assigned');
     expect(actionLabels).toContain('mission receipt: continuing');
+  });
+
+  it('lets a seeded YOLO planner fan assigned work out to the room YOLO pool', async () => {
+    let createdPlan = false;
+    let completedSeededOwners = 0;
+    let roomId = '';
+    let yoloBroker: Broker;
+    yoloBroker = new Broker({
+      db,
+      runAgent: async (spec, prompt, sessionId, permission) => {
+        const agentId =
+          (prompt.match(/next message to be sent by "([^"]+)"/)?.[1] ?? spec.id) as AgentId;
+        runs.push({
+          agentId,
+          prompt,
+          sessionId,
+          ...(permission !== undefined ? { permission } : {}),
+        });
+        if (agentId === 'codex-project-manager' && !createdPlan) {
+          createdPlan = true;
+          return {
+            text: [
+              'Plan scaffolded. The team can start the assigned lanes.',
+              '',
+              '/mission-create',
+              'title: Seeded planner fanout',
+              'goal: Prove assigned work fans out beyond the explicitly mentioned planner.',
+              'agents: codex-project-manager, claude-technical-lead, gemini-qa-lead',
+              'capability_profile: full-auto',
+              '/end-mission-create',
+              '',
+              '/mission-plan',
+              'action: create',
+              'title: Fanout plan',
+              'status: active',
+              '/end-mission-plan',
+              '',
+              '/mission-phase',
+              'action: create',
+              'title: Discovery',
+              'status: active',
+              'gate: Assigned owners have received their lanes.',
+              '/end-mission-phase',
+              '',
+              '/mission-task',
+              'action: create',
+              'title: Technical sequencing',
+              'status: open',
+              'phase: Discovery',
+              'owner: claude-technical-lead',
+              'parallelism: parallel-safe',
+              '/end-mission-task',
+              '',
+              '/mission-task',
+              'action: create',
+              'title: QA acceptance matrix',
+              'status: open',
+              'phase: Discovery',
+              'owner: gemini-qa-lead',
+              'parallelism: parallel-safe',
+              '/end-mission-task',
+            ].join('\n'),
+            sessionId: `${spec.id}-sess`,
+            raw: { stdout: '', stderr: '' },
+          };
+        }
+        if (agentId !== 'codex-project-manager') {
+          const assignedItemId = prompt.match(/Assigned item:.*?\[id=([^\]]+)\]/)?.[1] ?? '';
+          completedSeededOwners += 1;
+          if (completedSeededOwners >= 2) {
+            yoloBroker.cancelYoloDiscussion(roomId, 'test');
+          }
+          return {
+            text: [
+              `${agentId} completed the assigned lane.`,
+              '',
+              '/mission-task',
+              'action: update',
+              `id: ${assignedItemId}`,
+              'status: done',
+              'note: Seeded YOLO fanout reached this assigned owner.',
+              '/end-mission-task',
+            ].join('\n'),
+            sessionId: `${spec.id}-sess`,
+            raw: { stdout: '', stderr: '' },
+          };
+        }
+        return {
+          text: '',
+          sessionId: `${spec.id}-sess`,
+          raw: { stdout: '', stderr: '' },
+        };
+      },
+      getSpec: (id) => {
+        const map: Record<string, AgentSpec> = {
+          claude: fakeSpec('claude', 'claude reply'),
+          codex: fakeSpec('codex', 'codex reply'),
+          gemini: fakeSpec('gemini', 'gemini reply'),
+          echo: fakeSpec('echo', 'echo reply'),
+        };
+        return map[id];
+      },
+    });
+    const room = createRoom(db, {
+      name: 'seeded-yolo-fanout',
+      yoloAgents: ['codex-project-manager', 'claude-technical-lead', 'gemini-qa-lead'],
+      agentProfiles: [
+        {
+          id: 'codex-project-manager',
+          providerId: 'codex',
+          displayName: 'Jimmy',
+          personaId: 'project-manager',
+          personaName: 'Project Manager',
+          personaSummary: '',
+        },
+        {
+          id: 'claude-technical-lead',
+          providerId: 'claude',
+          displayName: 'Sean',
+          personaId: 'technical-lead',
+          personaName: 'Technical Lead',
+          personaSummary: '',
+        },
+        {
+          id: 'gemini-qa-lead',
+          providerId: 'gemini',
+          displayName: 'Holly',
+          personaId: 'qa-lead',
+          personaName: 'QA Lead',
+          personaSummary: '',
+        },
+      ],
+    });
+    roomId = room.id;
+
+    await yoloBroker.postHumanMessage(room.id, 'human', '@codex-project-manager build the plan');
+
+    expect(runs[0]!.agentId).toBe('codex-project-manager');
+    expect(runs.map((run) => run.agentId)).toEqual(
+      expect.arrayContaining([
+        'codex-project-manager',
+        'claude-technical-lead',
+        'gemini-qa-lead',
+      ]),
+    );
+    const laneJobs = listAgentJobsForRoom(db, room.id).filter((job) => job.checklistItemId);
+    expect(laneJobs.map((job) => job.agentId)).toEqual(
+      expect.arrayContaining(['claude-technical-lead', 'gemini-qa-lead']),
+    );
+    for (const job of laneJobs.filter((candidate) => candidate.agentId !== 'codex-project-manager')) {
+      expect(job.status).toBe('completed');
+    }
   });
 
   it('does not assign conflicting YOLO lane scope contracts in the same pulse', async () => {
@@ -1433,6 +1806,196 @@ describe('Broker', () => {
     expect(runs).toHaveLength(2);
   });
 
+  it('routes targeted messages to a free mentioned agent while another agent is running', async () => {
+    let releaseRun!: () => void;
+    let firstRunStarted!: () => void;
+    const releaseRunPromise = new Promise<void>((resolve) => {
+      releaseRun = resolve;
+    });
+    const firstRunStartedPromise = new Promise<void>((resolve) => {
+      firstRunStarted = resolve;
+    });
+    const queueBroker = new Broker({
+      db,
+      maxAgentRepliesPerThread: 1,
+      runAgent: async (spec, prompt, sessionId) => {
+        runs.push({ agentId: spec.id, prompt, sessionId });
+        if (spec.id === 'claude') {
+          firstRunStarted();
+          await releaseRunPromise;
+        }
+        return {
+          text: `${spec.id}-says-hello`,
+          sessionId: `${spec.id}-sess`,
+          raw: { stdout: '', stderr: '' },
+        };
+      },
+      getSpec: (id) => {
+        const map: Record<string, AgentSpec> = {
+          claude: fakeSpec('claude', 'claude reply'),
+          codex: fakeSpec('codex', 'codex reply'),
+        };
+        return map[id];
+      },
+    });
+    const room = createRoom(db, { name: 'g', agents: ['claude', 'codex'] });
+
+    const firstTurn = queueBroker.postHumanMessage(room.id, 'human', '@claude start slow');
+    await firstRunStartedPromise;
+
+    const routed = await queueBroker.postHumanMessage(room.id, 'human', '@codex take this');
+
+    expect(routed.deliveryStatus).toBe('delivered');
+    expect(runs.map((run) => run.agentId)).toEqual(['claude', 'codex']);
+    expect(
+      queueBroker.listMessages(room.id).find((message) => message.id === routed.id),
+    ).not.toHaveProperty('deliveryStatus', 'queued');
+
+    releaseRun();
+    await firstTurn;
+  });
+
+  it('routes a display-name mention to an idle same-provider agent while another instance is running', async () => {
+    let releaseRun!: () => void;
+    let firstRunStarted!: () => void;
+    const releaseRunPromise = new Promise<void>((resolve) => {
+      releaseRun = resolve;
+    });
+    const firstRunStartedPromise = new Promise<void>((resolve) => {
+      firstRunStarted = resolve;
+    });
+    const queueBroker = new Broker({
+      db,
+      maxAgentRepliesPerThread: 1,
+      runAgent: async (spec, prompt, sessionId) => {
+        const turn = runs.length + 1;
+        runs.push({ agentId: spec.id, prompt, sessionId });
+        if (turn === 1) {
+          firstRunStarted();
+          await releaseRunPromise;
+        }
+        return {
+          text: turn === 2 ? 'holly-says-hello' : 'biggs-says-hello',
+          sessionId: `${spec.id}-sess`,
+          raw: { stdout: '', stderr: '' },
+        };
+      },
+      getSpec: (id) => {
+        const map: Record<string, AgentSpec> = {
+          codex: fakeSpec('codex', 'codex reply'),
+        };
+        return map[id];
+      },
+    });
+    const room = createRoom(db, {
+      name: 'same-provider-targeting',
+      agentProfiles: [
+        {
+          id: 'gemini-qa-lead',
+          providerId: 'codex',
+          displayName: 'Holly',
+          personaId: 'qa-lead',
+          personaName: 'QA Lead',
+          personaSummary: '',
+        },
+        {
+          id: 'gemini-quality-assurance',
+          providerId: 'codex',
+          displayName: 'Biggs',
+          personaId: 'quality-assurance-engineer',
+          personaName: 'Quality Assurance Engineer',
+          personaSummary: '',
+        },
+      ],
+    });
+
+    const firstTurn = queueBroker.postHumanMessage(room.id, 'human', '@biggs start slow');
+    await firstRunStartedPromise;
+
+    const routed = await queueBroker.postHumanMessage(
+      room.id,
+      'human',
+      '@holly take this from @biggs',
+    );
+
+    expect(routed.deliveryStatus).toBe('delivered');
+    expect(listAgentRuns(db, room.id).map((run) => run.agentId)).toEqual(expect.arrayContaining([
+      'gemini-quality-assurance',
+      'gemini-qa-lead',
+    ]));
+    expect(
+      queueBroker.listMessages(room.id).find((message) => message.id === routed.id),
+    ).not.toHaveProperty('deliveryStatus', 'queued');
+
+    releaseRun();
+    await firstTurn;
+  });
+
+  it('does not resume historical sessions from a previous provider for a room-local agent', async () => {
+    const sessionsSeen: Array<string | null> = [];
+    const queueBroker = new Broker({
+      db,
+      resumeCliSessions: true,
+      maxAgentRepliesPerThread: 1,
+      runAgent: async (spec, prompt, sessionId) => {
+        runs.push({ agentId: spec.id, prompt, sessionId });
+        sessionsSeen.push(sessionId);
+        return {
+          text: 'holly fresh session',
+          sessionId: '019deb68-7430-71b2-93ca-f5ad8c61e971',
+          raw: { stdout: '', stderr: '' },
+        };
+      },
+      getSpec: (id) => {
+        const map: Record<string, AgentSpec> = {
+          codex: fakeSpec('codex', 'codex reply'),
+        };
+        return map[id];
+      },
+    });
+    const room = createRoom(db, {
+      name: 'provider-switched-session',
+      agentProfiles: [
+        {
+          id: 'gemini-qa-lead',
+          providerId: 'codex',
+          displayName: 'Holly',
+          personaId: 'qa-lead',
+          personaName: 'QA Lead',
+          personaSummary: '',
+        },
+      ],
+    });
+    const oldTrigger = addMessage(db, {
+      roomId: room.id,
+      authorId: 'human',
+      authorKind: 'human',
+      text: 'old gemini turn',
+    });
+    const oldRun = createAgentRun(db, {
+      roomId: room.id,
+      triggerMessageId: oldTrigger.id,
+      agentId: 'gemini-qa-lead',
+      permissionMode: 'plan',
+      promptChars: 20,
+      estimatedPromptTokens: 5,
+      liveMessages: 1,
+      contextArtifacts: 0,
+    });
+    updateAgentRun(db, oldRun.id, {
+      status: 'completed',
+      completedAt: Date.now(),
+      cliSessionId: '1b7e862a-8c6f-40ed-b4ce-c7fab99bae8b',
+    });
+
+    await queueBroker.postHumanMessage(room.id, 'human', '@holly start fresh');
+
+    expect(sessionsSeen).toEqual([null]);
+    expect(getCliSessionId(db, room.id, 'gemini-qa-lead')).toBe(
+      '019deb68-7430-71b2-93ca-f5ad8c61e971',
+    );
+  });
+
   it('edits and retracts queued human messages before they are delivered', async () => {
     let releaseRun!: () => void;
     let firstRunStarted!: () => void;
@@ -2096,6 +2659,70 @@ describe('Broker', () => {
     );
   });
 
+  it('resolves slug-style phase refs to the active duplicate phase', async () => {
+    const phaseBroker = new Broker({
+      db,
+      maxAgentRepliesPerThread: 1,
+      runAgent: async (spec, prompt, sessionId) => {
+        runs.push({ agentId: spec.id, prompt, sessionId });
+        return {
+          text: [
+            'Live verification is complete.',
+            '',
+            '/mission-phase',
+            'action: complete',
+            'id: memo-first-live-verification',
+            'status: done',
+            'note: Acceptance evidence is recorded.',
+            '/end-mission-phase',
+          ].join('\n'),
+          sessionId: `${spec.id}-sess`,
+          raw: { stdout: '', stderr: '' },
+        };
+      },
+      getSpec: (id) => {
+        const map: Record<string, AgentSpec> = {
+          claude: fakeSpec('claude', 'claude reply'),
+          codex: fakeSpec('codex', 'codex reply'),
+          gemini: fakeSpec('gemini', 'gemini reply'),
+          echo: fakeSpec('echo', 'echo reply'),
+        };
+        return map[id];
+      },
+    });
+    const room = createRoom(db, { name: 'phase-slug-resolution', agents: ['claude'] });
+    const task = phaseBroker.createTask(room.id, { title: 'Close duplicate phase' });
+    const stalePhase = phaseBroker.createTaskPhase(room.id, task!.id, {
+      title: 'Memo-first Live Verification',
+      status: 'done',
+      sortOrder: 1,
+    });
+    const activePhase = phaseBroker.createTaskPhase(room.id, task!.id, {
+      title: 'Memo-first Live Verification',
+      status: 'active',
+      sortOrder: 2,
+    });
+    const nextPhase = phaseBroker.createTaskPhase(room.id, task!.id, {
+      title: 'Post-ship Review',
+      status: 'planned',
+      sortOrder: 3,
+    });
+
+    await phaseBroker.postHumanMessage(room.id, 'human', '@claude close the live gate');
+
+    const phases = listTaskPhases(db, task!.id);
+    expect(phases.find((phase) => phase.id === stalePhase!.id)).toMatchObject({ status: 'done' });
+    expect(phases.find((phase) => phase.id === activePhase!.id)).toMatchObject({ status: 'done' });
+    expect(phases.find((phase) => phase.id === nextPhase!.id)).toMatchObject({ status: 'active' });
+
+    const [run] = listAgentRuns(db, room.id);
+    const actions = listAgentRunActions(db, run!.id);
+    expect(actions.map((action) => action.label)).toEqual(
+      expect.arrayContaining(['mission phase update', 'mission phase auto-advance']),
+    );
+    expect(actions.map((action) => action.label)).not.toContain('mission phase update ignored');
+  });
+
   it('marks a checklist item done when an agent reports accepted completion evidence', async () => {
     const completionBroker = new Broker({
       db,
@@ -2345,6 +2972,22 @@ describe('Broker', () => {
       permissionMode: 'edit',
       status: 'completed',
     });
+  });
+
+  it('keeps active mission participants in sync when room agents change', () => {
+    const room = createRoom(db, { name: 'agent-sync', agents: ['claude', 'codex'] });
+    const task = broker.createTask(room.id, {
+      title: 'Active mission',
+      agents: ['claude', 'codex'],
+    });
+
+    broker.setAgents(room.id, ['claude', 'codex', 'gemini']);
+
+    expect(listTasks(db, room.id).find((candidate) => candidate.id === task!.id)?.agents).toEqual([
+      'claude',
+      'codex',
+      'gemini',
+    ]);
   });
 
   it('writes context files and sends only a bounded recent window in prompts', async () => {

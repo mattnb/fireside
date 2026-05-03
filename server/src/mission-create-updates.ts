@@ -1,4 +1,5 @@
 import type { AgentId } from './agents/types.js';
+import { hiddenBlockRegex } from './hidden-blocks.js';
 import { normalizePermissionMode, type PermissionMode } from './permissions.js';
 
 export interface ParsedMissionCreateUpdate {
@@ -16,8 +17,7 @@ export interface ExtractedMissionCreateUpdates {
   updates: ParsedMissionCreateUpdate[];
 }
 
-const CREATE_RE =
-  /(^|\n)\/mission-create\s*\n([\s\S]*?)\n[/@]end-(?:mission-create|collab-note)(?=\s|$)/gi;
+const CREATE_RE = hiddenBlockRegex('mission-create', ['mission-create', 'collab-note']);
 
 function parseFields(block: string): Map<string, string[]> {
   const fields = new Map<string, string[]>();

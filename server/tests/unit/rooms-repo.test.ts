@@ -102,6 +102,69 @@ describe('rooms repo', () => {
     ]);
   });
 
+  it('deduplicates room display names without collapsing provider instances', () => {
+    const room = createRoom(db, {
+      name: 'named specialists',
+      agentProfiles: [
+        {
+          id: 'claude-a',
+          providerId: 'claude',
+          displayName: 'Claude',
+          personaId: 'generalist',
+          personaName: 'Generalist',
+          personaSummary: '',
+        },
+        {
+          id: 'claude-b',
+          providerId: 'claude',
+          displayName: 'Claude',
+          personaId: 'generalist',
+          personaName: 'Generalist',
+          personaSummary: '',
+        },
+      ],
+    });
+
+    expect(room.agents).toEqual(['claude-a', 'claude-b']);
+    expect(room.agentProfiles.map((profile) => profile.displayName)).toEqual([
+      'Claude',
+      'Claude 2',
+    ]);
+  });
+
+  it('preserves explicit provider overrides when the agent id has a different provider prefix', () => {
+    const room = createRoom(db, {
+      name: 'provider overrides',
+      agentProfiles: [
+        {
+          id: 'gemini-qa-lead',
+          providerId: 'codex',
+          displayName: 'Holly',
+          personaId: 'qa-lead',
+          personaName: 'QA Lead',
+          personaSummary: '',
+        },
+        {
+          id: 'gemini-quality-assurance',
+          providerId: 'codex',
+          displayName: 'Biggs',
+          personaId: 'quality-assurance-engineer',
+          personaName: 'Quality Assurance Engineer',
+          personaSummary: '',
+        },
+      ],
+    });
+
+    expect(room.agentProfiles.map((profile) => profile.providerId)).toEqual([
+      'codex',
+      'codex',
+    ]);
+    expect(getRoom(db, room.id)?.agentProfiles.map((profile) => profile.providerId)).toEqual([
+      'codex',
+      'codex',
+    ]);
+  });
+
   it('deduplicates exact legacy agent ids without collapsing provider instances', () => {
     const room = createRoom(db, { name: 'legacy duplicates', agents: ['claude'] });
     db.prepare(`UPDATE rooms SET agents_json = ?, yolo_agents_json = ? WHERE id = ?`).run(
@@ -140,6 +203,43 @@ describe('rooms repo', () => {
 
     expect(getCliSessionId(db, room.id, 'claude')).toBe('session-claude');
     expect(getCliSessionId(db, room.id, 'gemini')).toBeNull();
+  });
+
+  it('setRoomAgents removes sessions when an existing agent changes provider', () => {
+    const room = createRoom(db, {
+      name: 'provider switch',
+      agentProfiles: [
+        {
+          id: 'gemini-qa-lead',
+          providerId: 'gemini',
+          displayName: 'Holly',
+          personaId: 'qa-lead',
+          personaName: 'QA Lead',
+          personaSummary: '',
+        },
+      ],
+    });
+    upsertCliSessionId(db, room.id, 'gemini-qa-lead', 'old-gemini-session', 'gemini');
+
+    setRoomAgents(
+      db,
+      room.id,
+      ['gemini-qa-lead'],
+      ['gemini-qa-lead'],
+      [
+        {
+          id: 'gemini-qa-lead',
+          providerId: 'codex',
+          displayName: 'Holly',
+          personaId: 'qa-lead',
+          personaName: 'QA Lead',
+          personaSummary: '',
+        },
+      ],
+    );
+
+    expect(getRoom(db, room.id)?.agentProfiles[0]?.providerId).toBe('codex');
+    expect(getCliSessionId(db, room.id, 'gemini-qa-lead')).toBeNull();
   });
 
   it('deleteRoom removes the room and cascades messages', () => {

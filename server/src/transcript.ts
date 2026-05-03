@@ -117,6 +117,11 @@ function formatAgentProfile(profile: RoomAgentProfile | undefined, agentId: Agen
     `Agent identity: respond as "${profile.displayName}" in chat. Your durable agent id is "${profile.id}" and your provider adapter is "${profile.providerId}".`,
     `Persona: ${persona.name}. ${persona.summary}`,
   ];
+  if (profile.temporary) {
+    lines.push(
+      `Temporary agent: you were added by ${profile.spawnedBy ?? 'an orchestrator'} for ${profile.spawnedScope || 'a focused assignment'}. When your assigned work is complete or no longer useful, update Mission Control with evidence and dismiss yourself with /agent-roster action: dismiss id: ${profile.id} reason: assignment complete.`,
+    );
+  }
   if (persona.prompt) {
     lines.push(
       `Persona lens: ${persona.prompt}`,
@@ -131,8 +136,12 @@ function formatRoomProfiles(profiles: RoomAgentProfile[] | undefined): string[] 
   return [
     `Room roster: ${profiles
       .map(
-        (profile) =>
-          `${profile.displayName} [id=${profile.id}, provider=${profile.providerId}, persona=${profile.personaName}]`,
+        (profile) => {
+          const temp = profile.temporary
+            ? `, temporary=true, spawned_by=${profile.spawnedBy ?? 'unknown'}`
+            : '';
+          return `${profile.displayName} [id=${profile.id}, provider=${profile.providerId}, persona=${profile.personaName}${temp}]`;
+        },
       )
       .join('; ')}.`,
   ];
@@ -344,6 +353,34 @@ function renderPrompt(
         `Close each hidden block with its matching end marker exactly. Do not close /mission-plan, /mission-phase, or /mission-task blocks with /end-collab-note.`,
         `Keep your reply and any requested tool use scoped to this active mission unless the latest human message explicitly changes direction.`,
       ];
+  const rosterProtocolLines =
+    opts.agentProfile &&
+    ['engineering-manager', 'qa-lead'].includes(opts.agentProfile.personaId) &&
+    !compactPrompt
+      ? [
+          ``,
+          `Temporary agent roster protocol: as ${opts.agentProfile.personaName}, you may add up to three active temporary agents that you personally manage. Use this only when it improves mission flow, parallel QA/review, or task throughput. Temporary agents are visible in the room roster, receive a focused assignment, and should be dismissed when complete.`,
+          `/agent-roster`,
+          `action: add`,
+          `name: codex-regression`,
+          `provider: codex`,
+          `persona: quality-assurance-engineer`,
+          `scope: checklist item, phase, file area, or review lane`,
+          `reason: why this temporary agent is needed now`,
+          `yolo: true`,
+          `max_turns: 25`,
+          `dismiss_when: review complete or blocked`,
+          `prompt:`,
+          `Focused instructions, context, expected evidence, and how to report/dismiss.`,
+          `/end-agent-roster`,
+          `To dismiss a temporary agent, use /agent-roster with action: dismiss and id or name plus reason. Prefer Codex or Claude for deep code work/review; use Gemini when visual analysis, images, frontend design judgment, or broad ideation is the better fit. Adapt to the actual room roster and provider behavior.`,
+        ]
+      : opts.agentProfile?.temporary && !compactPrompt
+        ? [
+            ``,
+            `Temporary agent protocol: when your focused assignment is complete, blocked, or no longer useful, append /agent-roster with action: dismiss, id: ${opts.agentProfile.id}, and reason after your visible status. This removes you from the active room roster while preserving your transcript and run history.`,
+          ]
+        : [];
   const taskLines = opts.task
     ? [
         ``,
@@ -512,6 +549,7 @@ function renderPrompt(
     handoffLine,
     ...permissionLines,
     ...collaborationLines,
+    ...rosterProtocolLines,
     ...noTaskMissionLines,
     ...taskLines,
     ...workflowProfileLines,

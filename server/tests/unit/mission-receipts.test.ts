@@ -74,4 +74,25 @@ describe('mission receipts', () => {
       },
     ]);
   });
+
+  it('extracts receipt blocks wrapped in html comment syntax', () => {
+    const extracted = extractMissionReceipts(
+      [
+        'No visible mission update.',
+        '',
+        '<!-- /mission-receipt',
+        'status: continuing',
+        'summary: Other agents are still active.',
+        '/end-mission-receipt -->',
+      ].join('\n'),
+    );
+
+    expect(extracted.visibleText).toBe('No visible mission update.');
+    expect(extracted.receipts).toMatchObject([
+      {
+        status: 'continuing',
+        summary: 'Other agents are still active.',
+      },
+    ]);
+  });
 });

@@ -137,4 +137,86 @@ describe('claude adapter', () => {
       },
     ]);
   });
+
+  it('emits quota telemetry from Claude rate limit events', () => {
+    expect(
+      claudeSpec.parseStreamLine?.(
+        JSON.stringify({
+          type: 'rate_limit_event',
+          model: 'claude-opus-4-7[1m]',
+          rate_limits: {
+            five_hour: { used_percentage: 42, resets_at: 1777610101 },
+            seven_day: { used_percentage: 13, resets_at: 1777977444 },
+          },
+        }),
+        'stdout',
+      ),
+    ).toEqual([
+      {
+        kind: 'usage',
+        status: 'info',
+        label: 'claude rate limit update',
+        detail: 'quota 5h 42% / 7d 13%',
+        contextUsage: {
+          provider: 'claude',
+          model: 'claude-opus-4-7[1m]',
+          usedTokens: 0,
+          quotaOnly: true,
+          source: 'claude:rate_limits',
+          quota: {
+            fiveHour: { percent: 42, windowMinutes: 300, resetsAt: 1777610101000 },
+            sevenDay: { percent: 13, windowMinutes: 10080, resetsAt: 1777977444000 },
+            source: 'claude:rate_limits',
+          },
+        },
+      },
+    ]);
+  });
+
+  it('emits quota telemetry from Claude debug header lines on stderr', () => {
+    expect(
+      claudeSpec.parseStreamLine?.(
+        '"anthropic-ratelimit-unified-5h-utilization": "0.13"',
+        'stderr',
+      ),
+    ).toEqual([
+      {
+        kind: 'usage',
+        status: 'info',
+        label: 'claude rate limit headers',
+        detail: 'quota 5h 13%',
+        contextUsage: {
+          provider: 'claude',
+          model: 'claude',
+          usedTokens: 0,
+          quotaOnly: true,
+          source: 'claude:debug-rate-limit-headers',
+          quota: {
+            fiveHour: { percent: 13, windowMinutes: 300 },
+            source: 'claude:debug-rate-limit-headers',
+          },
+        },
+      },
+    ]);
+  });
+
+  it('redacts Claude debug output while preserving stream-json reply lines', () => {
+    const stream = [
+      'request headers: {"authorization":"Bearer secret-token"}',
+      JSON.stringify({ type: 'system', subtype: 'init', session_id: 's1', model: 'claude' }),
+      JSON.stringify({ type: 'result', session_id: 's1', result: 'pong', duration_ms: 12 }),
+      '"anthropic-ratelimit-unified-5h-utilization": "0.13"',
+    ].join('\n');
+
+    const reply = claudeSpec.parseOutput(stream, 'response headers: {"x-api-key":"secret"}');
+
+    expect(reply.text).toBe('pong');
+    expect(reply.sessionId).toBe('s1');
+    expect(reply.raw.stdout).toContain('"type":"result"');
+    expect(reply.raw.stdout).toContain('claude debug log redacted');
+    expect(reply.raw.stdout).not.toContain('secret-token');
+    expect(reply.raw.stdout).not.toContain('anthropic-ratelimit-unified');
+    expect(reply.raw.stderr).toContain('claude debug log redacted');
+    expect(reply.raw.stderr).not.toContain('x-api-key');
+  });
 });

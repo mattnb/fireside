@@ -6,6 +6,14 @@ interface RawRoomAgentProfile {
   providerId?: unknown;
   displayName?: unknown;
   personaId?: unknown;
+  temporary?: unknown;
+  spawnedBy?: unknown;
+  spawnedByPersonaId?: unknown;
+  spawnedAt?: unknown;
+  spawnedReason?: unknown;
+  spawnedScope?: unknown;
+  dismissWhen?: unknown;
+  maxTurns?: unknown;
 }
 
 function slug(value: string): string {
@@ -26,6 +34,32 @@ function uniqueId(base: string, seen: Set<string>): AgentId {
     counter += 1;
   }
   seen.add(candidate);
+  return candidate;
+}
+
+function cleanDisplayName(value: unknown): string {
+  return typeof value === 'string' ? value.replace(/\s+/g, ' ').trim().slice(0, 80) : '';
+}
+
+function cleanText(value: unknown, maxChars = 500): string {
+  return typeof value === 'string' ? value.replace(/\s+/g, ' ').trim().slice(0, maxChars) : '';
+}
+
+function positiveInteger(value: unknown): number | undefined {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return undefined;
+  const integer = Math.floor(value);
+  return integer > 0 ? integer : undefined;
+}
+
+function uniqueDisplayName(base: string, seen: Set<string>): string {
+  const cleanBase = cleanDisplayName(base) || 'Agent';
+  let candidate = cleanBase;
+  let counter = 2;
+  while (seen.has(candidate.toLowerCase())) {
+    candidate = `${cleanBase} ${counter}`;
+    counter += 1;
+  }
+  seen.add(candidate.toLowerCase());
   return candidate;
 }
 
@@ -61,35 +95,48 @@ export function normalizeRoomAgentProfiles(input: {
   agentProfiles?: RawRoomAgentProfile[];
 }): RoomAgentProfile[] {
   const seen = new Set<string>();
+  const seenDisplayNames = new Set<string>();
   const profiles: RoomAgentProfile[] = [];
   const rawProfiles = Array.isArray(input.agentProfiles) ? input.agentProfiles : [];
 
   if (rawProfiles.length > 0) {
     for (const raw of rawProfiles) {
+      const requestedId = typeof raw.id === 'string' ? raw.id : '';
       const providerCandidate = typeof raw.providerId === 'string' ? raw.providerId : '';
       if (!isProviderId(providerCandidate) || providerCandidate === 'echo') continue;
       const providerId = providerCandidate;
       const persona = getAgentPersona(typeof raw.personaId === 'string' ? raw.personaId : '');
-      const requestedId = typeof raw.id === 'string' ? raw.id : '';
       const base =
         requestedId ||
         (persona.id === 'generalist'
           ? providerId
           : `${providerId}-${persona.id.replace(/-(engineer|reviewer|specialist|expert)$/i, '')}`);
       const id = uniqueId(base, seen);
-      const requestedName =
-        typeof raw.displayName === 'string' ? raw.displayName.trim().slice(0, 80) : '';
+      const requestedName = cleanDisplayName(raw.displayName);
+      const fallbackName =
+        persona.id === 'generalist'
+          ? providerDisplayName(providerId)
+          : `${providerDisplayName(providerId)} ${persona.name}`;
+      const maxTurns = positiveInteger(raw.maxTurns);
       profiles.push({
         id,
         providerId,
-        displayName:
-          requestedName ||
-          (persona.id === 'generalist'
-            ? providerDisplayName(providerId)
-            : `${providerDisplayName(providerId)} ${persona.name}`),
+        displayName: uniqueDisplayName(requestedName || fallbackName, seenDisplayNames),
         personaId: persona.id,
         personaName: persona.name,
         personaSummary: persona.summary,
+        ...(raw.temporary === true ? { temporary: true } : {}),
+        ...(raw.spawnedBy ? { spawnedBy: cleanText(raw.spawnedBy, 80) } : {}),
+        ...(raw.spawnedByPersonaId
+          ? { spawnedByPersonaId: cleanText(raw.spawnedByPersonaId, 80) }
+          : {}),
+        ...(typeof raw.spawnedAt === 'number' && Number.isFinite(raw.spawnedAt)
+          ? { spawnedAt: Math.max(0, Math.floor(raw.spawnedAt)) }
+          : {}),
+        ...(raw.spawnedReason ? { spawnedReason: cleanText(raw.spawnedReason, 800) } : {}),
+        ...(raw.spawnedScope ? { spawnedScope: cleanText(raw.spawnedScope, 500) } : {}),
+        ...(raw.dismissWhen ? { dismissWhen: cleanText(raw.dismissWhen, 300) } : {}),
+        ...(maxTurns !== undefined ? { maxTurns } : {}),
       });
     }
   }
@@ -98,7 +145,11 @@ export function normalizeRoomAgentProfiles(input: {
     for (const agentId of input.agents ?? []) {
       if (typeof agentId !== 'string') continue;
       const cleanId = uniqueId(agentId, seen);
-      profiles.push(defaultAgentProfile(cleanId));
+      const profile = defaultAgentProfile(cleanId);
+      profiles.push({
+        ...profile,
+        displayName: uniqueDisplayName(profile.displayName, seenDisplayNames),
+      });
     }
   }
 

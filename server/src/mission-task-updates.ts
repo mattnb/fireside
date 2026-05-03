@@ -3,6 +3,7 @@ import type {
   TaskChecklistParallelism,
   TaskChecklistStatus,
 } from './repos/task-checklist.js';
+import { hiddenBlockRegex } from './hidden-blocks.js';
 
 export type MissionTaskAction = 'create' | 'update' | 'note';
 
@@ -32,8 +33,7 @@ export interface ExtractedMissionTaskUpdates {
   updates: ParsedMissionTaskUpdate[];
 }
 
-const TASK_RE =
-  /(^|\n)\/mission-task\s*\n([\s\S]*?)\n[/@]end-(?:mission-task|collab-note)(?=\s|$)/gi;
+const TASK_RE = hiddenBlockRegex('mission-task', ['mission-task', 'collab-note']);
 const ACTIONS = new Set(['create', 'update', 'note']);
 const STATUSES = new Set(['open', 'blocked', 'done', 'skipped']);
 const STATUS_ALIASES = new Map<string, TaskChecklistStatus>([

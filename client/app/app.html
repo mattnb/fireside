@@ -89,77 +89,7 @@
             </svg>
           </button>
         </header>
-        @if (creatingMissionProjectId() === group.project.id) {
-        <form class="room-create" (submit)="$event.preventDefault(); createRoom(roomName)">
-          <input
-            #roomName
-            class="room-create__input"
-            type="text"
-            autocomplete="off"
-            placeholder="mission name"
-            aria-label="Mission name"
-          />
-          <div class="room-create__agent-head" aria-hidden="true">
-            <span>provider</span>
-            <span>persona</span>
-            <span>yolo</span>
-          </div>
-          <div class="room-create__agents" aria-label="Agents">
-            @for (row of newRoomAgentRows(); track row.clientId) {
-            <article class="room-agent-choice">
-              <label class="room-agent-provider">
-                <span [class]="draftProviderAvatarClass(row)"></span>
-                <select
-                  [value]="row.providerId"
-                  aria-label="Agent provider"
-                  (change)="setNewRoomAgentProvider(row.clientId, $event)"
-                >
-                  @for (provider of agentProviders(); track provider.id) {
-                  <option [value]="provider.id">{{ provider.displayName }}</option>
-                  }
-                </select>
-              </label>
-              <label class="room-agent-persona">
-                <select
-                  [value]="row.personaId"
-                  aria-label="Agent persona"
-                  (change)="setNewRoomAgentPersona(row.clientId, $event)"
-                >
-                  @for (persona of agentPersonas(); track persona.id) {
-                  <option [value]="persona.id">{{ persona.name }}</option>
-                  }
-                </select>
-              </label>
-              <label class="room-agent-yolo" title="Participates in YOLO rounds">
-                <input
-                  type="checkbox"
-                  [checked]="row.yolo"
-                  (change)="toggleNewRoomAgentYolo(row.clientId, $event)"
-                />
-                yolo
-              </label>
-              <button
-                class="room-agent-remove"
-                type="button"
-                title="Remove agent"
-                (click)="removeNewRoomAgent(row.clientId)"
-              >
-                x
-              </button>
-            </article>
-            }
-          </div>
-          <div class="room-create__actions">
-            <button class="room-create__cancel" type="button" (click)="addNewRoomAgent()">
-              add agent
-            </button>
-            <button class="room-create__submit" type="submit">create mission</button>
-            <button class="room-create__cancel" type="button" (click)="cancelCreateRoom(roomName)">
-              cancel
-            </button>
-          </div>
-        </form>
-        } @for (room of group.missions; track room.id) {
+        @for (room of group.missions; track room.id) {
         <div
           class="room-row"
           [class.is-active]="room.id === selectedRoomId() && selectedTab() !== 'briefings'"
@@ -215,23 +145,21 @@
           </em>
         </div>
         @if (!selectedRoom()) { @for (agent of selectedProjectAgents(); track agent) {
-        <div [class]="'rail-agent rail-agent--' + agent + ' rail-agent--idle rail-agent--no-usage'">
+        <div
+          [class]="'rail-agent rail-agent--bare rail-agent--' + agent + ' rail-agent--idle rail-agent--no-usage'"
+        >
+          <span class="rail-agent__pulse" aria-hidden="true"></span>
           <span
-            class="avatar avatar--sm rail-agent__glyph"
-            [class]="avatarClass(agent, 'sm') + ' rail-agent__glyph'"
+            class="avatar avatar--sm rail-agent__glyph-bare"
+            [class]="avatarClass(agent, 'sm') + ' rail-agent__glyph-bare'"
           ></span>
-          <div class="rail-agent__top">
-            <span class="rail-agent__name">{{ agentDisplayName(agent) }}</span>
-            <span class="rail-agent__sep" aria-hidden="true">·</span>
-            <span class="rail-agent__status"
-              >{{ selectedProjectYoloAgents().includes(agent) ? 'yolo' : 'project' }}</span
-            >
-            <span class="rail-agent__pulse" aria-hidden="true"></span>
-          </div>
-          <div class="rail-agent__status-line">
-            <span class="rail-agent__status"
-              >{{ selectedProjectYoloAgents().includes(agent) ? 'yolo' : 'project' }}</span
-            >
+          <div class="rail-agent__meta">
+            <div class="rail-agent__head">
+              <span class="rail-agent__name">{{ agentDisplayName(agent) }}</span>
+            </div>
+            <span class="rail-agent__status">
+              {{ selectedProjectYoloAgents().includes(agent) ? 'yolo' : 'project' }}
+            </span>
           </div>
         </div>
         } @empty {
@@ -259,48 +187,166 @@
           [class]="'rail-agent rail-agent--' + agent + ' rail-agent--' + agentRailKind(agent)"
           [title]="agentRailDetail(agent)"
         >
-          <span
-            class="avatar avatar--sm rail-agent__glyph"
-            [class]="avatarClass(agent, 'sm') + ' rail-agent__glyph'"
-          ></span>
-          <div class="rail-agent__top">
-            <span class="rail-agent__name">{{ agentDisplayName(agent) }}</span>
-            <span class="rail-agent__sep" aria-hidden="true">·</span>
-            <span class="rail-agent__status">{{ agentRailStatus(agent) }}</span>
-            <span class="rail-agent__pulse" aria-hidden="true"></span>
-            @if (canCompactAgent(agent)) {
-            <button
-              class="agent-compact-btn rail-agent__compact"
-              type="button"
-              [disabled]="isAgentRunning(agent) || compactingAgent() === agent"
-              [title]="isAgentRunning(agent) ? 'Compact is available when this agent is idle' : 'Compact context'"
-              aria-label="Compact context"
-              (click)="openCompactAgent(agent, $event)"
-            >
-              <svg viewBox="0 0 640 640" aria-hidden="true">
+          <span class="rail-agent__pulse" aria-hidden="true"></span>
+
+          <div class="rail-agent__ring">
+            <svg viewBox="0 0 100 100" aria-hidden="true">
+              <!-- CTX wedge (top, rotate -148°) — also the compact trigger -->
+              <g
+                class="rail-agent__wedge rail-agent__wedge--ctx"
+                [class.is-actionable]="canCompactAgent(agent) && !isAgentRunning(agent) && compactingAgent() !== agent"
+                [class.is-tone-yellow]="agentContextUsage(agent) && agentContextTone(agentContextUsage(agent)!) === 'agent-context--yellow'"
+                [class.is-tone-red]="agentContextUsage(agent) && agentContextTone(agentContextUsage(agent)!) === 'agent-context--red'"
+                transform="rotate(-148 50 50)"
+              >
+                <circle
+                  class="rail-agent__wedge-track"
+                  cx="50"
+                  cy="50"
+                  r="26"
+                  fill="none"
+                  stroke-width="6"
+                  [attr.stroke-dasharray]="agentRingTrackDash()"
+                />
+                <circle
+                  class="rail-agent__wedge-fill"
+                  cx="50"
+                  cy="50"
+                  r="26"
+                  fill="none"
+                  stroke-width="6"
+                  stroke-linecap="round"
+                  [attr.stroke-dasharray]="agentRingCtxDash(agent)"
+                />
+                <circle
+                  class="rail-agent__wedge-hit"
+                  cx="50"
+                  cy="50"
+                  r="26"
+                  fill="none"
+                  stroke="transparent"
+                  stroke-width="14"
+                  [attr.stroke-dasharray]="agentRingTrackDash()"
+                  (click)="ringCtxClick(agent, $event)"
+                >
+                  <title>{{ agentRingCtxTooltip(agent) }}</title>
+                </circle>
+              </g>
+              <!-- 5H wedge (lower right, rotate -28°) -->
+              <g class="rail-agent__wedge rail-agent__wedge--h5" transform="rotate(-28 50 50)">
+                <circle
+                  class="rail-agent__wedge-track"
+                  cx="50"
+                  cy="50"
+                  r="26"
+                  fill="none"
+                  stroke-width="6"
+                  [attr.stroke-dasharray]="agentRingTrackDash()"
+                />
+                <circle
+                  class="rail-agent__wedge-fill"
+                  cx="50"
+                  cy="50"
+                  r="26"
+                  fill="none"
+                  stroke-width="6"
+                  stroke-linecap="round"
+                  [attr.stroke-dasharray]="agentRingFiveHourDash(agent)"
+                />
+                <circle
+                  class="rail-agent__wedge-hit"
+                  cx="50"
+                  cy="50"
+                  r="26"
+                  fill="none"
+                  stroke="transparent"
+                  stroke-width="14"
+                  [attr.stroke-dasharray]="agentRingTrackDash()"
+                >
+                  <title>{{ agentRingFiveHourTooltip(agent) }}</title>
+                </circle>
+              </g>
+              <!-- 7D wedge (lower left, rotate +92°) -->
+              <g class="rail-agent__wedge rail-agent__wedge--d7" transform="rotate(92 50 50)">
+                <circle
+                  class="rail-agent__wedge-track"
+                  cx="50"
+                  cy="50"
+                  r="26"
+                  fill="none"
+                  stroke-width="6"
+                  [attr.stroke-dasharray]="agentRingTrackDash()"
+                />
+                <circle
+                  class="rail-agent__wedge-fill"
+                  cx="50"
+                  cy="50"
+                  r="26"
+                  fill="none"
+                  stroke-width="6"
+                  stroke-linecap="round"
+                  [attr.stroke-dasharray]="agentRingSevenDayDash(agent)"
+                />
+                <circle
+                  class="rail-agent__wedge-hit"
+                  cx="50"
+                  cy="50"
+                  r="26"
+                  fill="none"
+                  stroke="transparent"
+                  stroke-width="14"
+                  [attr.stroke-dasharray]="agentRingTrackDash()"
+                >
+                  <title>{{ agentRingSevenDayTooltip(agent) }}</title>
+                </circle>
+              </g>
+
+              <text class="rail-agent__wedge-lbl" x="50" y="6">ctx</text>
+              <text class="rail-agent__wedge-pct" x="50" y="16">
+                {{ agentRingCtxPercentRounded(agent) }}%
+              </text>
+              <text class="rail-agent__wedge-lbl" x="89" y="68">5h</text>
+              <text class="rail-agent__wedge-pct" x="89" y="78">
+                {{ agentRingFiveHourPercentRounded(agent) }}
+              </text>
+              <text class="rail-agent__wedge-lbl" x="11" y="68">7d</text>
+              <text class="rail-agent__wedge-pct" x="11" y="78">
+                {{ agentRingSevenDayPercentRounded(agent) }}
+              </text>
+            </svg>
+
+            <span
+              class="avatar avatar--sm rail-agent__glyph"
+              [class]="avatarClass(agent, 'sm') + ' rail-agent__glyph'"
+            ></span>
+
+            @if (canCompactAgent(agent) && !isAgentRunning(agent) && compactingAgent() !== agent) {
+            <span class="rail-agent__compact-hint" aria-hidden="true">
+              <svg viewBox="0 0 640 640">
                 <path
+                  fill="currentColor"
                   d="M503.5 71C512.9 61.6 528.1 61.6 537.4 71L569.4 103C578.8 112.4 578.8 127.6 569.4 136.9L482.4 223.9L521.4 262.9C528.3 269.8 530.3 280.1 526.6 289.1C522.9 298.1 514.2 304 504.5 304L360.5 304C347.2 304 336.5 293.3 336.5 280L336.5 136C336.5 126.3 342.3 117.5 351.3 113.8C360.3 110.1 370.6 112.1 377.5 119L416.5 158L503.5 71zM136.5 336L280.5 336C293.8 336 304.5 346.7 304.5 360L304.5 504C304.5 513.7 298.7 522.5 289.7 526.2C280.7 529.9 270.4 527.9 263.5 521L224.5 482L137.5 569C128.1 578.4 112.9 578.4 103.6 569L71.6 537C62.2 527.6 62.2 512.4 71.6 503.1L158.6 416.1L119.6 377.1C112.7 370.2 110.7 359.9 114.4 350.9C118.1 341.9 126.8 336 136.5 336z"
                 />
               </svg>
-            </button>
+            </span>
             }
           </div>
-          <div class="rail-agent__status-line">
+
+          <div class="rail-agent__meta">
+            <div class="rail-agent__head">
+              <span class="rail-agent__name">{{ agentDisplayName(agent) }}</span>
+              @if (isTemporaryAgent(agent)) {
+              <span class="rail-agent__temp" [title]="temporaryAgentTitle(agent)">temp</span>
+              }
+            </div>
+            <span class="rail-agent__persona">{{ agentPersonaName(agent) }}</span>
             <span class="rail-agent__status">{{ agentRailStatus(agent) }}</span>
-          </div>
-          @if (agentContextUsage(agent); as usage) {
-          <div
-            class="rail-agent__bar-row"
-            [class]="'rail-agent__bar-row ' + agentContextTone(usage)"
-            [title]="agentContextTitle(usage)"
-          >
-            <span class="rail-agent__bar" aria-hidden="true">
-              <span [style.width.%]="agentContextPercent(usage)"></span>
+            @if (agentContextUsage(agent); as usage) {
+            <span class="rail-agent__usage" [title]="agentContextTitle(usage)">
+              {{ agentContextModelLabel(usage) }}
             </span>
-            <span class="rail-agent__pct">{{ agentContextPercentRounded(usage) }}%</span>
+            }
           </div>
-          <div class="rail-agent__meta">{{ agentContextLabel(usage) }}</div>
-          }
         </div>
         } @empty {
         <p class="empty-copy">no agents in this room</p>
@@ -308,17 +354,6 @@
         <button class="agent-manage-btn" type="button" (click)="openEditAgents()">
           Manage Agents
         </button>
-        }
-      </div>
-
-      <div class="presence-group">
-        <div class="section-label">humans</div>
-        @for (human of humans(); track human) {
-        <div class="presence-row">
-          <span class="avatar avatar--sm">{{ human.slice(0, 1).toUpperCase() }}</span>
-          <span>{{ human }}</span>
-          <em>present</em>
-        </div>
         }
       </div>
 
@@ -467,7 +502,7 @@
           <div class="permission-card">
             <header class="permission-card__head">
               <strong
-                >{{ request.agentId }} requests {{ permissionRequestLabel(request) }}
+                >{{ agentDisplayName(request.agentId) }} requests {{ permissionRequestLabel(request) }}
                 permission</strong
               >
               <span [class]="'permission-card__status permission-card__status--' + request.status">
@@ -594,12 +629,12 @@
             <div class="msg__seen" [class.is-empty]="seenAgents.length === 0">
               <span>Seen by</span>
               @if (seenAgents.length > 0) {
-              <span class="msg__seen-avatars" aria-label="Seen by agents">
+              <span class="msg__seen-avatars" [attr.aria-label]="seenAgentsLabel(seenAgents)">
                 @for (agent of seenAgents; track agent) {
                 <span
                   class="avatar avatar--tiny"
                   [class]="avatarClass(agent, 'tiny')"
-                  [title]="agent"
+                  [title]="agentDisplayName(agent)"
                   aria-hidden="true"
                 ></span>
                 }
@@ -644,7 +679,36 @@
           autocomplete="off"
           [placeholder]="composerPlaceholder()"
           aria-label="Message"
+          [attr.aria-expanded]="mentionSuggestions().length > 0"
+          aria-controls="mention-autocomplete"
+          (input)="refreshMentionAutocomplete(messageInput)"
+          (click)="refreshMentionAutocomplete(messageInput)"
+          (keyup)="handleComposerKeyup($event, messageInput)"
+          (keydown)="handleComposerKeydown($event, messageInput)"
+          (blur)="closeMentionAutocompleteSoon()"
         />
+        @if (mentionSuggestions().length > 0) {
+        <div id="mention-autocomplete" class="mention-menu" role="listbox">
+          @for (suggestion of mentionSuggestions(); track suggestion.agentId; let index = $index) {
+          <button
+            type="button"
+            class="mention-menu__item"
+            [class.is-active]="index === mentionSelectedIndex()"
+            role="option"
+            [attr.aria-selected]="index === mentionSelectedIndex()"
+            (mouseenter)="mentionSelectedIndex.set(index)"
+            (mousedown)="$event.preventDefault(); applyMentionSuggestion(messageInput, suggestion)"
+          >
+            <span [class]="avatarClass(suggestion.agentId, 'sm')"></span>
+            <span class="mention-menu__body">
+              <strong>{{ suggestion.label }}</strong>
+              <small>{{ suggestion.detail }}</small>
+            </span>
+            <code>@{{ suggestion.handle }}</code>
+          </button>
+          }
+        </div>
+        }
         @if (isRoomWorking()) {
         <button
           class="composer__stop"
@@ -797,7 +861,11 @@
               @for (message of briefingMessages(briefing); track message.id) {
               <article class="briefing-message">
                 <header>
-                  <span>{{ message.authorId }}</span>
+                  <span>{{
+                    message.authorKind === 'agent'
+                      ? agentDisplayNameForRoom(briefing.payload.room, message.authorId)
+                      : message.authorId
+                  }}</span>
                   <strong>{{ formatShortTime(message.createdAt) }}</strong>
                 </header>
                 <p>{{ message.text }}</p>
@@ -828,7 +896,7 @@
                   @if (item.ownerAgentId) {
                   <span
                     class="check-owner check-owner--assigned"
-                    [title]="'Owner: ' + item.ownerAgentId"
+                    [title]="'Owner: ' + agentDisplayNameForRoom(briefing.payload.room, item.ownerAgentId)"
                   >
                     <span
                       class="avatar avatar--sm"
@@ -861,7 +929,9 @@
                 <p>{{ item.blockedReason || item.statusNote }}</p>
                 } @for (note of briefingChecklistNotes(briefing, item.id); track note.id) {
                 <small class="check-note"
-                  >{{ note.authorId }} / {{ note.kind }}: {{ note.body }}</small
+                  >{{ agentDisplayNameForRoom(briefing.payload.room, note.authorId) }} / {{
+                    note.kind
+                  }}: {{ note.body }}</small
                 >
                 }
               </article>
@@ -910,6 +980,151 @@
           <span>{{ view.summary }}</span>
         </button>
         }
+        <div class="mission-action-anchor">
+          <button
+            type="button"
+            class="control-btn control-btn--briefing mission-action-trigger"
+            [class.is-open]="missionActionPopoverOpen()"
+            [disabled]="!selectedRoomId()"
+            (click)="toggleMissionActionPopover()"
+          >
+            <span>mission action</span>
+            <span class="mission-action-trigger__caret" aria-hidden="true">▾</span>
+          </button>
+          @if (missionActionPopoverOpen()) {
+          <div
+            class="mission-action-backdrop"
+            aria-hidden="true"
+            (click)="closeMissionActionPopover()"
+          ></div>
+          <div
+            class="mission-action-pop"
+            role="dialog"
+            aria-label="Mission action"
+            (click)="$event.stopPropagation()"
+          >
+            <div class="mission-action-pop__head">
+              <span class="mission-action-pop__lbl">mission action</span>
+              <h4 class="mission-action-pop__title">What's next?</h4>
+            </div>
+
+            <div class="mission-action-pop__options" role="radiogroup">
+              @for (action of missionActions; track action.id) {
+              <button
+                type="button"
+                class="mission-action-pop__opt"
+                [class.is-active]="selectedMissionAction() === action.id"
+                role="radio"
+                [attr.aria-checked]="selectedMissionAction() === action.id"
+                (click)="selectMissionAction(action.id)"
+              >
+                <span class="mission-action-pop__radio" aria-hidden="true"></span>
+                <span class="mission-action-pop__opt-body">
+                  <span class="mission-action-pop__name">{{ action.label }}</span>
+                  <span class="mission-action-pop__summary">{{ action.summary }}</span>
+                </span>
+              </button>
+              }
+            </div>
+
+            <div class="mission-action-pop__row">
+              <span class="mission-action-pop__lbl">target</span>
+              <div class="mission-action-pop__pills" role="group" aria-label="Target scope">
+                <button
+                  type="button"
+                  class="mission-action-pop__pill"
+                  [class.is-active]="missionActionScope() === 'team'"
+                  (click)="setMissionActionScope('team')"
+                >
+                  Team
+                </button>
+                <button
+                  type="button"
+                  class="mission-action-pop__pill"
+                  [class.is-active]="missionActionScope() === 'selected'"
+                  (click)="setMissionActionScope('selected')"
+                >
+                  Selected
+                </button>
+                <button
+                  type="button"
+                  class="mission-action-pop__pill"
+                  [class.is-active]="missionActionScope() === 'single'"
+                  (click)="setMissionActionScope('single')"
+                >
+                  One Agent
+                </button>
+              </div>
+            </div>
+
+            @if (missionActionScope() === 'single') {
+            <div class="mission-action-pop__row">
+              <span class="mission-action-pop__lbl">agent</span>
+              <select
+                class="mission-action-pop__select"
+                [value]="missionActionAgent() || roomAgents()[0] || ''"
+                (change)="setMissionActionAgent($event)"
+              >
+                @for (agent of roomAgents(); track agent) {
+                <option [value]="agent">{{ agentDisplayName(agent) }}</option>
+                }
+              </select>
+            </div>
+            } @if (missionActionScope() === 'selected') {
+            <div class="mission-action-pop__row mission-action-pop__row--wrap">
+              <span class="mission-action-pop__lbl">agents</span>
+              <div class="mission-action-pop__agent-grid">
+                @for (agent of roomAgents(); track agent) {
+                <label class="mission-action-pop__agent-check">
+                  <input
+                    type="checkbox"
+                    [checked]="isMissionActionAgentSelected(agent)"
+                    (change)="toggleMissionActionAgent(agent, $event)"
+                  />
+                  <span>{{ agentDisplayName(agent) }}</span>
+                </label>
+                }
+              </div>
+            </div>
+            } @if (selectedMissionAction() === 'execute') {
+            <div class="mission-action-pop__row">
+              <span class="mission-action-pop__lbl">item</span>
+              <select
+                class="mission-action-pop__select"
+                [value]="missionActionChecklistItemId()"
+                (change)="setMissionActionChecklistItem($event)"
+              >
+                <option value="">next unblocked item</option>
+                @for (item of missionActionWorkItems(); track item.id) {
+                <option [value]="item.id">{{ item.title }} / {{ item.status }}</option>
+                }
+              </select>
+            </div>
+            }
+
+            <div class="mission-action-pop__footer">
+              <div class="mission-action-pop__hint">
+                will post to
+                <span class="mission-action-pop__channel"
+                  ># {{ selectedRoom()?.name || 'mission' }}</span
+                >
+                as
+                <span class="mission-action-pop__target">→ {{ missionActionTargetLabel() }}</span>
+                @if (selectedMissionAction() === 'execute') { · {{ missionActionItemLabel() }} }
+              </div>
+              <button
+                type="button"
+                class="control-btn control-btn--briefing mission-action-pop__send"
+                [disabled]="!canPostMissionAction()"
+                (click)="dispatchMissionAction()"
+              >
+                <span>post to chat</span>
+              </button>
+            </div>
+          </div>
+          }
+        </div>
+
         <button
           type="button"
           class="control-btn control-btn--briefing mission-view-tabs__briefing"
@@ -1183,312 +1398,129 @@
         </div>
       </section>
 
-      <section class="panel panel--controls mission-actions">
-        <header class="mission-actions__head">
-          <div>
-            <div class="section-label">mission actions</div>
-            <h3>{{ missionActionDefinition(selectedMissionAction()).label }}</h3>
-          </div>
-          <span class="mission-actions__chip">posts to chat</span>
-        </header>
-
-        <div class="mission-actions__target">
-          <div class="mission-actions__target-head">
-            <span>send to</span>
-            <strong>{{ missionActionTargetLabel() }}</strong>
-          </div>
-          <div class="mission-action-scope" role="group" aria-label="Mission action target scope">
-            <button
-              type="button"
-              [class.is-active]="missionActionScope() === 'team'"
-              (click)="setMissionActionScope('team')"
-            >
-              Team
-            </button>
-            <button
-              type="button"
-              [class.is-active]="missionActionScope() === 'selected'"
-              (click)="setMissionActionScope('selected')"
-            >
-              Selected
-            </button>
-            <button
-              type="button"
-              [class.is-active]="missionActionScope() === 'single'"
-              (click)="setMissionActionScope('single')"
-            >
-              One Agent
-            </button>
-          </div>
-          @if (missionActionScope() === 'single') {
-          <select
-            class="mission-action-select"
-            [value]="missionActionAgent() || roomAgents()[0] || ''"
-            (change)="setMissionActionAgent($event)"
-          >
-            @for (agent of roomAgents(); track agent) {
-            <option [value]="agent">{{ agentDisplayName(agent) }}</option>
-            }
-          </select>
-          } @if (missionActionScope() === 'selected') {
-          <div class="mission-action-agent-grid">
-            @for (agent of roomAgents(); track agent) {
-            <label>
-              <input
-                type="checkbox"
-                [checked]="isMissionActionAgentSelected(agent)"
-                (change)="toggleMissionActionAgent(agent, $event)"
-              />
-              {{ agentDisplayName(agent) }}
-            </label>
-            }
-          </div>
-          }
-        </div>
-
-        <div class="mission-action-grid">
-          @for (action of missionActions; track action.id) {
-          <button
-            type="button"
-            class="mission-action-option"
-            [class.is-selected]="selectedMissionAction() === action.id"
-            (click)="selectMissionAction(action.id)"
-          >
-            <strong>{{ action.label }}</strong>
-            <span>{{ action.summary }}</span>
-          </button>
-          }
-        </div>
-
-        @if (selectedMissionAction() === 'execute') {
-        <label class="mission-action-field">
-          <span>work item</span>
-          <select
-            [value]="missionActionChecklistItemId()"
-            (change)="setMissionActionChecklistItem($event)"
-          >
-            <option value="">next unblocked item</option>
-            @for (item of missionActionWorkItems(); track item.id) {
-            <option [value]="item.id">{{ item.title }} / {{ item.status }}</option>
-            }
-          </select>
-        </label>
-        }
-
-        <div class="mission-action-preview">
-          <div class="mission-action-preview__head">
-            <span>chat prompt</span>
-            <button
-              type="button"
-              class="control-btn control-btn--primary"
-              [disabled]="!canPostMissionAction()"
-              (click)="dispatchMissionAction()"
-            >
-              post to chat
-            </button>
-          </div>
-          <pre>{{ missionActionPreview() }}</pre>
-        </div>
-      </section>
       } @else if (selectedMissionView() === 'board') {
       <section class="panel panel--wide mission-board">
-        <header class="mission-graph__head">
+        <header class="mission-board__head">
           <div>
             <div class="section-label">kanban board</div>
             <h2>Status lanes by phase</h2>
           </div>
           @if (missionGraphSummary(); as graph) {
-          <div class="mission-graph__summary">
-            <span>{{ graph.ready }} ready</span>
-            <span>{{ graph.activeRuns }} running</span>
-            <span>{{ graph.blocked }} blocked</span>
-            <span>{{ graph.itemsDone }}/{{ graph.itemsTotal }} done</span>
-          </div>
-          }
-        </header>
-        @if (taskControl()) {
-        <div class="mission-board__table">
-          <div class="mission-board__corner">phase</div>
-          @for (column of missionBoardColumns; track column.id) {
-          <header class="mission-board__column-head">
-            <strong>{{ column.label }}</strong>
-            <span>{{ column.summary }}</span>
-          </header>
-          } @for (swimlane of missionBoardSwimlanes(); track swimlane.id) {
-          <aside class="mission-board__phase">
-            <span>{{ swimlane.status }}</span>
-            <strong>{{ swimlane.title }}</strong>
-            @if (swimlane.planLabel) {
-            <small>plan {{ swimlane.planLabel }}</small>
-            } @if (swimlane.gate) {
-            <p>{{ swimlane.gate }}</p>
-            }
-          </aside>
-          @for (column of missionBoardColumns; track column.id) {
-          <section class="mission-board__cell">
-            @for (card of swimlane.cardsByColumn[column.id]; track card.item.id) {
-            <article
-              [class]="'mission-graph-card mission-board-card ' + missionGraphCardClass(card)"
-              [class.is-selected]="missionActionChecklistItemId() === card.item.id"
-              tabindex="0"
-              (click)="focusMissionGraphItem(card.item)"
-              (keydown.enter)="focusMissionGraphItem(card.item)"
-              (keydown.space)="focusMissionGraphItem(card.item); $event.preventDefault()"
+          <div class="mission-board__rollup">
+            <span><strong>{{ graph.ready }}</strong>ready</span>
+            <span><strong>{{ graph.activeRuns }}</strong>active</span>
+            <span [class.is-warn]="graph.blocked > 0"
+              ><strong>{{ graph.blocked }}</strong>blocked</span
             >
-              <header class="mission-graph-card__head">
-                <span class="mission-graph-card__status" aria-hidden="true"></span>
-                <strong>{{ card.item.title }}</strong>
-                <em>{{ card.item.status }}</em>
-              </header>
-              @if (card.item.detail) {
-              <p>{{ card.item.detail }}</p>
-              }
-              <div class="mission-graph-card__meta">
-                @if (card.item.ownerAgentId) {
-                <span class="mission-graph-owner" [title]="'Owner: ' + card.item.ownerAgentId">
-                  <span
-                    class="avatar avatar--sm"
-                    [class]="avatarClass(card.item.ownerAgentId, 'sm')"
-                  >
-                    @if (!isAgentOwner(card.item.ownerAgentId)) { {{ card.item.ownerAgentId.slice(0,
-                    1).toUpperCase() }} }
-                  </span>
-                </span>
-                } @else {
-                <span>unassigned</span>
-                }
-                <span>id {{ shortTaskId(card.item.id) }}</span>
-                <span>phase {{ swimlane.title }}</span>
-                <span [class]="'mission-scope-chip is-' + card.item.parallelism">
-                  {{ card.item.parallelism }}
-                </span>
-                @if (card.item.expectedTouches?.length) {
-                <span>{{ card.item.expectedTouches.length }} touch(es)</span>
-                } @if (card.item.conflictGroup) {
-                <span>group {{ card.item.conflictGroup }}</span>
-                } @if (card.notesCount) {
-                <span>{{ card.notesCount }} notes</span>
-                } @if (card.evidenceCount) {
-                <span>{{ card.evidenceCount }} evidence</span>
-                }
-              </div>
-              @if (card.dependencies.length) {
-              <div class="mission-graph-links">
-                <span>after</span>
-                @for (dependency of card.dependencies; track dependency.id) {
-                <em [class.is-done]="dependency.done"
-                  >{{ dependency.title }} / {{ dependency.status }}</em
-                >
-                }
-              </div>
-              } @if (card.activeRun || card.latestRun) {
-              <button
-                type="button"
-                class="mission-graph-run"
-                [class.is-active]="card.activeRun"
-                (click)="openMissionGraphCardRun(card, $event)"
-              >
-                {{ missionGraphRunLabel(card) }}
-              </button>
-              } @if (missionGraphNotePreview(card)) {
-              <small class="mission-graph-card__note">{{ missionGraphNotePreview(card) }}</small>
-              }
-            </article>
-            } @empty {
-            <p class="mission-board__empty">none</p>
-            }
-          </section>
-          } }
-        </div>
-        } @else {
-        <p class="empty-copy">kanban board is waiting on an active mission</p>
-        }
-      </section>
-      } @else if (selectedMissionView() === 'roadmap') {
-      <section class="panel panel--wide mission-graph">
-        <header class="mission-graph__head">
-          <div>
-            <div class="section-label">mission graph</div>
-            <h2>Phase lanes and work dependencies</h2>
-          </div>
-          @if (missionGraphSummary(); as graph) {
-          <div class="mission-graph__summary">
-            <span>{{ graph.itemsDone }}/{{ graph.itemsTotal }} items</span>
-            <span>{{ graph.phasesDone }}/{{ graph.phasesTotal }} gates</span>
-            <span>{{ graph.ready }} ready</span>
-            <span>{{ graph.activeRuns }} running</span>
+            <span><strong>{{ graph.itemsDone }}</strong>/{{ graph.itemsTotal }} done</span>
           </div>
           }
         </header>
 
-        @if (taskControl(); as control) { @if (missionGraphSummary(); as graph) {
-        <div class="mission-graph__stats">
-          <article>
-            <span>ready lanes</span>
-            <strong>{{ graph.ready }}</strong>
-          </article>
-          <article>
-            <span>blocked</span>
-            <strong>{{ graph.blocked }}</strong>
-          </article>
-          <article>
-            <span>evidence</span>
-            <strong>{{ graph.evidence }}</strong>
-          </article>
-          <article>
-            <span>artifacts</span>
-            <strong>{{ graph.artifacts }}</strong>
-          </article>
-          <article>
-            <span>collaboration</span>
-            <strong>{{ graph.collaboration }}</strong>
-          </article>
+        @if (taskControl()) {
+        <div class="mission-board__col-strip">
+          <span class="mission-board__corner">phase</span>
+          @for (column of missionBoardColumns; track column.id) {
+          <span [class]="'mission-board__col-tag is-' + column.id">
+            {{ column.label }}
+          </span>
+          }
         </div>
-        }
 
-        <div class="mission-graph__lanes">
-          @for (lane of missionGraphLanes(); track lane.id) {
-          <section [class]="'mission-graph-lane ' + missionGraphLaneClass(lane)">
-            <header class="mission-graph-lane__head">
-              <div>
-                <span>{{ lane.status }}</span>
-                <h3>{{ lane.title }}</h3>
-              </div>
-              <strong>{{ lane.counts.done }}/{{ lane.counts.total }}</strong>
-            </header>
-            @if (lane.planLabel) {
-            <small class="mission-graph-lane__plan">plan {{ lane.planLabel }}</small>
-            } @if (lane.gate) {
-            <p class="mission-graph-lane__gate">{{ lane.gate }}</p>
-            }
-            <div class="mission-graph-lane__counts">
-              <span>{{ lane.counts.ready }} ready</span>
-              <span>{{ lane.counts.open }} open</span>
-              <span>{{ lane.counts.blocked }} blocked</span>
+        @for (swimlane of sortedBoardSwimlanes(); track swimlane.id) {
+        <div
+          [class]="'mission-board__swim is-group-' + boardPhaseGroup(swimlane)"
+          [class.is-collapsed]="isBoardPhaseCollapsed(swimlane.id)"
+        >
+          <button
+            type="button"
+            class="mission-board__lane-head"
+            (click)="toggleBoardPhaseCollapsed(swimlane.id)"
+            [attr.aria-expanded]="!isBoardPhaseCollapsed(swimlane.id)"
+          >
+            <span class="mission-board__lane-num"
+              >phase {{ pad2(boardLaneSortOrder(swimlane)) }} ·
+              {{ boardPhaseGroup(swimlane) }}</span
+            >
+            <span class="mission-board__lane-name">{{ swimlane.title }}</span>
+            @if (swimlane.gate) {
+            <span class="mission-board__lane-gate">gate: {{ swimlane.gate }}</span>
+            } @if (boardLaneCounts(swimlane); as counts) {
+            <div class="mission-board__lane-counts">
+              @if (counts.ready) {
+              <span><strong>{{ counts.ready }}</strong>ready</span>
+              } @if (counts.active) {
+              <span><strong>{{ counts.active }}</strong>active</span>
+              } @if (counts.blocked) {
+              <span class="is-warn"><strong>{{ counts.blocked }}</strong>blocked</span>
+              } @if (counts.review) {
+              <span><strong>{{ counts.review }}</strong>review</span>
+              } @if (counts.done) {
+              <span><strong>{{ counts.done }}</strong>done</span>
+              }
             </div>
+            }
+            <span class="mission-board__lane-toggle" aria-hidden="true">
+              {{ isBoardPhaseCollapsed(swimlane.id) ? '▸' : '▾' }}
+            </span>
+          </button>
 
-            <div class="mission-graph-lane__cards">
-              @for (card of lane.cards; track card.item.id) {
+          @if (!isBoardPhaseCollapsed(swimlane.id)) {
+          <div class="mission-board__swim-cells">
+            @for (column of missionBoardColumns; track column.id) {
+            <section class="mission-board__cell">
+              @for (card of swimlane.cardsByColumn[column.id]; track card.item.id) {
               <article
-                [class]="'mission-graph-card ' + missionGraphCardClass(card)"
+                [class]="'mb-card ' + missionGraphCardClass(card)"
                 [class.is-selected]="missionActionChecklistItemId() === card.item.id"
                 tabindex="0"
                 (click)="focusMissionGraphItem(card.item)"
                 (keydown.enter)="focusMissionGraphItem(card.item)"
                 (keydown.space)="focusMissionGraphItem(card.item); $event.preventDefault()"
               >
-                <header class="mission-graph-card__head">
-                  <span class="mission-graph-card__status" aria-hidden="true"></span>
-                  <strong>{{ card.item.title }}</strong>
-                  <em>{{ card.item.status }}</em>
-                </header>
+                <div class="mb-card__top">
+                  <span class="mb-card__title">{{ card.item.title }}</span>
+                  <span class="mb-card__status">{{ card.item.status }}</span>
+                </div>
                 @if (card.item.detail) {
-                <p>{{ card.item.detail }}</p>
+                <p class="mb-card__detail">{{ card.item.detail }}</p>
+                } @if (card.dependencies.length) {
+                <div class="mb-card__links">
+                  <span>after</span>
+                  <div class="mb-card__targets">
+                    @for (dependency of card.dependencies; track dependency.id) {
+                    <em [class.is-done]="dependency.done"
+                      >{{ dependency.title }} / {{ dependency.status }}</em
+                    >
+                    }
+                  </div>
+                </div>
+                } @if (card.dependents.length) {
+                <div class="mb-card__links">
+                  <span>unblocks</span>
+                  <div class="mb-card__targets">
+                    @for (dependent of card.dependents; track dependent.id) {
+                    <em [class.is-done]="dependent.done"
+                      >{{ dependent.title }} / {{ dependent.status }}</em
+                    >
+                    }
+                  </div>
+                </div>
+                } @if (card.activeRun || card.latestRun) {
+                <button
+                  type="button"
+                  class="mb-card__run"
+                  [class.is-active]="card.activeRun"
+                  (click)="openMissionGraphCardRun(card, $event)"
+                >
+                  ● {{ missionGraphRunLabel(card) }}
+                </button>
+                } @if (missionGraphNotePreview(card)) {
+                <small class="mb-card__note">{{ missionGraphNotePreview(card) }}</small>
                 }
-
-                <div class="mission-graph-card__meta">
+                <div class="mb-card__meta">
                   @if (card.item.ownerAgentId) {
-                  <span class="mission-graph-owner" [title]="'Owner: ' + card.item.ownerAgentId">
+                  <span [title]="'Owner: ' + agentDisplayName(card.item.ownerAgentId)">
                     <span
                       class="avatar avatar--sm"
                       [class]="avatarClass(card.item.ownerAgentId, 'sm')"
@@ -1496,16 +1528,18 @@
                       @if (!isAgentOwner(card.item.ownerAgentId)) { {{
                       card.item.ownerAgentId.slice(0, 1).toUpperCase() }} }
                     </span>
+                    {{ agentDisplayName(card.item.ownerAgentId) }}
                   </span>
                   } @else {
                   <span>unassigned</span>
                   }
-                  <span>id {{ shortTaskId(card.item.id) }}</span>
-                  @if (card.waiting) {
-                  <span>waiting</span>
-                  } @if (card.ready) {
-                  <span>parallel ready</span>
-                  } @if (card.item.parallelism) {
+                  <span
+                    class="mb-card__id-copy"
+                    title="Click to copy id"
+                    (click)="copyTaskId(card.item.id, $event)"
+                    >id {{ shortTaskId(card.item.id) }}</span
+                  >
+                  @if (card.item.parallelism) {
                   <span [class]="'mission-scope-chip is-' + card.item.parallelism">
                     {{ card.item.parallelism }}
                   </span>
@@ -1519,44 +1553,263 @@
                   <span>{{ card.evidenceCount }} evidence</span>
                   }
                 </div>
-
-                @if (card.dependencies.length) {
-                <div class="mission-graph-links">
-                  <span>after</span>
-                  @for (dependency of card.dependencies; track dependency.id) {
-                  <em [class.is-done]="dependency.done"
-                    >{{ dependency.title }} / {{ dependency.status }}</em
-                  >
-                  }
-                </div>
-                } @if (card.dependents.length) {
-                <div class="mission-graph-links">
-                  <span>unblocks</span>
-                  @for (dependent of card.dependents; track dependent.id) {
-                  <em [class.is-done]="dependent.done"
-                    >{{ dependent.title }} / {{ dependent.status }}</em
-                  >
-                  }
-                </div>
-                } @if (card.activeRun || card.latestRun) {
-                <button
-                  type="button"
-                  class="mission-graph-run"
-                  [class.is-active]="card.activeRun"
-                  (click)="openMissionGraphCardRun(card, $event)"
-                >
-                  {{ missionGraphRunLabel(card) }}
-                </button>
-                } @if (missionGraphNotePreview(card)) {
-                <small class="mission-graph-card__note">{{ missionGraphNotePreview(card) }}</small>
-                }
               </article>
               } @empty {
-              <p class="empty-copy">no work items in this lane</p>
+              <p class="mission-board__empty">none</p>
+              }
+            </section>
+            }
+          </div>
+          }
+        </div>
+        }
+        } @else {
+        <p class="empty-copy">kanban board is waiting on an active mission</p>
+        }
+      </section>
+      } @else if (selectedMissionView() === 'roadmap') {
+      <section class="panel panel--wide mission-roadmap">
+        <header class="mission-roadmap__head">
+          <div>
+            <div class="section-label">mission graph</div>
+            <h2>Phase lanes &amp; work dependencies</h2>
+          </div>
+        </header>
+
+        @if (taskControl()) { @if (missionGraphSummary(); as graph) {
+        <div class="mission-roadmap__rollup">
+          <span class="mission-roadmap__rollup-lbl">mission rollup</span>
+          <span class="mission-roadmap__rollup-stat"
+            ><strong>{{ graph.itemsDone }}</strong>/{{ graph.itemsTotal }} items</span
+          >
+          <span class="mission-roadmap__rollup-divider"></span>
+          <span class="mission-roadmap__rollup-stat"
+            ><strong>{{ graph.phasesDone }}</strong>/{{ graph.phasesTotal }} gates</span
+          >
+          <span class="mission-roadmap__rollup-divider"></span>
+          <span class="mission-roadmap__rollup-stat"><strong>{{ graph.ready }}</strong> ready</span>
+          <span class="mission-roadmap__rollup-divider"></span>
+          <span
+            class="mission-roadmap__rollup-stat"
+            [class.is-warn]="graph.blocked > 0"
+            ><strong>{{ graph.blocked }}</strong> blocked</span
+          >
+          <span class="mission-roadmap__rollup-divider"></span>
+          <span class="mission-roadmap__rollup-stat"
+            ><strong>{{ graph.evidence }}</strong> evidence</span
+          >
+          <span class="mission-roadmap__rollup-divider"></span>
+          <span class="mission-roadmap__rollup-stat"
+            ><strong>{{ graph.artifacts }}</strong> artifacts</span
+          >
+          <span class="mission-roadmap__rollup-divider"></span>
+          <span class="mission-roadmap__rollup-stat"
+            ><strong>{{ graph.collaboration }}</strong> collab</span
+          >
+        </div>
+        }
+
+        <div class="mission-roadmap__body">
+          <nav class="mission-roadmap__nav" aria-label="Phases">
+            <div class="mission-roadmap__nav-head">phases</div>
+            @for (lane of missionGraphLanes(); track lane.id; let i = $index) {
+            <button
+              type="button"
+              class="mission-roadmap__phase-row"
+              [class.is-active]="selectedRoadmapLane()?.id === lane.id"
+              (click)="selectRoadmapPhase(lane.id)"
+            >
+              <span class="mission-roadmap__phase-num">{{ pad2(i + 1) }}</span>
+              <span class="mission-roadmap__phase-name"
+                >{{ lane.title }}<small>{{ roadmapPhaseSubline(lane) }}</small></span
+              >
+              <span class="mission-roadmap__phase-progress">
+                <span class="mission-roadmap__phase-bar">
+                  <span [style.width.%]="roadmapPhaseProgressPercent(lane)"></span>
+                </span>
+                <span class="mission-roadmap__phase-pct"
+                  >{{ roadmapPhaseProgressPercent(lane) }}</span
+                >
+              </span>
+            </button>
+            } @empty {
+            <p class="empty-copy">no phases yet</p>
+            } @if (activeTask()) {
+            <form
+              class="mission-roadmap__add-phase"
+              (submit)="$event.preventDefault(); addPhase(phaseTitle, phaseGate, phaseStatus)"
+            >
+              <div class="mission-roadmap__nav-head">add phase</div>
+              <input #phaseTitle type="text" placeholder="phase title" />
+              <textarea #phaseGate rows="2" placeholder="gate criteria"></textarea>
+              <select #phaseStatus>
+                <option value="planned">planned</option>
+                <option value="active">active</option>
+                <option value="blocked">blocked</option>
+                <option value="done">done</option>
+              </select>
+              <button class="control-btn" type="submit">add phase</button>
+            </form>
+            }
+          </nav>
+
+          <div class="mission-roadmap__pane">
+            @if (selectedRoadmapLane(); as lane) {
+            <div class="mission-roadmap__pane-head">
+              <h5>{{ lane.title }}</h5>
+              @if (lane.gate) {
+              <span class="mission-roadmap__pane-gate">gate: {{ lane.gate }}</span>
+              } @if (lane.planLabel) {
+              <span class="mission-roadmap__pane-plan">plan {{ lane.planLabel }}</span>
               }
             </div>
-          </section>
-          }
+            <div class="mission-roadmap__filters" role="toolbar" aria-label="Filter by status">
+              <button
+                type="button"
+                [class.is-active]="roadmapStatusFilter() === 'ready'"
+                (click)="toggleRoadmapStatusFilter('ready')"
+              >
+                <strong>{{ roadmapStatusBucketCount(lane, 'ready') }}</strong>ready
+              </button>
+              <button
+                type="button"
+                [class.is-active]="roadmapStatusFilter() === 'in-progress'"
+                (click)="toggleRoadmapStatusFilter('in-progress')"
+              >
+                <strong>{{ roadmapStatusBucketCount(lane, 'in-progress') }}</strong>in progress
+              </button>
+              <button
+                type="button"
+                [class.is-active]="roadmapStatusFilter() === 'blocked'"
+                (click)="toggleRoadmapStatusFilter('blocked')"
+              >
+                <strong>{{ roadmapStatusBucketCount(lane, 'blocked') }}</strong>blocked
+              </button>
+              <button
+                type="button"
+                [class.is-active]="roadmapStatusFilter() === 'done'"
+                (click)="toggleRoadmapStatusFilter('done')"
+              >
+                <strong>{{ roadmapStatusBucketCount(lane, 'done') }}</strong>done
+              </button>
+              @if (roadmapStatusFilter()) {
+              <button
+                type="button"
+                class="mission-roadmap__filters-clear"
+                (click)="clearRoadmapStatusFilter()"
+              >
+                clear filter
+              </button>
+              }
+            </div>
+
+            <div class="mission-roadmap__feed">
+              @for (card of roadmapFilteredCards(); track card.item.id) {
+              <article
+                [class]="'mission-roadmap-item ' + missionGraphCardClass(card)"
+                [class.is-selected]="missionActionChecklistItemId() === card.item.id"
+                tabindex="0"
+                (click)="focusMissionGraphItem(card.item)"
+                (keydown.enter)="focusMissionGraphItem(card.item)"
+                (keydown.space)="focusMissionGraphItem(card.item); $event.preventDefault()"
+              >
+                <span class="mission-roadmap-item__stripe" aria-hidden="true"></span>
+                <div class="mission-roadmap-item__body">
+                  <header class="mission-roadmap-item__head">
+                    <h6>{{ card.item.title }}</h6>
+                    <em>{{ card.item.status }}</em>
+                  </header>
+                  @if (card.item.detail) {
+                  <p>{{ card.item.detail }}</p>
+                  } @if (card.dependencies.length) {
+                  <div class="mission-roadmap-item__links">
+                    <span>after</span>
+                    <div class="mission-roadmap-item__targets">
+                      @for (dependency of card.dependencies; track dependency.id) {
+                      <em [class.is-done]="dependency.done"
+                        >{{ dependency.title }} / {{ dependency.status }}</em
+                      >
+                      }
+                    </div>
+                  </div>
+                  } @if (card.dependents.length) {
+                  <div class="mission-roadmap-item__links">
+                    <span>unblocks</span>
+                    <div class="mission-roadmap-item__targets">
+                      @for (dependent of card.dependents; track dependent.id) {
+                      <em [class.is-done]="dependent.done"
+                        >{{ dependent.title }} / {{ dependent.status }}</em
+                      >
+                      }
+                    </div>
+                  </div>
+                  } @if (card.activeRun || card.latestRun) {
+                  <button
+                    type="button"
+                    class="mission-roadmap-item__run"
+                    [class.is-active]="card.activeRun"
+                    (click)="openMissionGraphCardRun(card, $event)"
+                  >
+                    {{ missionGraphRunLabel(card) }}
+                  </button>
+                  } @if (missionGraphNotePreview(card)) {
+                  <small class="mission-roadmap-item__note">{{
+                    missionGraphNotePreview(card)
+                  }}</small>
+                  }
+
+                  <div class="mission-roadmap-item__meta">
+                    @if (card.item.ownerAgentId) {
+                    <span [title]="'Owner: ' + agentDisplayName(card.item.ownerAgentId)">
+                      <span
+                        class="avatar avatar--sm"
+                        [class]="avatarClass(card.item.ownerAgentId, 'sm')"
+                      >
+                        @if (!isAgentOwner(card.item.ownerAgentId)) { {{
+                        card.item.ownerAgentId.slice(0, 1).toUpperCase() }} }
+                      </span>
+                      {{ agentDisplayName(card.item.ownerAgentId) }}
+                    </span>
+                    } @else {
+                    <span>unassigned</span>
+                    }
+                    <span
+                      class="mission-roadmap-item__id-copy"
+                      title="Click to copy id"
+                      (click)="copyTaskId(card.item.id, $event)"
+                      >id {{ shortTaskId(card.item.id) }}</span
+                    >
+                    @if (card.waiting) {
+                    <span>waiting</span>
+                    } @if (card.ready) {
+                    <span>parallel ready</span>
+                    } @if (card.item.parallelism) {
+                    <span [class]="'mission-scope-chip is-' + card.item.parallelism">
+                      {{ card.item.parallelism }}
+                    </span>
+                    } @if (card.item.expectedTouches?.length) {
+                    <span>{{ card.item.expectedTouches.length }} touch(es)</span>
+                    } @if (card.item.conflictGroup) {
+                    <span>group {{ card.item.conflictGroup }}</span>
+                    } @if (card.notesCount) {
+                    <span>{{ card.notesCount }} notes</span>
+                    } @if (card.evidenceCount) {
+                    <span>{{ card.evidenceCount }} evidence</span>
+                    }
+                  </div>
+                </div>
+              </article>
+              } @empty {
+              <p class="empty-copy">
+                @if (roadmapStatusFilter()) { no items match this filter } @else { no work items in
+                this phase }
+              </p>
+              }
+            </div>
+            } @else {
+            <p class="empty-copy">select a phase</p>
+            }
+          </div>
         </div>
         } @else {
         <p class="empty-copy">mission graph is waiting on an active mission</p>
@@ -1804,62 +2057,6 @@
         </form>
         }
       </section>
-      } @if (selectedMissionView() === 'roadmap') {
-      <section class="panel panel--phases">
-        <div class="section-label">phase gates</div>
-        @if (taskControl(); as control) {
-        <div class="phase-grid">
-          @for (phase of control.phases; track phase.id) {
-          <article
-            class="phase-card"
-            [class.is-active]="phase.id === control.currentPhase?.id"
-            [class.is-done]="phase.status === 'done'"
-          >
-            @if (phase.status === 'done') {
-            <svg
-              class="phase-card__complete-icon"
-              xmlns="http://www.w3.org/2000/svg"
-              viewBox="0 0 640 640"
-              aria-hidden="true"
-              focusable="false"
-            >
-              <path
-                d="M320 576C178.6 576 64 461.4 64 320C64 178.6 178.6 64 320 64C461.4 64 576 178.6 576 320C576 461.4 461.4 576 320 576zM438 209.7C427.3 201.9 412.3 204.3 404.5 215L285.1 379.2L233 327.1C223.6 317.7 208.4 317.7 199.1 327.1C189.8 336.5 189.7 351.7 199.1 361L271.1 433C276.1 438 282.9 440.5 289.9 440C296.9 439.5 303.3 435.9 307.4 430.2L443.3 243.2C451.1 232.5 448.7 217.5 438 209.7z"
-              />
-            </svg>
-            }
-            <header>
-              <span>{{ phase.title }}</span>
-              <strong>{{ phase.status }}</strong>
-            </header>
-            @if (phase.planId) {
-            <small class="phase-card__meta">plan {{ planLabel(phase.planId) }}</small>
-            }
-            <p>{{ phase.gate || phase.description || 'No gate criteria recorded.' }}</p>
-          </article>
-          } @empty {
-          <p class="empty-copy">no phase gates recorded</p>
-          }
-        </div>
-        } @else {
-        <p class="empty-copy">mission control state is waiting on an active mission</p>
-        } @if (activeTask()) {
-        <form
-          class="inline-form"
-          (submit)="$event.preventDefault(); addPhase(phaseTitle, phaseGate, phaseStatus)"
-        >
-          <input #phaseTitle type="text" placeholder="phase title" />
-          <textarea #phaseGate rows="2" placeholder="gate criteria"></textarea>
-          <select #phaseStatus>
-            <option value="planned">planned</option>
-            <option value="active">active</option>
-            <option value="blocked">blocked</option>
-            <option value="done">done</option>
-          </select>
-          <button class="control-btn" type="submit">add phase</button>
-        </form>
-        }
-      </section>
       } @if (selectedMissionView() === 'plan') {
       <section class="panel panel--plan">
         <div class="section-label">active plan</div>
@@ -1893,88 +2090,207 @@
           </label>
         </div>
         <div class="checklist">
-          @for (item of control.checklistItems; track item.id) {
-          <article
-            class="check-item"
-            [class.is-blocked]="item.status === 'blocked'"
-            [class.is-done]="item.status === 'done'"
-            [class.is-waiting]="isWaitingOnDependencies(item)"
-            [class.is-compact-done]="isChecklistItemCollapsed(item)"
-          >
-            <label class="check-item__main">
-              <input
-                type="checkbox"
-                [checked]="item.status === 'done'"
-                [disabled]="item.status === 'skipped'"
-                (change)="toggleChecklistItem(item, $event)"
-              />
-              <span class="check-item__title">
-                <strong>{{ item.title }}</strong>
-                @if (item.detail) {
-                <small>{{ item.detail }}</small>
+          @for (phase of control.phases; track phase.id) { @let phaseItems =
+          checklistPhaseItems(phase.id); @let collapsed = isChecklistPhaseCollapsed(phase.id);
+          <section class="check-phase" [class.is-collapsed]="collapsed">
+            <button
+              type="button"
+              class="check-phase__head"
+              (click)="toggleChecklistPhaseCollapsed(phase.id)"
+              [attr.aria-expanded]="!collapsed"
+            >
+              <span class="check-phase__caret"></span>
+              <span class="check-phase__title">
+                <strong>{{ phase.title }}</strong>
+                @if (phase.summary) {
+                <small>{{ phase.summary }}</small>
                 }
               </span>
-              @if (item.ownerAgentId) {
-              <span
-                class="check-owner check-owner--assigned"
-                [title]="'Owner: ' + item.ownerAgentId"
-                [attr.aria-label]="'Owner: ' + item.ownerAgentId"
-              >
-                <span
-                  class="avatar avatar--sm"
-                  [class]="avatarClass(item.ownerAgentId, 'sm')"
-                >
-                  @if (!isAgentOwner(item.ownerAgentId)) { {{ item.ownerAgentId.slice(0,
-                  1).toUpperCase() }} }
+              <span class="check-phase__progress">
+                <span class="check-phase__bar">
+                  <span [style.width.%]="checklistPhaseProgressPercent(phase.id)"></span>
                 </span>
+                <span class="check-phase__count">{{ checklistPhaseProgressLabel(phase.id) }}</span>
               </span>
-              } @else {
-              <span class="check-owner check-owner--empty">unassigned</span>
-              }
-              <em>{{ item.status }}</em>
-            </label>
-            @if (!isChecklistItemCollapsed(item)) {
-            <div class="check-item__actions">
-              <select
-                class="check-item__owner-select"
-                title="Assign owner"
-                [value]="item.ownerAgentId"
-                (change)="assignChecklistOwner(item, $event)"
+              <span class="check-phase__status" [class]="'check-phase__status--' + phase.status">
+                {{ checklistPhaseStatusLabel(phase.status) }}
+              </span>
+            </button>
+            @if (!collapsed) {
+            <div class="check-phase__items">
+              @for (item of phaseItems; track item.id) {
+              <article
+                class="check-item"
+                [class.is-blocked]="item.status === 'blocked'"
+                [class.is-done]="item.status === 'done'"
+                [class.is-waiting]="isWaitingOnDependencies(item)"
+                [class.is-compact-done]="isChecklistItemCollapsed(item)"
               >
-                <option value="" [selected]="!item.ownerAgentId">unassigned</option>
-                @if (item.ownerAgentId && !roomAgents().includes(item.ownerAgentId)) {
-                <option [value]="item.ownerAgentId" [selected]="true">
-                  {{ agentDisplayName(item.ownerAgentId) }}
-                </option>
-                } @for (agent of roomAgents(); track agent) {
-                <option [value]="agent" [selected]="agent === item.ownerAgentId">
-                  {{ agentDisplayName(agent) }}
-                </option>
-                }
-              </select>
-            </div>
-            <div class="check-item__meta">
-              @if (item.planId) {
-              <span>plan {{ planLabel(item.planId) }}</span>
-              } @if (item.dependencyIds.length) {
-              <span>after {{ dependencyLabels(item) }}</span>
-              } @if (item.parallelism) {
-              <span>{{ item.parallelism }}</span>
-              } @if (item.expectedTouches?.length) {
-              <span>{{ item.expectedTouches.length }} touch(es)</span>
-              } @if (item.conflictGroup) {
-              <span>group {{ item.conflictGroup }}</span>
-              } @if (item.councilRequired) {
-              <span>council required</span>
+                <label class="check-item__main">
+                  <input
+                    type="checkbox"
+                    [checked]="item.status === 'done'"
+                    [disabled]="item.status === 'skipped'"
+                    (change)="toggleChecklistItem(item, $event)"
+                  />
+                  <span class="check-item__title">
+                    <strong>{{ item.title }}</strong>
+                    @if (item.detail) {
+                    <small>{{ item.detail }}</small>
+                    }
+                  </span>
+                  <em class="check-item__status">{{ checklistItemStatusLabel(item) }}</em>
+                  <span class="check-item__owner-cluster">
+                    @if (item.ownerAgentId) {
+                    <span
+                      class="check-owner check-owner--assigned"
+                      [title]="'Owner: ' + agentDisplayName(item.ownerAgentId)"
+                      [attr.aria-label]="'Owner: ' + agentDisplayName(item.ownerAgentId)"
+                    >
+                      <span
+                        class="avatar avatar--sm"
+                        [class]="avatarClass(item.ownerAgentId, 'sm')"
+                      >
+                        @if (!isAgentOwner(item.ownerAgentId)) { {{ item.ownerAgentId.slice(0,
+                        1).toUpperCase() }} }
+                      </span>
+                    </span>
+                    } @else {
+                    <span class="check-owner check-owner--empty">unassigned</span>
+                    } @if (!isChecklistItemCollapsed(item)) {
+                    <span class="check-item__assign-wrap">
+                      <select
+                        class="check-item__owner-select"
+                        title="Assign owner"
+                        [value]="item.ownerAgentId"
+                        (change)="assignChecklistOwner(item, $event)"
+                        (click)="$event.preventDefault(); $event.stopPropagation()"
+                      >
+                        <option value="" [selected]="!item.ownerAgentId">unassigned</option>
+                        @if (item.ownerAgentId && !roomAgents().includes(item.ownerAgentId)) {
+                        <option [value]="item.ownerAgentId" [selected]="true">
+                          {{ agentDisplayName(item.ownerAgentId) }}
+                        </option>
+                        } @for (agent of roomAgents(); track agent) {
+                        <option [value]="agent" [selected]="agent === item.ownerAgentId">
+                          {{ agentDisplayName(agent) }}
+                        </option>
+                        }
+                      </select>
+                    </span>
+                    }
+                  </span>
+                </label>
+                @if (!isChecklistItemCollapsed(item)) { @let hasMeta = !!item.planId ||
+                item.dependencyIds.length > 0 || !!item.parallelism ||
+                (item.expectedTouches?.length ?? 0) > 0 || !!item.conflictGroup ||
+                item.councilRequired; @let hasNote = !!(item.statusNote || item.blockedReason);
+                @let notes = checklistNotes(item.id); @if (hasMeta || hasNote || notes.length) {
+                <div class="check-item__sub">
+                  @if (hasMeta) {
+                  <div class="check-item__meta">
+                    @if (item.planId) {
+                    <span>plan {{ planLabel(item.planId) }}</span>
+                    } @if (item.dependencyIds.length) {
+                    <span>after {{ dependencyLabels(item) }}</span>
+                    } @if (item.parallelism) {
+                    <span>{{ item.parallelism }}</span>
+                    } @if (item.expectedTouches?.length) {
+                    <span>{{ item.expectedTouches.length }} touch(es)</span>
+                    } @if (item.conflictGroup) {
+                    <span>group {{ item.conflictGroup }}</span>
+                    } @if (item.councilRequired) {
+                    <span class="is-council">council required</span>
+                    }
+                  </div>
+                  } @if (hasNote) {
+                  <p class="check-item__note">{{ item.blockedReason || item.statusNote }}</p>
+                  } @for (note of notes; track note.id) {
+                  <span class="check-note">
+                    <em>{{ agentDisplayName(note.authorId) }} / {{ note.kind }}</em>{{ note.body }}
+                  </span>
+                  }
+                </div>
+                } }
+              </article>
+              } @empty {
+              <p class="empty-copy">no items in this phase yet</p>
               }
             </div>
-            @if (item.statusNote || item.blockedReason) {
-            <p>{{ item.blockedReason || item.statusNote }}</p>
-            } @for (note of checklistNotes(item.id); track note.id) {
-            <small class="check-note">{{ note.authorId }} / {{ note.kind }}: {{ note.body }}</small>
-            } }
-          </article>
-          } @empty {
+            }
+          </section>
+          } @let unphased = unphasedChecklistItems(); @if (unphased.length) {
+          <section class="check-phase">
+            <div class="check-phase__head check-phase__head--static">
+              <span class="check-phase__title">
+                <strong>Unphased</strong>
+                <small>items not yet assigned to a phase</small>
+              </span>
+              <span class="check-phase__count">{{ unphased.length }}</span>
+            </div>
+            <div class="check-phase__items">
+              @for (item of unphased; track item.id) {
+              <article
+                class="check-item"
+                [class.is-blocked]="item.status === 'blocked'"
+                [class.is-done]="item.status === 'done'"
+                [class.is-waiting]="isWaitingOnDependencies(item)"
+                [class.is-compact-done]="isChecklistItemCollapsed(item)"
+              >
+                <label class="check-item__main">
+                  <input
+                    type="checkbox"
+                    [checked]="item.status === 'done'"
+                    [disabled]="item.status === 'skipped'"
+                    (change)="toggleChecklistItem(item, $event)"
+                  />
+                  <span class="check-item__title">
+                    <strong>{{ item.title }}</strong>
+                    @if (item.detail) {
+                    <small>{{ item.detail }}</small>
+                    }
+                  </span>
+                  <em class="check-item__status">{{ checklistItemStatusLabel(item) }}</em>
+                  <span class="check-item__owner-cluster">
+                    @if (item.ownerAgentId) {
+                    <span
+                      class="check-owner check-owner--assigned"
+                      [title]="'Owner: ' + agentDisplayName(item.ownerAgentId)"
+                    >
+                      <span
+                        class="avatar avatar--sm"
+                        [class]="avatarClass(item.ownerAgentId, 'sm')"
+                      >
+                        @if (!isAgentOwner(item.ownerAgentId)) { {{ item.ownerAgentId.slice(0,
+                        1).toUpperCase() }} }
+                      </span>
+                    </span>
+                    } @else {
+                    <span class="check-owner check-owner--empty">unassigned</span>
+                    } @if (!isChecklistItemCollapsed(item)) {
+                    <span class="check-item__assign-wrap">
+                      <select
+                        class="check-item__owner-select"
+                        title="Assign owner"
+                        [value]="item.ownerAgentId"
+                        (change)="assignChecklistOwner(item, $event)"
+                      >
+                        <option value="" [selected]="!item.ownerAgentId">unassigned</option>
+                        @for (agent of roomAgents(); track agent) {
+                        <option [value]="agent" [selected]="agent === item.ownerAgentId">
+                          {{ agentDisplayName(agent) }}
+                        </option>
+                        }
+                      </select>
+                    </span>
+                    }
+                  </span>
+                </label>
+              </article>
+              }
+            </div>
+          </section>
+          } @if (control.checklistItems.length === 0) {
           <p class="empty-copy">no checklist items yet</p>
           }
         </div>
@@ -2146,22 +2462,134 @@
   </aside>
 </div>
 
+@if (creatingMissionProjectId(); as projectId) {
+<div class="modal">
+  <div class="modal__scrim" (click)="cancelCreateRoom()"></div>
+  <form
+    class="modal__panel modal__panel--mission-create"
+    role="dialog"
+    aria-modal="true"
+    aria-labelledby="create-mission-title"
+    (submit)="$event.preventDefault(); createRoom(missionName)"
+  >
+    <header class="modal__head">
+      <h2 id="create-mission-title">new mission</h2>
+      <p>Create a mission under {{ projectName(projectId) }} and choose the starting agent team.</p>
+    </header>
+    <div class="mission-create-modal">
+      <label class="mission-create-modal__field">
+        <span>mission name</span>
+        <input
+          #missionName
+          class="room-create__input"
+          type="text"
+          autocomplete="off"
+          placeholder="next mission for this team"
+          aria-label="Mission name"
+        />
+      </label>
+      <div class="room-create__agent-head" aria-hidden="true">
+        <span>name</span>
+        <span>provider</span>
+        <span>persona</span>
+        <span>yolo</span>
+      </div>
+      <div class="room-create__agents" aria-label="Agents">
+        @for (row of newRoomAgentRows(); track row.clientId) {
+        <article class="room-agent-choice">
+          <label class="room-agent-name">
+            <span [class]="draftProviderAvatarClass(row)"></span>
+            <input
+              type="text"
+              autocomplete="off"
+              spellcheck="false"
+              [value]="row.displayName"
+              aria-label="Agent name"
+              placeholder="agent name"
+              (input)="setNewRoomAgentName(row.clientId, $event)"
+            />
+          </label>
+          <label class="room-agent-provider">
+            <select
+              [value]="row.providerId"
+              aria-label="Agent provider"
+              (change)="setNewRoomAgentProvider(row.clientId, $event)"
+            >
+              @for (provider of agentProviders(); track provider.id) {
+              <option [value]="provider.id" [selected]="provider.id === row.providerId">
+                {{ provider.displayName }}
+              </option>
+              }
+            </select>
+          </label>
+          <label class="room-agent-persona">
+            <select
+              [value]="row.personaId"
+              aria-label="Agent persona"
+              (change)="setNewRoomAgentPersona(row.clientId, $event)"
+            >
+              @for (persona of agentPersonas(); track persona.id) {
+              <option [value]="persona.id" [selected]="persona.id === row.personaId">
+                {{ persona.name }}
+              </option>
+              }
+            </select>
+          </label>
+          <label class="room-agent-yolo" title="Participates in YOLO rounds">
+            <input
+              type="checkbox"
+              [checked]="row.yolo"
+              (change)="toggleNewRoomAgentYolo(row.clientId, $event)"
+            />
+            yolo
+          </label>
+          <button
+            class="room-agent-remove"
+            type="button"
+            title="Remove agent"
+            (click)="removeNewRoomAgent(row.clientId)"
+          >
+            x
+          </button>
+        </article>
+        }
+      </div>
+    </div>
+    <footer class="modal__foot">
+      <button class="control-btn" type="button" (click)="addNewRoomAgent()">add agent</button>
+      <button class="control-btn" type="button" (click)="cancelCreateRoom(missionName)">
+        cancel
+      </button>
+      <button class="control-btn control-btn--primary" type="submit">create mission</button>
+    </footer>
+  </form>
+</div>
+}
+
 @if (editingAgents()) {
 <div class="modal">
   <div class="modal__scrim" (click)="cancelEditAgents()"></div>
   <section class="modal__panel modal__panel--agents" role="dialog" aria-modal="true" aria-labelledby="edit-agents-title">
     <header class="modal__head">
       <h2 id="edit-agents-title">agents in #{{ selectedRoom()?.name }}</h2>
-      <p>Choose who participates in the room, then choose who joins autonomous YOLO rounds.</p>
+      <p>Name each participant, choose their provider and persona, then choose who joins autonomous YOLO rounds.</p>
     </header>
     <div class="agent-editor">
       @for (row of editRoomAgentRows(); track row.clientId) {
       <article class="agent-toggle">
         <span [class]="draftProviderAvatarClass(row)"></span>
-        <div class="agent-toggle__body">
-          <strong>{{ draftAgentPreview(row) }}</strong>
-          <span>{{ draftProviderLabel(row.providerId) }} / {{ draftPersonaLabel(row.personaId) }}</span>
-        </div>
+        <label class="agent-toggle__select agent-toggle__select--name">
+          <span>name</span>
+          <input
+            type="text"
+            autocomplete="off"
+            spellcheck="false"
+            [value]="row.displayName"
+            aria-label="Agent name"
+            placeholder="agent name"
+            (input)="setEditRoomAgentName(row.clientId, $event)"
+          />
+        </label>
         <label class="agent-toggle__select">
           <span>provider</span>
           <select
@@ -2170,7 +2598,9 @@
             (change)="setEditRoomAgentProvider(row.clientId, $event)"
           >
             @for (provider of agentProviders(); track provider.id) {
-            <option [value]="provider.id">{{ provider.displayName }}</option>
+            <option [value]="provider.id" [selected]="provider.id === row.providerId">
+              {{ provider.displayName }}
+            </option>
             }
           </select>
         </label>
@@ -2182,7 +2612,9 @@
             (change)="setEditRoomAgentPersona(row.clientId, $event)"
           >
             @for (persona of agentPersonas(); track persona.id) {
-            <option [value]="persona.id">{{ persona.name }}</option>
+            <option [value]="persona.id" [selected]="persona.id === row.personaId">
+              {{ persona.name }}
+            </option>
             }
           </select>
         </label>
@@ -2497,7 +2929,7 @@
           <div class="task-inspector__notes-list">
             @for (note of checklistNotes(card.item.id); track note.id) {
             <article>
-              <strong>{{ note.authorId }} / {{ note.kind }}</strong>
+              <strong>{{ agentDisplayName(note.authorId) }} / {{ note.kind }}</strong>
               <p>{{ note.body }}</p>
               <span>{{ formatDateTime(note.createdAt) }}</span>
             </article>
@@ -2523,13 +2955,21 @@
     aria-labelledby="run-detail-title"
   >
     <header class="modal__head">
-      <h2 id="run-detail-title">{{ runDetail()?.run?.agentId || 'agent' }} run</h2>
+      <h2 id="run-detail-title">{{ runDetail()?.run?.agentId ? agentDisplayName(runDetail()!.run.agentId) : 'agent' }} run</h2>
       <p>
         @if (runDetail(); as detail) { {{ detail.run.status }} / {{
         elapsedLabel(detail.run.startedAt, detail.run.completedAt) }} / {{
         detail.run.estimatedPromptTokens || 0 }}t / {{
         permissionModeLabel(detail.run.permissionMode) }} } @else { loading }
       </p>
+      <label class="run-detail__filter-toggle">
+        <input
+          type="checkbox"
+          [checked]="showLowSignalRunEvents()"
+          (change)="setShowLowSignalRunEvents($event)"
+        />
+        show low-signal events
+      </label>
     </header>
     <div class="run-detail">
       @if (runDetailLoading()) {
@@ -2539,7 +2979,7 @@
       } @else if (runDetail(); as detail) {
       <div class="run-detail__grid">
         <div><span>status</span><strong>{{ detail.run.status }}</strong></div>
-        <div><span>agent</span><strong>{{ detail.run.agentId }}</strong></div>
+        <div><span>agent</span><strong>{{ agentDisplayName(detail.run.agentId) }}</strong></div>
         <div><span>started</span><strong>{{ formatDateTime(detail.run.startedAt) }}</strong></div>
         <div>
           <span>completed</span><strong>{{ formatDateTime(detail.run.completedAt) }}</strong>
@@ -2630,14 +3070,6 @@
       <section class="run-detail__section">
         <div class="run-detail__section-head">
           <h3>signals</h3>
-          <label class="run-detail__filter-toggle">
-            <input
-              type="checkbox"
-              [checked]="showLowSignalRunEvents()"
-              (change)="setShowLowSignalRunEvents($event)"
-            />
-            show low-signal events
-          </label>
         </div>
         @if (hiddenDiagnosticSignalCount(detail.diagnostics.signals)) {
         <p class="run-detail__filter-note">
@@ -2664,14 +3096,6 @@
       <section class="run-detail__section">
         <div class="run-detail__section-head">
           <h3>timeline</h3>
-          <label class="run-detail__filter-toggle">
-            <input
-              type="checkbox"
-              [checked]="showLowSignalRunEvents()"
-              (change)="setShowLowSignalRunEvents($event)"
-            />
-            show low-signal events
-          </label>
         </div>
         @if (hiddenRunActionCount(detail.actions)) {
         <p class="run-detail__filter-note">

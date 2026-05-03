@@ -24,9 +24,13 @@ import {
   setRoomAgents as setRoomAgentsRepo,
   type Room,
 } from './repos/rooms.js';
-import { getCliSessionId, upsertCliSessionId } from './repos/sessions.js';
+import { deleteCliSessionId, getCliSession, upsertCliSessionId } from './repos/sessions.js';
 import { buildTurnPromptResult, type WorkLanePromptItem } from './transcript.js';
-import { parseAgentReferences, parseAgentReferencesForAliases } from './mentions.js';
+import {
+  parseAgentReferences,
+  parseAgentReferencesForAliases,
+  parseMentionTokens,
+} from './mentions.js';
 import {
   listConversationArtifacts,
   messageTextForPrompt,
@@ -142,7 +146,14 @@ import { buildTaskPromptContext } from './task-summary.js';
 import { decideRunRetry } from './run-lifecycle.js';
 import { loadWorkflowProfile, type WorkflowProfile } from './workflow-profile.js';
 import { getWorkspacePath } from './workspaces.js';
-import type { AgentId, AgentReply, AgentSpec, AgentStreamEvent } from './agents/types.js';
+import type {
+  AgentId,
+  AgentReply,
+  AgentSpec,
+  AgentStreamEvent,
+  ProviderId,
+  RoomAgentProfile,
+} from './agents/types.js';
 import { logger } from './logger.js';
 import { buildRunDiagnostics, type RunDiagnostics } from './run-diagnostics.js';
 import { isVisibleProviderSignal, readableProviderSignalDetail } from './provider-signals.js';
@@ -161,11 +172,14 @@ import {
 } from './mission-create-updates.js';
 import { extractMissionReceipts, type ParsedMissionReceipt } from './mission-receipts.js';
 import {
+  extractAgentRosterUpdates,
+  type ParsedAgentRosterUpdate,
+} from './agent-roster-updates.js';
+import {
   defaultAgentProfile,
-  isCompactableProviderAgent,
   providerIdFromAgentId,
 } from './agents/profiles.js';
-import type { RoomAgentProfile } from './agents/types.js';
+import { getAgentPersona, isProviderId, providerDisplayName } from './agents/personas.js';
 
 export interface BrokerDeps {
   db: Database;
@@ -186,6 +200,8 @@ export interface BrokerDeps {
   maxRecapChars?: number;
   maxTranscriptChars?: number;
   maxAgentRepliesPerThread?: number;
+  temporaryAgentLimitPerLead?: number;
+  temporaryAgentMaxTurns?: number;
   contextDir?: string;
   resumeCliSessions?: boolean;
 }
@@ -193,6 +209,9 @@ export interface BrokerDeps {
 const DEFAULT_MAX_AGENT_REPLIES_PER_THREAD = 5;
 const YOLO_MAX_AGENT_REPLIES = 100;
 const YOLO_PERMISSION_AUTO_APPROVAL_LIMIT = 3;
+const DEFAULT_TEMPORARY_AGENT_LIMIT_PER_LEAD = 3;
+const DEFAULT_TEMPORARY_AGENT_MAX_TURNS = 25;
+const TEMPORARY_AGENT_ORCHESTRATOR_PERSONAS = new Set(['engineering-manager', 'qa-lead']);
 const DEFAULT_PROMPT_HISTORY = 16;
 const DEFAULT_MAX_PROMPT_CHARS = 16_000;
 const RUN_HEARTBEAT_MS = 10_000;
@@ -201,6 +220,7 @@ const RUN_SIGNAL_UPDATE_THROTTLE_MS = 2_500;
 const STREAM_MESSAGE_THROTTLE_MS = 1_000;
 const AGENT_JOB_LEASE_MS = 15 * 60 * 1000;
 const COMPACT_PROMPT = '/compact';
+const ACTIVE_TASK_STATUSES = new Set<Task['status']>(['active', 'blocked', 'verifying']);
 
 interface DiscussionTurn {
   round: number;
@@ -234,6 +254,16 @@ interface WorkflowProfilePromptItem {
   maxConcurrentAgents: number;
 }
 
+interface RoomAgentReferenceResult {
+  agentIds: AgentId[];
+  ambiguousAliases: string[];
+}
+
+interface AgentRosterApplyResult {
+  applied: number;
+  followups: Array<{ agentId: AgentId; text: string; maxTurns: number }>;
+}
+
 export type AgentCompactionResult =
   | { ok: true; run: AgentRunSummary }
   | { ok: false; statusCode: number; error: string };
@@ -245,6 +275,7 @@ interface DiscussionThreadOptions {
   permission?: PermissionGrant;
   yoloState?: YoloDiscussionState;
   responders?: AgentId[];
+  handoffPool?: AgentId[];
 }
 
 type PermissionDecision = 'approved' | 'denied';
@@ -455,6 +486,19 @@ function oneLine(text: string, maxChars = 280): string {
   return `${cleaned.slice(0, maxChars - 1)}...`;
 }
 
+function mentionAliasSlug(text: string): string {
+  return text
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+}
+
+function compactInline(text: string, maxChars = 220): string {
+  const cleaned = text.replace(/\s+/g, ' ').trim();
+  return cleaned.length <= maxChars ? cleaned : `${cleaned.slice(0, maxChars - 1)}...`;
+}
+
 function waitForRetryDelay(delayMs: number, signal?: AbortSignal): Promise<boolean> {
   if (delayMs <= 0) return Promise.resolve(signal?.aborted !== true);
   if (signal?.aborted) return Promise.resolve(false);
@@ -499,6 +543,13 @@ export class Broker extends EventEmitter {
     if (!room) throw new Error(`unknown room: ${roomId}`);
     const activeYolo = this.activeYoloDiscussions.get(roomId);
     if (this.roomHasActiveWork(roomId) || (activeYolo && !activeYolo.cancelled)) {
+      const targetedResponders = this.pickExplicitResponders(room, text, authorId);
+      if (targetedResponders !== null && targetedResponders.length > 0) {
+        const freeResponders = this.freeResponders(roomId, targetedResponders);
+        if (freeResponders.length > 0) {
+          return this.append(roomId, authorId, 'human', text, { responders: freeResponders });
+        }
+      }
       return this.appendQueuedHumanMessage(roomId, authorId, text);
     }
     const inlineYoloProfile = inferYoloPermissionProfileFromText(text);
@@ -616,12 +667,14 @@ export class Broker extends EventEmitter {
     const activeTask = getActiveTask(this.deps.db, roomId);
     const profile = normalizeYoloPermissionProfile(profileInput);
     const permission = this.buildYoloPermissionGrant(profile, activeTask);
+    const yoloPool =
+      room.yoloAgents.length > 0
+        ? room.yoloAgents.filter((agent) => room.agents.includes(agent))
+        : room.agents;
     const yoloResponders =
       respondersOverride && respondersOverride.length > 0
-        ? respondersOverride.filter((agent) => room.agents.includes(agent))
-        : room.yoloAgents.length > 0
-          ? room.yoloAgents.filter((agent) => room.agents.includes(agent))
-          : room.agents;
+        ? respondersOverride.filter((agent) => yoloPool.includes(agent))
+        : yoloPool;
     const scopeLabel = yoloScopeLabel(profile.filesystemScope);
     const targetLabel =
       profile.filesystemScope === 'unrestricted'
@@ -643,6 +696,7 @@ export class Broker extends EventEmitter {
         permission,
         yoloState,
         responders: yoloResponders,
+        handoffPool: yoloPool,
       });
     } finally {
       if (this.activeYoloDiscussions.get(roomId)?.id === yoloState.id) {
@@ -706,7 +760,10 @@ export class Broker extends EventEmitter {
   ): Room | null {
     setRoomAgentsRepo(this.deps.db, roomId, agents, yoloAgents, agentProfiles);
     const updated = getRoom(this.deps.db, roomId);
-    if (updated) this.emit('roomUpdated', updated);
+    if (updated) {
+      this.reconcileActiveTaskAgents(roomId, updated.agents);
+      this.emit('roomUpdated', updated);
+    }
     return updated;
   }
 
@@ -968,7 +1025,9 @@ export class Broker extends EventEmitter {
   startAgentCompaction(roomId: string, agentId: AgentId, authorId: string): AgentCompactionResult {
     const room = getRoom(this.deps.db, roomId);
     if (!room) return { ok: false, statusCode: 404, error: 'room not found' };
-    if (!isCompactableProviderAgent(agentId)) {
+    const agentProfile =
+      room.agentProfiles.find((profile) => profile.id === agentId) ?? defaultAgentProfile(agentId);
+    if (agentProfile.providerId !== 'claude' && agentProfile.providerId !== 'codex') {
       return {
         ok: false,
         statusCode: 400,
@@ -992,8 +1051,6 @@ export class Broker extends EventEmitter {
     if (!sessionId) {
       return { ok: false, statusCode: 409, error: `${agentId} has no stored CLI session yet` };
     }
-    const spec = this.deps.getSpec(agentId);
-    if (!spec) return { ok: false, statusCode: 503, error: `no adapter for agent "${agentId}"` };
     const trigger = listMessages(this.deps.db, roomId, { limit: 1 }).at(-1);
     if (!trigger) {
       return {
@@ -1003,6 +1060,10 @@ export class Broker extends EventEmitter {
       };
     }
     const task = getActiveTask(this.deps.db, roomId);
+    const spec = this.deps.getSpec(agentProfile.providerId);
+    if (!spec) {
+      return { ok: false, statusCode: 503, error: `no adapter for agent "${agentId}"` };
+    }
     const run = createAgentRun(this.deps.db, {
       roomId,
       taskId: task?.id ?? null,
@@ -1046,20 +1107,34 @@ export class Broker extends EventEmitter {
       agentId,
       spec,
       sessionId,
+      providerId: agentProfile.providerId,
     });
     return { ok: true, run };
   }
 
   private getResumableCliSessionId(roomId: string, agentId: AgentId): string | null {
-    const stored = getCliSessionId(this.deps.db, roomId, agentId);
-    if (stored) return stored;
+    const room = getRoom(this.deps.db, roomId);
+    const currentProviderId =
+      room?.agentProfiles.find((profile) => profile.id === agentId)?.providerId ??
+      providerIdFromAgentId(agentId);
+    const stored = getCliSession(this.deps.db, roomId, agentId);
+    if (stored?.cliSessionId) {
+      if (!stored.providerId || !currentProviderId || stored.providerId === currentProviderId) {
+        return stored.cliSessionId;
+      }
+      deleteCliSessionId(this.deps.db, roomId, agentId);
+    }
 
+    const inferredProviderId = providerIdFromAgentId(agentId);
+    if (currentProviderId && inferredProviderId && currentProviderId !== inferredProviderId) {
+      return null;
+    }
     const fallback = listAgentRunsRepo(this.deps.db, roomId, { limit: 200 }).find(
       (run) => run.agentId === agentId && Boolean(run.cliSessionId),
     )?.cliSessionId;
     if (!fallback) return null;
 
-    upsertCliSessionId(this.deps.db, roomId, agentId, fallback);
+    upsertCliSessionId(this.deps.db, roomId, agentId, fallback, currentProviderId ?? '');
     return fallback;
   }
 
@@ -1354,6 +1429,11 @@ export class Broker extends EventEmitter {
     responders: AgentId[],
     message: Message,
   ): Promise<void> {
+    const room = getRoom(this.deps.db, roomId);
+    const yoloPool =
+      room && room.yoloAgents.length > 0
+        ? room.yoloAgents.filter((agent) => room.agents.includes(agent))
+        : responders;
     const existing = this.activeYoloDiscussions.get(roomId);
     const yoloState =
       existing && !existing.cancelled ? existing : this.createYoloState(roomId, startedBy);
@@ -1370,6 +1450,7 @@ export class Broker extends EventEmitter {
         maxTotalReplies: yoloState.maxTotalReplies,
         yoloState,
         responders,
+        handoffPool: yoloPool,
       });
     } finally {
       if (createdState && this.activeYoloDiscussions.get(roomId)?.id === yoloState.id) {
@@ -1462,6 +1543,23 @@ export class Broker extends EventEmitter {
     return listMessages(this.deps.db, roomId, opts).map((message) =>
       this.withDeliveryStatus(roomId, message),
     );
+  }
+
+  private reconcileActiveTaskAgents(roomId: string, roomAgents: AgentId[]): void {
+    const uniqueRoomAgents = roomAgents.filter(
+      (agentId, index) => roomAgents.indexOf(agentId) === index,
+    );
+    for (const task of listTasksRepo(this.deps.db, roomId)) {
+      if (!ACTIVE_TASK_STATUSES.has(task.status)) continue;
+      if (
+        task.agents.length === uniqueRoomAgents.length &&
+        task.agents.every((agentId, index) => agentId === uniqueRoomAgents[index])
+      ) {
+        continue;
+      }
+      const updated = updateTaskRepo(this.deps.db, task.id, { agents: uniqueRoomAgents });
+      if (updated) this.emit('taskUpdated', updated);
+    }
   }
 
   private emitRoomTasks(roomId: string): void {
@@ -2181,7 +2279,7 @@ export class Broker extends EventEmitter {
     });
 
     if (this.deps.resumeCliSessions && reply.sessionId) {
-      upsertCliSessionId(this.deps.db, roomId, agentId, reply.sessionId);
+      upsertCliSessionId(this.deps.db, roomId, agentId, reply.sessionId, agentProfile.providerId);
     }
     const rawText = reply.text.trim();
     this.recordRunAction({
@@ -2281,7 +2379,15 @@ export class Broker extends EventEmitter {
       defaultPlanId: defaultPlan?.id ?? null,
       forcePlanOnUpdates: sameTurnPlan !== null,
     });
-    const extractedMissionReceipts = extractMissionReceipts(extractedMissionTasks.visibleText);
+    const extractedAgentRoster = extractAgentRosterUpdates(extractedMissionTasks.visibleText);
+    const rosterResult = this.applyAgentRosterUpdates({
+      roomId,
+      task: missionTask,
+      runId: run.id,
+      agentId,
+      updates: extractedAgentRoster.updates,
+    });
+    const extractedMissionReceipts = extractMissionReceipts(extractedAgentRoster.visibleText);
     this.recordMissionReceipts({
       roomId,
       task: missionTask,
@@ -2293,7 +2399,8 @@ export class Broker extends EventEmitter {
       extractedMissionCreates.updates.length +
       extractedMissionPlans.updates.length +
       extractedMissionPhases.updates.length +
-      extractedMissionTasks.updates.length;
+      extractedMissionTasks.updates.length +
+      rosterResult.applied;
     const missionReceiptCount = extractedMissionReceipts.receipts.length;
     const textAfterMissionReceipts = extractedMissionReceipts.visibleText;
     const reconciliation = this.reconcileMissionState({
@@ -2357,6 +2464,7 @@ export class Broker extends EventEmitter {
         reconciliation,
         visibleText: textAfterMissionReceipts,
       });
+      await this.runAgentRosterFollowups(roomId, rosterResult.followups);
       return {
         message: null,
         progressed:
@@ -2432,9 +2540,10 @@ export class Broker extends EventEmitter {
             label: 'YOLO auto-approval limit reached',
             detail: `Stopped auto-following permission requests after ${YOLO_PERMISSION_AUTO_APPROVAL_LIMIT} consecutive YOLO approvals for this turn.`,
           });
+          await this.runAgentRosterFollowups(roomId, rosterResult.followups);
           return {
             message,
-            progressed: Boolean(message) || reconciliation.applied > 0,
+            progressed: Boolean(message) || reconciliation.applied > 0 || rosterResult.applied > 0,
             runId: run.id,
           };
         }
@@ -2443,6 +2552,7 @@ export class Broker extends EventEmitter {
           permissionRequest,
           effectivePermission,
         );
+        await this.runAgentRosterFollowups(roomId, rosterResult.followups);
         return this.runAgentReply(
           roomId,
           agentId,
@@ -2486,7 +2596,8 @@ export class Broker extends EventEmitter {
       });
       this.emit('permissionRequestCreated', request);
       completeAgentJob(this.deps.db, agentJob.id);
-      return { message: null, progressed: false, runId: run.id };
+      await this.runAgentRosterFollowups(roomId, rosterResult.followups);
+      return { message: null, progressed: rosterResult.applied > 0, runId: run.id };
     }
     const extracted = extractCollaborationNotes(textAfterMissionReceipts);
     const visibleText = cleanVisibleAgentMessage(agentId, extracted.visibleText);
@@ -2543,12 +2654,14 @@ export class Broker extends EventEmitter {
       reconciliation,
       visibleText,
     });
+    await this.runAgentRosterFollowups(roomId, rosterResult.followups);
     return {
       message,
       progressed:
         Boolean(message) ||
         extracted.notes.length > 0 ||
         reconciliation.applied > 0 ||
+        rosterResult.applied > 0 ||
         repairResult?.progressed === true,
       runId: run.id,
     };
@@ -2561,6 +2674,7 @@ export class Broker extends EventEmitter {
     agentId: AgentId;
     spec: AgentSpec;
     sessionId: string;
+    providerId: ProviderId;
   }): Promise<void> {
     let lastProviderSignalAt = 0;
     const recordProviderSignal = this.buildProviderSignalRecorder({
@@ -2642,7 +2756,13 @@ export class Broker extends EventEmitter {
       reason: 'provider process completed; parsing compaction result',
     });
     if (this.deps.resumeCliSessions && reply.sessionId) {
-      upsertCliSessionId(this.deps.db, input.roomId, input.agentId, reply.sessionId);
+      upsertCliSessionId(
+        this.deps.db,
+        input.roomId,
+        input.agentId,
+        reply.sessionId,
+        input.providerId,
+      );
     }
     const completedRun = updateAgentRun(this.deps.db, input.runId, {
       status: 'completed',
@@ -3679,11 +3799,26 @@ export class Broker extends EventEmitter {
   private resolvePhaseId(phases: TaskPhase[], ref: string): string | null {
     const trimmed = ref.trim();
     if (!trimmed) return null;
+    const exactIdMatch = phases.find((phase) => phase.id === trimmed);
+    if (exactIdMatch) return exactIdMatch.id;
+
     const lower = trimmed.toLowerCase();
+    const normalized = this.normalizePhaseRef(trimmed);
     return (
-      phases.find((phase) => phase.id === trimmed)?.id ??
-      phases.find((phase) => phase.title.toLowerCase() === lower)?.id ??
-      phases.find((phase) => phase.title.toLowerCase().startsWith(lower))?.id ??
+      this.preferredPhaseMatch(phases.filter((phase) => phase.title.toLowerCase() === lower))
+        ?.id ??
+      (normalized
+        ? this.preferredPhaseMatch(
+            phases.filter((phase) => this.normalizePhaseRef(phase.title) === normalized),
+          )?.id
+        : null) ??
+      this.preferredPhaseMatch(phases.filter((phase) => phase.title.toLowerCase().startsWith(lower)))
+        ?.id ??
+      (normalized
+        ? this.preferredPhaseMatch(
+            phases.filter((phase) => this.normalizePhaseRef(phase.title).startsWith(normalized)),
+          )?.id
+        : null) ??
       null
     );
   }
@@ -3691,6 +3826,27 @@ export class Broker extends EventEmitter {
   private resolvePhase(phases: TaskPhase[], ref: string): TaskPhase | null {
     const phaseId = this.resolvePhaseId(phases, ref);
     return phaseId ? (phases.find((phase) => phase.id === phaseId) ?? null) : null;
+  }
+
+  private normalizePhaseRef(value: string): string {
+    return value
+      .trim()
+      .toLowerCase()
+      .normalize('NFKD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .replace(/[^a-z0-9]+/g, ' ')
+      .trim()
+      .replace(/\s+/g, ' ');
+  }
+
+  private preferredPhaseMatch(matches: TaskPhase[]): TaskPhase | null {
+    return (
+      matches.find((phase) => phase.status === 'active') ??
+      matches.find((phase) => phase.status === 'blocked') ??
+      matches.find((phase) => phase.status === 'planned') ??
+      matches.find((phase) => phase.status === 'done') ??
+      null
+    );
   }
 
   private resolvePlan(plans: TaskPlan[], ref: string): TaskPlan | null {
@@ -3796,6 +3952,308 @@ export class Broker extends EventEmitter {
     return /\b(done|complete|completed|finished|resolved|accepted|settled|merged|landed)\b/.test(
       text,
     );
+  }
+
+  private temporaryAgentLimitPerLead(): number {
+    return Math.max(
+      0,
+      Math.floor(
+        this.deps.temporaryAgentLimitPerLead ?? DEFAULT_TEMPORARY_AGENT_LIMIT_PER_LEAD,
+      ),
+    );
+  }
+
+  private temporaryAgentMaxTurns(): number {
+    return Math.max(
+      1,
+      Math.floor(this.deps.temporaryAgentMaxTurns ?? DEFAULT_TEMPORARY_AGENT_MAX_TURNS),
+    );
+  }
+
+  private temporaryAgentTurns(requested: number | null): number {
+    const max = this.temporaryAgentMaxTurns();
+    if (!requested) return max;
+    return Math.max(1, Math.min(max, Math.floor(requested)));
+  }
+
+  private uniqueRoomAgentId(room: Room, base: string): AgentId {
+    const cleanBase = mentionAliasSlug(base) || 'temporary-agent';
+    const existing = new Set(room.agents);
+    let candidate = cleanBase;
+    let counter = 2;
+    while (existing.has(candidate)) {
+      candidate = `${cleanBase}-${counter}`;
+      counter += 1;
+    }
+    return candidate;
+  }
+
+  private uniqueRoomAgentDisplayName(room: Room, base: string): string {
+    const cleanBase = base.replace(/\s+/g, ' ').trim().slice(0, 80) || 'Temporary Agent';
+    const existing = new Set(
+      room.agentProfiles.map((profile) => profile.displayName.toLowerCase()),
+    );
+    let candidate = cleanBase;
+    let counter = 2;
+    while (existing.has(candidate.toLowerCase())) {
+      candidate = `${cleanBase} ${counter}`;
+      counter += 1;
+    }
+    return candidate;
+  }
+
+  private resolveRosterAgent(room: Room, update: ParsedAgentRosterUpdate): AgentId | null {
+    const id = update.id.trim();
+    if (id && room.agents.includes(id)) return id;
+    const nameSlug = mentionAliasSlug(update.name);
+    if (!nameSlug) return null;
+    return (
+      room.agentProfiles.find(
+        (profile) =>
+          mentionAliasSlug(profile.displayName) === nameSlug ||
+          mentionAliasSlug(profile.id) === nameSlug,
+      )?.id ?? null
+    );
+  }
+
+  private abortActiveRunsForAgent(roomId: string, agentId: AgentId, reason: string): void {
+    for (const [runId, active] of this.activeRunAbortControllers) {
+      if (active.roomId !== roomId || active.controller.signal.aborted) continue;
+      const run = getAgentRun(this.deps.db, runId);
+      if (run?.agentId !== agentId) continue;
+      this.updateRunLifecycle({
+        runId,
+        state: 'canceled_by_reconciliation',
+        reason,
+      });
+      active.controller.abort();
+    }
+  }
+
+  private actorMayManageRoster(room: Room, agentId: AgentId): boolean {
+    const profile =
+      room.agentProfiles.find((candidate) => candidate.id === agentId) ??
+      defaultAgentProfile(agentId);
+    return TEMPORARY_AGENT_ORCHESTRATOR_PERSONAS.has(profile.personaId);
+  }
+
+  private applyAgentRosterUpdates(input: {
+    roomId: string;
+    task: Task | null;
+    runId: string;
+    agentId: AgentId;
+    updates: ParsedAgentRosterUpdate[];
+  }): AgentRosterApplyResult {
+    const result: AgentRosterApplyResult = { applied: 0, followups: [] };
+    if (input.updates.length === 0) return result;
+
+    for (const update of input.updates) {
+      const room = getRoom(this.deps.db, input.roomId);
+      if (!room) return result;
+      const actorProfile =
+        room.agentProfiles.find((profile) => profile.id === input.agentId) ??
+        defaultAgentProfile(input.agentId);
+      const actorCanManage = this.actorMayManageRoster(room, input.agentId);
+
+      if (update.action === 'add') {
+        if (!actorCanManage) {
+          this.recordRunAction({
+            roomId: input.roomId,
+            taskId: input.task?.id ?? null,
+            runId: input.runId,
+            agentId: input.agentId,
+            kind: 'ledger',
+            status: 'failed',
+            label: 'temporary agent add ignored',
+            detail: `${actorProfile.displayName} does not have an Engineering Manager or QA Lead persona.`,
+          });
+          continue;
+        }
+        if (!isProviderId(update.providerId) || update.providerId === 'echo') {
+          this.recordRunAction({
+            roomId: input.roomId,
+            taskId: input.task?.id ?? null,
+            runId: input.runId,
+            agentId: input.agentId,
+            kind: 'ledger',
+            status: 'failed',
+            label: 'temporary agent add ignored',
+            detail: `unsupported provider "${update.providerId || 'missing'}"`,
+          });
+          continue;
+        }
+        const activeForLead = room.agentProfiles.filter(
+          (profile) => profile.temporary === true && profile.spawnedBy === input.agentId,
+        ).length;
+        const limit = this.temporaryAgentLimitPerLead();
+        if (activeForLead >= limit) {
+          this.recordRunAction({
+            roomId: input.roomId,
+            taskId: input.task?.id ?? null,
+            runId: input.runId,
+            agentId: input.agentId,
+            kind: 'ledger',
+            status: 'failed',
+            label: 'temporary agent limit reached',
+            detail: `${actorProfile.displayName} already has ${activeForLead}/${limit} active temporary agents.`,
+          });
+          continue;
+        }
+
+        const persona = getAgentPersona(update.personaId || 'generalist');
+        const fallbackName =
+          persona.id === 'generalist'
+            ? `${providerDisplayName(update.providerId)} Temp`
+            : `${providerDisplayName(update.providerId)} ${persona.name}`;
+        const displayName = this.uniqueRoomAgentDisplayName(room, update.name || fallbackName);
+        const agentId = this.uniqueRoomAgentId(
+          room,
+          update.id || displayName || `${update.providerId}-${persona.id}`,
+        );
+        const maxTurns = this.temporaryAgentTurns(update.maxTurns);
+        const profile: RoomAgentProfile = {
+          id: agentId,
+          providerId: update.providerId,
+          displayName,
+          personaId: persona.id,
+          personaName: persona.name,
+          personaSummary: persona.summary,
+          temporary: true,
+          spawnedBy: input.agentId,
+          spawnedByPersonaId: actorProfile.personaId,
+          spawnedAt: Date.now(),
+          ...(update.reason ? { spawnedReason: update.reason.slice(0, 800) } : {}),
+          ...(update.scope ? { spawnedScope: update.scope.slice(0, 500) } : {}),
+          ...(update.dismissWhen ? { dismissWhen: update.dismissWhen.slice(0, 300) } : {}),
+          maxTurns,
+        };
+        const yolo = update.yolo ?? room.yoloAgents.includes(input.agentId);
+        const nextAgents = [...room.agents, agentId];
+        const nextYoloAgents = yolo ? [...room.yoloAgents, agentId] : room.yoloAgents;
+        this.setAgents(input.roomId, nextAgents, nextYoloAgents, [...room.agentProfiles, profile]);
+        result.applied += 1;
+        this.recordRunAction({
+          roomId: input.roomId,
+          taskId: input.task?.id ?? null,
+          runId: input.runId,
+          agentId: input.agentId,
+          kind: 'ledger',
+          status: 'completed',
+          label: 'temporary agent added',
+          detail: JSON.stringify({
+            agentId,
+            displayName,
+            provider: update.providerId,
+            persona: persona.id,
+            spawnedBy: input.agentId,
+            maxTurns,
+            yolo,
+            reason: update.reason,
+            scope: update.scope,
+          }),
+        });
+        const assignment = [
+          `${actorProfile.displayName} added temporary agent ${displayName} (${agentId}).`,
+          update.reason ? `Reason: ${update.reason}` : '',
+          update.scope ? `Scope: ${update.scope}` : '',
+          `Persona: ${persona.name}.`,
+          `Temporary-agent budget: up to ${maxTurns} focused replies for this assignment.`,
+          update.dismissWhen ? `Dismissal target: ${update.dismissWhen}` : '',
+          '',
+          update.prompt ||
+            `Work the assigned ${update.scope || 'mission'} review/execution lane, update Mission Control with evidence, and dismiss yourself with /agent-roster action: dismiss id: ${agentId} when complete.`,
+        ]
+          .filter((line) => line !== '')
+          .join('\n');
+        result.followups.push({ agentId, text: assignment, maxTurns });
+        continue;
+      }
+
+      const targetAgentId = this.resolveRosterAgent(room, update);
+      const targetProfile = targetAgentId
+        ? room.agentProfiles.find((profile) => profile.id === targetAgentId)
+        : null;
+      if (!targetAgentId || !targetProfile?.temporary) {
+        this.recordRunAction({
+          roomId: input.roomId,
+          taskId: input.task?.id ?? null,
+          runId: input.runId,
+          agentId: input.agentId,
+          kind: 'ledger',
+          status: 'failed',
+          label: 'temporary agent dismiss ignored',
+          detail: `No active temporary agent matched "${update.id || update.name}".`,
+        });
+        continue;
+      }
+      const selfDismiss = targetAgentId === input.agentId;
+      const spawnedByActor = targetProfile.spawnedBy === input.agentId;
+      if (!actorCanManage && !selfDismiss && !spawnedByActor) {
+        this.recordRunAction({
+          roomId: input.roomId,
+          taskId: input.task?.id ?? null,
+          runId: input.runId,
+          agentId: input.agentId,
+          kind: 'ledger',
+          status: 'failed',
+          label: 'temporary agent dismiss ignored',
+          detail: `${actorProfile.displayName} cannot dismiss ${targetProfile.displayName}.`,
+        });
+        continue;
+      }
+      this.abortActiveRunsForAgent(
+        input.roomId,
+        targetAgentId,
+        `temporary agent dismissed by ${input.agentId}`,
+      );
+      this.setAgents(
+        input.roomId,
+        room.agents.filter((agent) => agent !== targetAgentId),
+        room.yoloAgents.filter((agent) => agent !== targetAgentId),
+        room.agentProfiles.filter((profile) => profile.id !== targetAgentId),
+      );
+      result.applied += 1;
+      this.recordRunAction({
+        roomId: input.roomId,
+        taskId: input.task?.id ?? null,
+        runId: input.runId,
+        agentId: input.agentId,
+        kind: 'ledger',
+        status: 'completed',
+        label: 'temporary agent dismissed',
+        detail: JSON.stringify({
+          agentId: targetAgentId,
+          displayName: targetProfile.displayName,
+          dismissedBy: input.agentId,
+          reason: update.reason || update.prompt || 'temporary assignment complete',
+        }),
+      });
+      this.appendDirect(
+        input.roomId,
+        'system',
+        'system',
+        `Temporary agent ${targetProfile.displayName} (${targetAgentId}) dismissed by ${actorProfile.displayName}: ${compactInline(update.reason || update.prompt || 'assignment complete')}`,
+      );
+    }
+
+    return result;
+  }
+
+  private async runAgentRosterFollowups(
+    roomId: string,
+    followups: AgentRosterApplyResult['followups'],
+  ): Promise<void> {
+    for (const followup of followups) {
+      const room = getRoom(this.deps.db, roomId);
+      if (!room || !room.agents.includes(followup.agentId)) continue;
+      const trigger = this.appendDirect(roomId, 'system', 'system', followup.text);
+      await this.runDiscussionThread(roomId, [followup.agentId], trigger, {
+        mode: 'yolo',
+        maxRepliesPerAgent: followup.maxTurns,
+        maxTotalReplies: followup.maxTurns,
+        responders: [followup.agentId],
+      });
+    }
   }
 
   private applyMissionCreateUpdates(input: {
@@ -3983,7 +4441,10 @@ export class Broker extends EventEmitter {
     let lastCompletedPhase: TaskPhase | null = null;
     for (const update of input.updates) {
       const existing =
-        update.action === 'create' ? null : this.resolvePhase(phases, update.id || update.title);
+        update.action === 'create'
+          ? null
+          : (update.id ? this.resolvePhase(phases, update.id) : null) ??
+            (update.title ? this.resolvePhase(phases, update.title) : null);
       const shouldCreate = update.action === 'create' || (!existing && update.title);
       const appliedAction = shouldCreate ? 'create' : update.action;
       const hasPlanRef = update.planRef.trim().length > 0;
@@ -4353,6 +4814,28 @@ export class Broker extends EventEmitter {
     return false;
   }
 
+  private busyAgentsInRoom(roomId: string): Set<AgentId> {
+    const busy = new Set<AgentId>();
+    for (const run of listRunningAgentRunsForRoom(this.deps.db, roomId)) {
+      busy.add(run.agentId);
+    }
+    for (const job of listActiveAgentJobsForRoom(this.deps.db, roomId)) {
+      busy.add(job.agentId);
+    }
+    for (const [runId, active] of this.activeRunAbortControllers) {
+      if (active.roomId !== roomId || active.controller.signal.aborted) continue;
+      const run = getAgentRun(this.deps.db, runId);
+      if (run) busy.add(run.agentId);
+    }
+    return busy;
+  }
+
+  private freeResponders(roomId: string, responders: AgentId[]): AgentId[] {
+    if (responders.length === 0) return [];
+    const busy = this.busyAgentsInRoom(roomId);
+    return responders.filter((agentId) => !busy.has(agentId));
+  }
+
   private markQueuedMessagesDelivered(roomId: string, messages: Message[]): void {
     const queued = this.queuedHumanMessageIds.get(roomId) ?? new Set<string>();
     const deliveredIds: string[] = [];
@@ -4465,33 +4948,113 @@ export class Broker extends EventEmitter {
   }
 
   private pickResponders(room: Room, text: string, authorId: string): AgentId[] {
-    const mentions = this.parseRoomAgentReferences(room, text);
+    const references = this.parseRoomAgentReferenceResult(room, text);
+    if (references.ambiguousAliases.length > 0) return [];
+    const mentions = references.agentIds;
     if (mentions.length > 0) {
       return mentions.filter((m) => room.agents.includes(m) && m !== authorId);
     }
     return room.agents.filter((a) => a !== authorId);
   }
 
+  private pickExplicitResponders(
+    room: Room,
+    text: string,
+    authorId: string,
+  ): AgentId[] | null {
+    const references = this.parseRoomAgentReferenceResult(room, text);
+    if (references.ambiguousAliases.length > 0) return [];
+    if (references.agentIds.length === 0) return null;
+    return references.agentIds.filter(
+      (agentId) => room.agents.includes(agentId) && agentId !== authorId,
+    );
+  }
+
   private parseRoomAgentReferences(room: Room, text: string): AgentId[] {
+    return this.parseRoomAgentReferenceResult(room, text).agentIds;
+  }
+
+  private parseRoomAgentReferenceResult(room: Room, text: string): RoomAgentReferenceResult {
     const aliases = new Map<AgentId, string[]>();
+    const aliasIndex = new Map<string, AgentId[]>();
+    const providerCounts = new Map<string, number>();
     for (const agentId of room.agents) {
       const profile =
         room.agentProfiles.find((candidate) => candidate.id === agentId) ??
         defaultAgentProfile(agentId);
-      aliases.set(agentId, [
-        agentId,
-        profile.providerId,
-        profile.displayName,
-        profile.displayName.replace(/\s+/g, '-'),
-      ]);
+      providerCounts.set(profile.providerId, (providerCounts.get(profile.providerId) ?? 0) + 1);
+    }
+
+    for (const agentId of room.agents) {
+      const profile =
+        room.agentProfiles.find((candidate) => candidate.id === agentId) ??
+        defaultAgentProfile(agentId);
+      const providerIsAmbiguous = (providerCounts.get(profile.providerId) ?? 0) > 1;
+      const displayNameSlug = mentionAliasSlug(profile.displayName);
+      const profileAliases = [agentId];
+      if (!providerIsAmbiguous) profileAliases.push(profile.providerId);
+      if (!providerIsAmbiguous || displayNameSlug !== profile.providerId) {
+        profileAliases.push(
+          profile.displayName,
+          profile.displayName.replace(/\s+/g, '-'),
+          displayNameSlug,
+        );
+      }
+      aliases.set(agentId, profileAliases);
+      for (const alias of profileAliases) {
+        const token = mentionAliasSlug(alias);
+        if (!token) continue;
+        const matches = aliasIndex.get(token) ?? [];
+        if (!matches.includes(agentId)) matches.push(agentId);
+        aliasIndex.set(token, matches);
+      }
     }
     const dynamic = parseAgentReferencesForAliases(text, aliases);
-    const staticMatches = parseAgentReferences(text).flatMap((match) =>
-      room.agentProfiles
-        .filter((profile) => profile.providerId === match || profile.id === match)
-        .map((profile) => profile.id),
-    );
-    return [...new Set([...dynamic, ...staticMatches])];
+    const ambiguousAliases = new Set<string>();
+    const staticMatches: AgentId[] = [];
+    const explicitTokens = parseMentionTokens(text);
+    const explicitTokenSet = new Set(explicitTokens);
+
+    for (const token of explicitTokens) {
+      const aliasMatches = aliasIndex.get(token) ?? [];
+      if (aliasMatches.length === 1) {
+        staticMatches.push(aliasMatches[0]!);
+        continue;
+      }
+      if (aliasMatches.length > 1) {
+        ambiguousAliases.add(token);
+        continue;
+      }
+      if ((providerCounts.get(token) ?? 0) > 1) ambiguousAliases.add(token);
+    }
+
+    for (const match of parseAgentReferences(text)) {
+      const token = mentionAliasSlug(match);
+      if (!token || explicitTokenSet.has(token)) continue;
+      const aliasMatches = aliasIndex.get(token) ?? [];
+      if (aliasMatches.length === 1) {
+        staticMatches.push(aliasMatches[0]!);
+        continue;
+      }
+      if (aliasMatches.length > 1) {
+        ambiguousAliases.add(token);
+        continue;
+      }
+      const providerMatches = room.agentProfiles.filter((profile) => profile.providerId === token);
+      if (providerMatches.length > 1) {
+        ambiguousAliases.add(token);
+        continue;
+      }
+      const agentMatches = room.agentProfiles.filter(
+        (profile) => profile.providerId === token || profile.id === token,
+      );
+      staticMatches.push(...agentMatches.map((profile) => profile.id));
+    }
+
+    return {
+      agentIds: [...new Set([...dynamic, ...staticMatches])],
+      ambiguousAliases: [...ambiguousAliases],
+    };
   }
 
   private pickAgentHandoffResponders(
@@ -4500,8 +5063,9 @@ export class Broker extends EventEmitter {
     authorId: AgentId,
     allowedAgents?: Set<AgentId>,
   ): AgentId[] {
-    const references = this.parseRoomAgentReferences(room, text);
-    return references.filter(
+    const references = this.parseRoomAgentReferenceResult(room, text);
+    if (references.ambiguousAliases.length > 0) return [];
+    return references.agentIds.filter(
       (agentId) =>
         agentId !== authorId &&
         room.agents.includes(agentId) &&
@@ -4546,7 +5110,18 @@ export class Broker extends EventEmitter {
     const isCancelled = (): boolean => options.yoloState?.cancelled === true;
     const room = getRoom(this.deps.db, roomId);
     const roomAgents = room?.agents ?? responders;
-    const handoffPool = options.mode === 'yolo' && options.responders ? responders : roomAgents;
+    const optionHandoffPool =
+      options.mode === 'yolo' && options.handoffPool
+        ? options.handoffPool.filter((agent) => roomAgents.includes(agent))
+        : [];
+    const handoffPool =
+      options.mode === 'yolo'
+        ? optionHandoffPool.length > 0
+          ? optionHandoffPool
+          : options.responders
+            ? responders
+            : roomAgents
+        : roomAgents;
     const uniqueResponders = responders.filter(
       (agentId, index) => responders.indexOf(agentId) === index,
     );
