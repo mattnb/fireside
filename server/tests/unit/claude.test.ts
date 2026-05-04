@@ -102,6 +102,22 @@ describe('claude adapter', () => {
     expect(reply.sessionId).toBe('s1');
   });
 
+  it('treats Claude prompt-too-long terminal results as parse failures', () => {
+    const stream = [
+      JSON.stringify({ type: 'system', subtype: 'init', session_id: 's1', model: 'claude' }),
+      JSON.stringify({
+        type: 'result',
+        session_id: 's1',
+        result: 'Prompt is too long',
+        terminal_reason: 'prompt_too_long',
+        duration_ms: 1039,
+        total_cost_usd: 0,
+      }),
+    ].join('\n');
+
+    expect(() => claudeSpec.parseOutput(stream, '')).toThrow(AgentParseError);
+  });
+
   it('emits live stream events and suppresses hook payload details', () => {
     expect(
       claudeSpec.parseStreamLine?.(

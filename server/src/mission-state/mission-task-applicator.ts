@@ -25,6 +25,7 @@ import {
 
 export interface MissionTaskApplyResult {
   applied: number;
+  progressed: number;
   dispatchCandidates: TaskChecklistItem[];
 }
 
@@ -44,7 +45,7 @@ export interface ApplyMissionTaskUpdatesInput {
 export function applyMissionTaskUpdates(
   input: ApplyMissionTaskUpdatesInput,
 ): MissionTaskApplyResult {
-  const result: MissionTaskApplyResult = { applied: 0, dispatchCandidates: [] };
+  const result: MissionTaskApplyResult = { applied: 0, progressed: 0, dispatchCandidates: [] };
   if (input.updates.length === 0) return result;
   if (!input.task) {
     input.recordRunAction({
@@ -190,6 +191,9 @@ export function applyMissionTaskUpdates(
     }
     if (item.status === 'blocked' && item.councilRequired) anyCouncilBlock = true;
     result.applied += 1;
+    if (update.action === 'create' || checklistUpdateChangedExecutionState(existing, item)) {
+      result.progressed += 1;
+    }
     if (item.ownerAgentId && item.status === 'open') {
       result.dispatchCandidates.push(item);
     }
@@ -215,4 +219,30 @@ export function applyMissionTaskUpdates(
   const updatedTask = getTask(input.db, input.task.id);
   if (updatedTask) input.onTaskUpdated?.(updatedTask);
   return result;
+}
+
+function stringArraysEqual(a: string[], b: string[]): boolean {
+  return a.length === b.length && a.every((value, index) => value === b[index]);
+}
+
+function checklistUpdateChangedExecutionState(
+  previous: TaskChecklistItem | null,
+  next: TaskChecklistItem,
+): boolean {
+  if (!previous) return true;
+  return (
+    previous.planId !== next.planId ||
+    previous.phaseId !== next.phaseId ||
+    previous.title !== next.title ||
+    previous.detail !== next.detail ||
+    previous.status !== next.status ||
+    !stringArraysEqual(previous.dependencyIds, next.dependencyIds) ||
+    !stringArraysEqual(previous.expectedTouches, next.expectedTouches) ||
+    previous.parallelism !== next.parallelism ||
+    previous.conflictGroup !== next.conflictGroup ||
+    previous.workRole !== next.workRole ||
+    previous.ownerAgentId !== next.ownerAgentId ||
+    previous.blockedReason !== next.blockedReason ||
+    previous.councilRequired !== next.councilRequired
+  );
 }

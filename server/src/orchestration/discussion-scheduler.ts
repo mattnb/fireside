@@ -256,7 +256,9 @@ export function applyDiscussionRoundResults(
       (state.replyCounts.get(agentId) ?? 0) < maxReplies,
   );
   const directedUnderLimit = directedAgents.filter(
-    (agentId) => (state.replyCounts.get(agentId) ?? 0) < maxReplies,
+    (agentId) =>
+      !state.quarantinedAgents.has(agentId) &&
+      (state.replyCounts.get(agentId) ?? 0) < maxReplies,
   );
   const directedYoloAgents =
     state.mode === 'yolo'

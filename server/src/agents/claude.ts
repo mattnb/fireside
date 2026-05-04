@@ -112,6 +112,24 @@ function textFromAssistantEvent(obj: Record<string, unknown>): string | null {
   return textFromContent(message?.content) ?? textFromContent(obj.content);
 }
 
+function claudePromptTooLongReason(stdout: string): string {
+  for (const line of stdout.split('\n')) {
+    const obj = parseJsonLine(line);
+    if (!obj) continue;
+    const type = typeof obj.type === 'string' ? obj.type : '';
+    const terminalReason =
+      typeof obj.terminal_reason === 'string' ? obj.terminal_reason : '';
+    const result = typeof obj[RESULT_FIELD] === 'string' ? obj[RESULT_FIELD] : '';
+    if (
+      (type === 'result' || result) &&
+      (terminalReason === 'prompt_too_long' || /^prompt is too long$/i.test(result.trim()))
+    ) {
+      return terminalReason || 'prompt_too_long';
+    }
+  }
+  return '';
+}
+
 function parseClaudeStreamReply(stdout: string): { text: string; sessionId: string | null } | null {
   let resultText: string | null = null;
   let assistantText: string | null = null;
@@ -379,6 +397,15 @@ export const claudeSpec: AgentSpec = {
     const raw = sanitizeClaudeRaw(stdout, stderr);
     if (!stdout.trim()) {
       throw new AgentParseError('claude', 'empty stdout', raw.stdout, raw.stderr);
+    }
+    const promptTooLongReason = claudePromptTooLongReason(stdout);
+    if (promptTooLongReason) {
+      throw new AgentParseError(
+        'claude',
+        `prompt too long (${promptTooLongReason})`,
+        raw.stdout,
+        raw.stderr,
+      );
     }
     const streamed = parseClaudeStreamReply(stdout);
     if (streamed) {

@@ -454,6 +454,10 @@ function isBrokerInternalSystemMessage(message: Message): boolean {
   );
 }
 
+function isWorkflowRepairTrigger(message: Message): boolean {
+  return message.authorKind === 'system' && /^\(fireside workflow contract repair for /i.test(message.text);
+}
+
 function providerCompactionWarning(agentId: AgentId, stderr: string): string | null {
   if (
     providerIdFromAgentId(agentId) === 'codex' &&
@@ -473,10 +477,6 @@ function oneLine(text: string, maxChars = 280): string {
 function compactInline(text: string, maxChars = 220): string {
   const cleaned = text.replace(/\s+/g, ' ').trim();
   return cleaned.length <= maxChars ? cleaned : `${cleaned.slice(0, maxChars - 1)}...`;
-}
-
-function workflowRepairTaskUpdateIsProgress(update: ParsedMissionTaskUpdate): boolean {
-  return update.status !== null && update.status !== 'open';
 }
 
 function missionCommandField(update: unknown, keys: string[]): string {
@@ -1805,6 +1805,7 @@ export class Broker extends EventEmitter {
     workflowRepair = false,
   ): Promise<AgentTurnResult> {
     if (cancelSignal?.aborted) return { message: null, progressed: false };
+    const effectiveWorkflowRepair = workflowRepair || isWorkflowRepairTrigger(trigger);
     const room = getRoom(this.deps.db, roomId);
     if (!room) {
       // The room was created before this call ran; it should still exist. Defensive guard.
@@ -2178,7 +2179,7 @@ export class Broker extends EventEmitter {
           workLane,
           retryDecision.nextAttempt,
           run.id,
-          workflowRepair,
+          effectiveWorkflowRepair,
         );
       }
       this.appendDirect(
@@ -2424,7 +2425,13 @@ export class Broker extends EventEmitter {
       extractedMissionCreates.updates.length +
       extractedMissionPlans.updates.length +
       extractedMissionPhases.updates.length +
-      extractedMissionTasks.updates.length +
+      missionTaskResult.applied +
+      rosterResult.applied;
+    const missionStateProgressCount =
+      extractedMissionCreates.updates.length +
+      extractedMissionPlans.updates.length +
+      extractedMissionPhases.updates.length +
+      missionTaskResult.progressed +
       rosterResult.applied;
     const missionReceiptCount = extractedMissionReceipts.receipts.length;
     const productiveMissionReceiptCount = this.productiveMissionReceiptCount(
@@ -2442,12 +2449,14 @@ export class Broker extends EventEmitter {
       explicitMissionUpdates: missionStateUpdateCount,
     });
     const hiddenMissionProgressCount = this.hiddenMissionProgressCount({
-      workflowRepair,
+      workflowRepair: effectiveWorkflowRepair,
       missionStateUpdateCount,
+      missionStateProgressCount,
       missionCreateCount: extractedMissionCreates.updates.length,
       missionPlanCount: extractedMissionPlans.updates.length,
       missionPhaseCount: extractedMissionPhases.updates.length,
       missionTaskUpdates: extractedMissionTasks.updates,
+      missionTaskProgressCount: missionTaskResult.progressed,
       rosterApplied: rosterResult.applied,
       productiveMissionReceiptCount,
       reconciliation,
@@ -2499,7 +2508,7 @@ export class Broker extends EventEmitter {
         workLane,
         attempt,
         retryOfRunId,
-        workflowRepair,
+        workflowRepair: effectiveWorkflowRepair,
         runId: run.id,
         task: missionTask,
         missionStateUpdateCount,
@@ -2689,7 +2698,7 @@ export class Broker extends EventEmitter {
           workLane,
           attempt,
           retryOfRunId,
-          workflowRepair,
+          effectiveWorkflowRepair,
         );
       }
       const request = addPermissionRequest(this.deps.db, {
@@ -2803,7 +2812,7 @@ export class Broker extends EventEmitter {
       workLane,
       attempt,
       retryOfRunId,
-      workflowRepair,
+      workflowRepair: effectiveWorkflowRepair,
       runId: run.id,
       task: missionTask,
       missionStateUpdateCount,
@@ -2820,7 +2829,7 @@ export class Broker extends EventEmitter {
       existingDispatches: missionWorkDispatches,
       allowLiveness: workLane === undefined,
     });
-    const progressed = workflowRepair
+    const progressed = effectiveWorkflowRepair
       ? hiddenMissionProgressCount > 0 || finalWorkDispatches.length > 0
       : Boolean(message) ||
         extracted.notes.length > 0 ||
@@ -4182,17 +4191,19 @@ export class Broker extends EventEmitter {
   private hiddenMissionProgressCount(input: {
     workflowRepair: boolean;
     missionStateUpdateCount: number;
+    missionStateProgressCount: number;
     missionCreateCount: number;
     missionPlanCount: number;
     missionPhaseCount: number;
     missionTaskUpdates: ParsedMissionTaskUpdate[];
+    missionTaskProgressCount: number;
     rosterApplied: number;
     productiveMissionReceiptCount: number;
     reconciliation: MissionReconciliationResult;
   }): number {
     if (!input.workflowRepair) {
       return (
-        input.missionStateUpdateCount +
+        input.missionStateProgressCount +
         input.productiveMissionReceiptCount +
         input.reconciliation.applied
       );
@@ -4203,9 +4214,7 @@ export class Broker extends EventEmitter {
       input.missionPlanCount +
       input.missionPhaseCount +
       input.rosterApplied;
-    const terminalTaskUpdates = input.missionTaskUpdates.filter(
-      workflowRepairTaskUpdateIsProgress,
-    ).length;
+    const terminalTaskUpdates = input.missionTaskProgressCount;
     const reconciliationProgress =
       input.productiveMissionReceiptCount > 0 ? input.reconciliation.applied : 0;
 

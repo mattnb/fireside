@@ -167,6 +167,47 @@ describe('discussion scheduler', () => {
     expect(outcome.nextCandidates).toEqual(['codex']);
   });
 
+  it('does not reintroduce quarantined YOLO agents through directed work dispatches', () => {
+    const state = scheduler({
+      mode: 'yolo',
+      responders: ['claude', 'codex'],
+      roomAgents: ['claude', 'codex'],
+      handoffPool: ['claude', 'codex'],
+      maxRepliesPerAgent: 100,
+      maxTotalReplies: 100,
+    });
+
+    const outcome = applyDiscussionRoundResults(state, {
+      roomYoloAgents: ['claude', 'codex'],
+      results: [
+        {
+          agentId: 'claude',
+          progressed: false,
+          hasMessage: false,
+          failed: true,
+          handoffs: [],
+          workDispatches: [],
+          runId: 'run-1',
+          error: 'prompt too long',
+        },
+        {
+          agentId: 'codex',
+          progressed: true,
+          hasMessage: true,
+          failed: false,
+          handoffs: [],
+          workDispatches: ['claude'],
+          runId: 'run-2',
+          error: '',
+        },
+      ],
+    });
+
+    expect(state.quarantinedAgents.has('claude')).toBe(true);
+    expect(outcome.directedAgents).toEqual(['claude']);
+    expect(outcome.nextCandidates).toEqual(['codex']);
+  });
+
   it('stops a YOLO thread after a no-progress pulse', () => {
     const state = scheduler({
       mode: 'yolo',

@@ -78,6 +78,7 @@ describe('mission task applicator', () => {
     const [item] = listTaskChecklistItems(db, task.id);
     expect(result).toMatchObject({
       applied: 1,
+      progressed: 1,
       dispatchCandidates: [{ id: item!.id, ownerAgentId: 'claude' }],
     });
     expect(item).toMatchObject({
@@ -117,6 +118,7 @@ describe('mission task applicator', () => {
     });
 
     expect(result.applied).toBe(1);
+    expect(result.progressed).toBe(1);
     expect(db.prepare(`SELECT status FROM tasks WHERE id = ?`).get(task.id)).toMatchObject({
       status: 'blocked',
     });
@@ -156,12 +158,73 @@ describe('mission task applicator', () => {
     });
 
     expect(result.applied).toBe(0);
+    expect(result.progressed).toBe(0);
     expect(listTaskChecklistItems(db, task.id)).toEqual([]);
     expect(actions).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
           label: 'mission task plan mismatch',
           status: 'failed',
+        }),
+      ]),
+    );
+  });
+
+  it('records an open status receipt without counting it as execution progress', () => {
+    const room = createRoom(db, { name: 'mission' });
+    const task = createTask(db, { roomId: room.id, title: 'Mission' });
+    const [existing] = [
+      applyMissionTaskUpdates({
+        db,
+        roomId: room.id,
+        task,
+        runId: 'setup',
+        agentId: 'codex',
+        defaultPlanId: null,
+        forcePlanOnUpdates: false,
+        updates: [
+          update({
+            title: 'Rebuild dashboard',
+            ownerAgentId: 'codex',
+          }),
+        ],
+        recordRunAction: (action) => actions.push(action),
+      }),
+    ];
+    expect(existing.progressed).toBe(1);
+    actions = [];
+
+    const item = listTaskChecklistItems(db, task.id)[0]!;
+    const result = applyMissionTaskUpdates({
+      db,
+      roomId: room.id,
+      task,
+      runId: 'receipt',
+      agentId: 'codex',
+      defaultPlanId: null,
+      forcePlanOnUpdates: false,
+      updates: [
+        update({
+          action: 'update',
+          id: item.id,
+          title: '',
+          status: 'open',
+          ownerAgentId: 'codex',
+          note: 'Still open; no completion evidence yet.',
+        }),
+      ],
+      recordRunAction: (action) => actions.push(action),
+    });
+
+    expect(result.applied).toBe(1);
+    expect(result.progressed).toBe(0);
+    expect(result.dispatchCandidates).toHaveLength(1);
+    expect(listTaskChecklistNotes(db, task.id)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          itemId: item.id,
+          kind: 'status',
+          body: 'Still open; no completion evidence yet.',
         }),
       ]),
     );
