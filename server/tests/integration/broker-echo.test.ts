@@ -696,6 +696,96 @@ describe('Broker', () => {
     expect(listMessages(db, room.id)).toHaveLength(101);
   });
 
+  it('does not launch the same room agent while an existing provider turn is active', async () => {
+    let markStarted: () => void = () => {};
+    let releaseReply: (reply: AgentReply) => void = () => {};
+    const started = new Promise<void>((resolve) => {
+      markStarted = resolve;
+    });
+    const reply = new Promise<AgentReply>((resolve) => {
+      releaseReply = resolve;
+    });
+    const guardedBroker = new Broker({
+      db,
+      runAgent: async (spec, prompt, sessionId) => {
+        runs.push({ agentId: spec.id, prompt, sessionId });
+        markStarted();
+        return reply;
+      },
+      getSpec: (id) => {
+        const map: Record<string, AgentSpec> = {
+          gemini: fakeSpec('gemini', 'gemini reply'),
+        };
+        return map[id];
+      },
+    });
+    const room = createRoom(db, { name: 'single-flight', agents: ['gemini'] });
+
+    const first = guardedBroker.postHumanMessage(room.id, 'human', '@gemini start');
+    await started;
+    const second = guardedBroker.postSystemMessage(room.id, '@gemini duplicate nudge');
+    await new Promise((resolve) => setTimeout(resolve, 25));
+
+    expect(runs).toHaveLength(1);
+    expect(listAgentRuns(db, room.id).filter((run) => run.status === 'running')).toHaveLength(1);
+
+    releaseReply({
+      text: 'gemini finished',
+      sessionId: 'gemini-sess',
+      raw: { stdout: '', stderr: '' },
+    });
+    await Promise.all([first, second]);
+
+    expect(runs).toHaveLength(1);
+    expect(listAgentRuns(db, room.id).filter((run) => run.status === 'running')).toHaveLength(0);
+  });
+
+  it('does not start an overlapping YOLO loop for a room with an active YOLO pulse', async () => {
+    let markStarted: () => void = () => {};
+    let releaseReply: (reply: AgentReply) => void = () => {};
+    const started = new Promise<void>((resolve) => {
+      markStarted = resolve;
+    });
+    const reply = new Promise<AgentReply>((resolve) => {
+      releaseReply = resolve;
+    });
+    const guardedBroker = new Broker({
+      db,
+      runAgent: async (spec, prompt, sessionId) => {
+        runs.push({ agentId: spec.id, prompt, sessionId });
+        markStarted();
+        return reply;
+      },
+      getSpec: (id) => {
+        const map: Record<string, AgentSpec> = {
+          gemini: fakeSpec('gemini', 'gemini reply'),
+        };
+        return map[id];
+      },
+    });
+    const room = createRoom(db, {
+      name: 'single-yolo-loop',
+      agents: ['gemini'],
+      yoloAgents: ['gemini'],
+    });
+
+    const first = guardedBroker.startYoloDiscussion(room.id, 'human');
+    await started;
+    const second = guardedBroker.postSystemMessage(room.id, '@gemini duplicate yolo nudge');
+    await new Promise((resolve) => setTimeout(resolve, 25));
+
+    expect(runs).toHaveLength(1);
+
+    releaseReply({
+      text: '',
+      sessionId: 'gemini-sess',
+      raw: { stdout: '', stderr: '' },
+    });
+    await Promise.all([first, second]);
+
+    expect(runs).toHaveLength(1);
+  });
+
   it('applies YOLO permission profiles to agent turns for the run', async () => {
     const yoloBroker = new Broker({
       db,

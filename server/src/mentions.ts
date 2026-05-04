@@ -3,9 +3,11 @@ import type { AgentId } from './agents/types.js';
 
 const KNOWN: AgentId[] = ['claude', 'codex', 'gemini', 'echo'];
 
-// Match @name only when preceded by start-of-string or whitespace, and followed by
-// non-word boundary that is not a `.` (to skip emails like user@claude.com).
-const MENTION_RE = /(?:^|\s)@([a-z][a-z0-9-]*)(?![.\w])/gi;
+// Match @name only when preceded by start-of-string or a separator. Sentence
+// punctuation is allowed after the handle, but domains like user@claude.com
+// and @claude.com are intentionally ignored.
+const MENTION_RE =
+  /(?:^|[\s([{"'`>])@([a-z][a-z0-9-]*)(?=$|[\s,;:!?)\]}"'\u2014\u2013-]|\.(?=[\s)\]}"']|$))/gi;
 
 export function parseMentions(text: string): AgentId[] {
   const found = new Set<AgentId>();

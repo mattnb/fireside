@@ -1,6 +1,6 @@
 // server/tests/unit/mentions.test.ts
 import { describe, it, expect } from 'vitest';
-import { parseAgentReferences, parseMentions } from '../../src/mentions.js';
+import { parseAgentReferences, parseMentions, parseMentionTokens } from '../../src/mentions.js';
 
 describe('parseMentions', () => {
   it('returns empty when no @mentions present', () => {
@@ -15,6 +15,14 @@ describe('parseMentions', () => {
     expect(parseMentions('@claude @codex thoughts?')).toEqual(['claude', 'codex']);
   });
 
+  it('parses mentions followed by normal sentence punctuation', () => {
+    expect(parseMentions('@claude, @codex; @gemini.')).toEqual([
+      'claude',
+      'codex',
+      'gemini',
+    ]);
+  });
+
   it('deduplicates repeated mentions', () => {
     expect(parseMentions('@claude @claude')).toEqual(['claude']);
   });
@@ -25,6 +33,16 @@ describe('parseMentions', () => {
 
   it('ignores email-like @ tokens', () => {
     expect(parseMentions('email me at user@claude.com')).toEqual([]);
+    expect(parseMentions('visit @claude.com for docs')).toEqual([]);
+  });
+
+  it('normalizes room-local mention tokens before trailing punctuation', () => {
+    expect(parseMentionTokens('@jimmy, @dashel, @specs hello from @ariane.')).toEqual([
+      'jimmy',
+      'dashel',
+      'specs',
+      'ariane',
+    ]);
   });
 });
 

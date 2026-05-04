@@ -2,6 +2,41 @@ import { describe, expect, it } from 'vitest';
 import { extractMissionTaskUpdates } from '../../src/mission-task-updates.js';
 
 describe('mission task update extraction', () => {
+  it('extracts inline task commands without exposing protocol text', () => {
+    const extracted = extractMissionTaskUpdates(`Ready for walkthrough.
+
+/mission-task action: update, id: DskpV4XKvHyn9f, status: open, note: Verified interaction patterns (keyboard, focus, motion) are fully aligned with Specs' Phase 3 tokens and Rob's IA Map. Refined motion.md to include skeleton-to-content handoff details. Ready for Matt walkthrough.
+/end-mission-task`);
+
+    expect(extracted.visibleText).toBe('Ready for walkthrough.');
+    expect(extracted.visibleText).not.toContain('/mission-task');
+    expect(extracted.updates).toMatchObject([
+      {
+        action: 'update',
+        id: 'DskpV4XKvHyn9f',
+        status: 'open',
+        note: "Verified interaction patterns (keyboard, focus, motion) are fully aligned with Specs' Phase 3 tokens and Rob's IA Map. Refined motion.md to include skeleton-to-content handoff details. Ready for Matt walkthrough.",
+        noteKind: 'status',
+      },
+    ]);
+  });
+
+  it('extracts fully single-line task commands', () => {
+    const extracted = extractMissionTaskUpdates(
+      `Task closed.
+/mission-task action: update, id: Gu3ICTLUNKStqb, status: done, note: Verified. /end-mission-task`,
+    );
+
+    expect(extracted.visibleText).toBe('Task closed.');
+    expect(extracted.updates).toMatchObject([
+      {
+        id: 'Gu3ICTLUNKStqb',
+        status: 'done',
+        note: 'Verified.',
+      },
+    ]);
+  });
+
   it('normalizes completion-oriented status aliases to done', () => {
     const extracted = extractMissionTaskUpdates(`Task accepted.
 

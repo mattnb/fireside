@@ -5,12 +5,13 @@ function escapeRegExp(value: string): string {
 const LINE_MARKER_PREFIX = String.raw`[^\w/\r\n]{0,20}?`;
 const LINE_MARKER_SUFFIX = String.raw`[^\w/\r\n]{0,20}?`;
 const FIELD_RE = /^(\s*)([A-Za-z][\w -]*?)\s*:\s*(.*)$/;
+const INLINE_FIELD_RE = /(?:^|[,;]\s*)([A-Za-z][\w -]*?)\s*:\s*/g;
 
 export function hiddenBlockRegex(startName: string, endNames: string[]): RegExp {
   const start = escapeRegExp(startName);
   const ends = endNames.map(escapeRegExp).join('|');
   return new RegExp(
-    String.raw`(^|\n)${LINE_MARKER_PREFIX}\/${start}\s*\n([\s\S]*?)\n${LINE_MARKER_PREFIX}[/@]end-(?:${ends})${LINE_MARKER_SUFFIX}(?=\n|$)`,
+    String.raw`(^|\n)${LINE_MARKER_PREFIX}\/${start}(?:[ \t]+|\s*\n)([\s\S]*?)(?:\n${LINE_MARKER_PREFIX}|[ \t]+)[/@]end-(?:${ends})${LINE_MARKER_SUFFIX}(?=\n|$)`,
     'gi',
   );
 }
@@ -27,6 +28,32 @@ export function normalizeHiddenBlockFieldKey(key: string): string {
 
 function isFieldLine(line: string): boolean {
   return FIELD_RE.test(line);
+}
+
+function expandInlineFieldLine(line: string): string[] {
+  const trimmed = line.trim();
+  const matches = [...trimmed.matchAll(INLINE_FIELD_RE)];
+  if (matches.length < 2 || matches[0]?.index !== 0) return [line];
+
+  return matches
+    .map((match, index) => {
+      const key = match[1]!.trim();
+      const valueStart = match.index! + match[0]!.length;
+      const valueEnd = matches[index + 1]?.index ?? trimmed.length;
+      const value = trimmed.slice(valueStart, valueEnd).replace(/[,;\s]+$/g, '').trim();
+      return value ? `${key}: ${value}` : `${key}:`;
+    })
+    .filter(Boolean);
+}
+
+function expandInlineHiddenFields(block: string): string {
+  const lines = block.split(/\r?\n/);
+  const nonBlank = lines.filter((line) => line.trim());
+  if (nonBlank.length !== 1) return block;
+
+  const line = nonBlank[0]!;
+  if (!FIELD_RE.test(line.trimEnd())) return block;
+  return expandInlineFieldLine(line).join('\n');
 }
 
 function lineIndent(line: string): number {
@@ -74,7 +101,7 @@ function parseIndentedContinuation(lines: string[], startIndex: number): {
 
 export function parseHiddenBlockFields(block: string): Map<string, string[]> {
   const fields = new Map<string, string[]>();
-  const lines = block.split(/\r?\n/);
+  const lines = expandInlineHiddenFields(block).split(/\r?\n/);
 
   for (let index = 0; index < lines.length; index += 1) {
     const rawLine = lines[index]!;

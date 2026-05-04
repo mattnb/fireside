@@ -4,6 +4,7 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import fs from 'node:fs';
+import os from 'node:os';
 import { geminiSpec } from '../../src/agents/gemini.js';
 import { AgentParseError } from '../../src/agents/types.js';
 
@@ -14,10 +15,21 @@ const withPreamble = readFileSync(path.join(FIXTURE_DIR, 'gemini-with-preamble.j
 describe('gemini adapter', () => {
   it('builds argv for fresh session and sends the prompt through stdin', () => {
     const argv = geminiSpec.buildArgs('hi', null);
-    expect(argv).toEqual(['-p', '', '--output-format', 'stream-json', '--approval-mode', 'plan']);
+    expect(argv).toEqual([
+      '-p',
+      '',
+      '--output-format',
+      'stream-json',
+      '--skip-trust',
+      '--approval-mode',
+      'plan',
+    ]);
     expect(argv).not.toContain('hi');
     expect(argv).not.toContain('--resume');
     expect(geminiSpec.buildStdin?.('hi', null)).toBe('hi');
+    expect(geminiSpec.buildEnv?.('hi', null)).toEqual({
+      GEMINI_CLI_TRUST_WORKSPACE: 'true',
+    });
   });
 
   it('builds argv for resumed session with explicit session id', () => {
@@ -27,6 +39,7 @@ describe('gemini adapter', () => {
       '',
       '--output-format',
       'stream-json',
+      '--skip-trust',
       '--approval-mode',
       'plan',
       '--resume',
@@ -46,6 +59,25 @@ describe('gemini adapter', () => {
     expect(argv).toContain('auto_edit');
     expect(argv).toContain('--include-directories');
     expect(argv).toContain('C:\\workspaces\\project');
+  });
+
+  it('expands unrestricted YOLO into concrete trusted include directories', () => {
+    const argv = geminiSpec.buildArgs('edit anywhere', null, {
+      permission: {
+        mode: 'full-auto',
+        target: 'unrestricted filesystem',
+        reason: 'YOLO run',
+        filesystemScope: 'unrestricted',
+      },
+    });
+    const includeIndex = argv.indexOf('--include-directories');
+    expect(argv).toContain('--skip-trust');
+    expect(argv).toContain('yolo');
+    expect(includeIndex).toBeGreaterThanOrEqual(0);
+    const includeDirs = argv[includeIndex + 1] ?? '';
+    expect(includeDirs).toContain(process.cwd());
+    expect(includeDirs).toContain(path.resolve(process.cwd(), '..'));
+    expect(includeDirs).toContain(os.tmpdir());
   });
 
   it('parses headless fixture', () => {
@@ -73,6 +105,42 @@ describe('gemini adapter', () => {
     const reply = geminiSpec.parseOutput(stream, '');
     expect(reply.text).toBe('pong');
     expect(reply.sessionId).toBe('s1');
+  });
+
+  it('ignores tool result output when parsing the visible stream reply', () => {
+    const stream = [
+      JSON.stringify({ type: 'init', session_id: 's1', model: 'gemini' }),
+      JSON.stringify({
+        type: 'tool_result',
+        status: 'success',
+        output: 'Read lines 1-100 of 510 from mockups-preview.html',
+      }),
+      JSON.stringify({ type: 'message', role: 'assistant', content: '@jimmy verified ', delta: true }),
+      JSON.stringify({ type: 'message', role: 'assistant', content: 'the visual foundation.', delta: true }),
+      JSON.stringify({
+        type: 'tool_result',
+        status: 'success',
+        output: 'Read lines 110-160 of 510 from mockups-preview.html',
+      }),
+      JSON.stringify({ type: 'result', status: 'success', stats: { duration_ms: 12 } }),
+    ].join('\n');
+
+    const reply = geminiSpec.parseOutput(stream, '');
+    expect(reply.text).toBe('@jimmy verified the visual foundation.');
+  });
+
+  it('does not treat a tool-only stream as a chat reply', () => {
+    const stream = [
+      JSON.stringify({ type: 'init', session_id: 's1', model: 'gemini' }),
+      JSON.stringify({
+        type: 'tool_result',
+        status: 'success',
+        output: 'Found 12 matching file(s)',
+      }),
+      JSON.stringify({ type: 'result', status: 'success', stats: { duration_ms: 12 } }),
+    ].join('\n');
+
+    expect(() => geminiSpec.parseOutput(stream, '')).toThrow(AgentParseError);
   });
 
   it('emits live stream events from stream-json lines', () => {

@@ -341,6 +341,7 @@ interface YoloDiscussionState {
   maxTotalReplies: number;
   totalRepliesUsed: number;
   abortController: AbortController;
+  loopActive: boolean;
   cancelled: boolean;
   cancelledBy?: string;
   cancelledAt?: number;
@@ -1393,6 +1394,7 @@ export class Broker extends EventEmitter {
       maxTotalReplies: YOLO_MAX_AGENT_REPLIES,
       totalRepliesUsed: 0,
       abortController: new AbortController(),
+      loopActive: false,
       cancelled: false,
     };
   }
@@ -1809,6 +1811,32 @@ export class Broker extends EventEmitter {
     const spec = this.deps.getSpec(agentProfile.providerId);
     if (!spec) {
       this.appendDirect(roomId, 'system', 'system', `(no adapter for agent "${agentId}")`);
+      return { message: null, progressed: false };
+    }
+    const activeReason = this.activeAgentWorkReason(roomId, agentId);
+    if (activeReason) {
+      const activeTask = getActiveTask(this.deps.db, roomId);
+      logger.info(
+        { roomId, taskId: activeTask?.id ?? null, agentId, reason: activeReason },
+        'agent turn suppressed by single-flight guard',
+      );
+      createRoutingDecision(this.deps.db, {
+        roomId,
+        taskId: activeTask?.id ?? null,
+        authorId: 'fireside',
+        kind: 'agent-message',
+        action: 'single-flight-skip',
+        reason: `${agentId} already has active work: ${activeReason}`,
+        responders: [agentId],
+        trace: [
+          {
+            id: 'agent-single-flight',
+            result: 'blocked',
+            reason: activeReason,
+            agents: [agentId],
+          },
+        ],
+      });
       return { message: null, progressed: false };
     }
     const maxHistory = this.deps.maxHistory ?? DEFAULT_PROMPT_HISTORY;
@@ -4241,6 +4269,26 @@ export class Broker extends EventEmitter {
     return busy;
   }
 
+  private activeAgentWorkReason(roomId: string, agentId: AgentId): string {
+    const runningRun = listRunningAgentRunsForRoom(this.deps.db, roomId).find(
+      (run) => run.agentId === agentId,
+    );
+    if (runningRun) return `provider run ${runningRun.id} is still running`;
+
+    const activeJob = listActiveAgentJobsForRoom(this.deps.db, roomId).find(
+      (job) => job.agentId === agentId,
+    );
+    if (activeJob) return `agent job ${activeJob.id} is ${activeJob.status}`;
+
+    for (const [runId, active] of this.activeRunAbortControllers) {
+      if (active.roomId !== roomId || active.controller.signal.aborted) continue;
+      const run = getAgentRun(this.deps.db, runId);
+      if (run?.agentId === agentId) return `provider run ${runId} has an active controller`;
+    }
+
+    return '';
+  }
+
   private freeResponders(roomId: string, responders: AgentId[]): AgentId[] {
     if (responders.length === 0) return [];
     const busy = this.busyAgentsInRoom(roomId);
@@ -4453,6 +4501,32 @@ export class Broker extends EventEmitter {
     options: DiscussionThreadOptions = {},
   ): Promise<void> {
     if (responders.length === 0) return;
+    const yoloStateForLoop = options.mode === 'yolo' ? options.yoloState : undefined;
+    if (yoloStateForLoop?.loopActive) {
+      logger.info(
+        { roomId, yoloId: yoloStateForLoop.id, responders },
+        'suppressed overlapping YOLO discussion loop',
+      );
+      createRoutingDecision(this.deps.db, {
+        roomId,
+        taskId: getActiveTask(this.deps.db, roomId)?.id ?? null,
+        authorId: 'fireside',
+        kind: 'agent-message',
+        action: 'yolo-loop-active',
+        reason: 'YOLO loop is already active; latest room message will be picked up by that loop',
+        responders,
+        trace: [
+          {
+            id: 'yolo-loop-single-flight',
+            result: 'blocked',
+            reason: 'room already has an active YOLO discussion loop',
+            agents: responders,
+          },
+        ],
+      });
+      return;
+    }
+    if (yoloStateForLoop) yoloStateForLoop.loopActive = true;
     const isCancelled = (): boolean => options.yoloState?.cancelled === true;
     const room = getRoom(this.deps.db, roomId);
     const roomAgents = room?.agents ?? responders;
@@ -4549,7 +4623,40 @@ export class Broker extends EventEmitter {
           round,
           laneAgents: Array.from(laneAssignments.keys()),
         });
-        const eligible = roundPlan.eligibleAgents;
+        const busyAgentsForRound = this.busyAgentsInRoom(roomId);
+        const eligible = roundPlan.eligibleAgents.filter(
+          (agentId) => !busyAgentsForRound.has(agentId),
+        );
+        const skippedBusyAgents = roundPlan.eligibleAgents.filter((agentId) =>
+          busyAgentsForRound.has(agentId),
+        );
+        if (skippedBusyAgents.length > 0) {
+          logger.info(
+            {
+              roomId,
+              round,
+              agents: skippedBusyAgents,
+            },
+            'discussion round skipped busy agents',
+          );
+          createRoutingDecision(this.deps.db, {
+            roomId,
+            taskId: getActiveTask(this.deps.db, roomId)?.id ?? null,
+            authorId: 'fireside',
+            kind: 'agent-message',
+            action: 'single-flight-filter',
+            reason: `skipped ${skippedBusyAgents.length} busy agent(s) before provider launch`,
+            responders: skippedBusyAgents,
+            trace: [
+              {
+                id: 'agent-single-flight',
+                result: 'blocked',
+                reason: 'agent already has active work in this room',
+                agents: skippedBusyAgents,
+              },
+            ],
+          });
+        }
         if (eligible.length === 0) return;
         if (isCancelled()) return;
         for (const agentId of eligible) {
@@ -4653,6 +4760,7 @@ export class Broker extends EventEmitter {
         }
       }
     } finally {
+      if (yoloStateForLoop) yoloStateForLoop.loopActive = false;
       if (options.mode !== 'yolo' && !isCancelled()) {
         await this.drainQueuedHumanMessages(roomId);
       }

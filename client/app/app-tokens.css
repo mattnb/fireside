@@ -217,6 +217,42 @@
   font-weight: 700;
 }
 
+.inline-form {
+  display: grid;
+  gap: 8px;
+}
+
+.inline-form input,
+.inline-form textarea,
+.inline-form select {
+  width: 100%;
+  min-width: 0;
+  border: 1px solid var(--border-soft);
+  border-radius: 6px;
+  background: rgba(13, 17, 23, 0.46);
+  color: var(--text-primary);
+  font: inherit;
+  font-size: 12px;
+  padding: 8px;
+  outline: none;
+}
+
+.inline-form textarea {
+  resize: vertical;
+  line-height: 1.35;
+}
+
+.inline-form input:focus,
+.inline-form textarea:focus,
+.inline-form select:focus {
+  border-color: rgba(94, 196, 144, 0.42);
+  box-shadow: 0 0 0 2px rgba(94, 196, 144, 0.09);
+}
+
+.inline-form .control-btn {
+  justify-self: end;
+}
+
 
 .panel-note {
   margin: 0;

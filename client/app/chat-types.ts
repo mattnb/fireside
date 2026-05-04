@@ -27,6 +27,7 @@ export type ChatTimelineItem = {
   html?: string;
   isError?: boolean;
   seenAgents?: AgentId[];
+  humanMentioned?: boolean;
 };
 
 export type ComposerMentionToken = {

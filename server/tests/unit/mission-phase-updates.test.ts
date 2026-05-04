@@ -2,6 +2,23 @@ import { describe, expect, it } from 'vitest';
 import { extractMissionPhaseUpdates } from '../../src/mission-phase-updates.js';
 
 describe('mission phase update extraction', () => {
+  it('extracts inline phase commands without exposing protocol text', () => {
+    const extracted = extractMissionPhaseUpdates(`Gate closed.
+
+/mission-phase action: update, name: Memo-first Live Verification, status: done, note: Evidence recorded.
+/end-mission-phase`);
+
+    expect(extracted.visibleText).toBe('Gate closed.');
+    expect(extracted.visibleText).not.toContain('/mission-phase');
+    expect(extracted.updates).toMatchObject([
+      {
+        action: 'update',
+        title: 'Memo-first Live Verification',
+        status: 'done',
+      },
+    ]);
+  });
+
   it('extracts hidden phase updates and leaves visible chat text', () => {
     const extracted = extractMissionPhaseUpdates(`Planning note.
 

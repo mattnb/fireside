@@ -46,7 +46,7 @@ function parseJsonLine(line: string): Record<string, unknown> | null {
 }
 
 function parseGeminiStreamReply(stdout: string): { text: string; sessionId: string | null } | null {
-  let assistantText: string | null = null;
+  let assistantMessageText: string | null = null;
   let assistantDeltaText = '';
   let sessionId: string | null = null;
   for (const line of stdout.split('\n')) {
@@ -54,14 +54,12 @@ function parseGeminiStreamReply(stdout: string): { text: string; sessionId: stri
     if (!obj) continue;
     const pickedSession = pickString(obj, SESSION_FIELDS);
     if (pickedSession) sessionId = pickedSession;
-    const directResponse = pickString(obj, RESPONSE_FIELDS);
-    if (directResponse) assistantText = directResponse;
     if (obj.type === 'message' && obj.role === 'assistant' && typeof obj.content === 'string') {
       if (obj.delta === true) assistantDeltaText += obj.content;
-      else assistantText = obj.content;
+      else assistantMessageText = obj.content;
     }
   }
-  const text = assistantText ?? (assistantDeltaText ? assistantDeltaText : null);
+  const text = assistantDeltaText || assistantMessageText;
   return text === null ? null : { text, sessionId };
 }
 
@@ -126,6 +124,45 @@ function createEmptyCwd(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'fireside-gemini-cwd-'));
 }
 
+function uniquePaths(paths: Array<string | null | undefined>): string[] {
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const candidate of paths) {
+    if (!candidate) continue;
+    const resolved = path.resolve(candidate);
+    const key = process.platform === 'win32' ? resolved.toLowerCase() : resolved;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    result.push(resolved);
+  }
+  return result;
+}
+
+function configuredUnrestrictedRoots(): string[] {
+  const configured = process.env.FIRESIDE_GEMINI_UNRESTRICTED_ROOTS;
+  if (!configured) return [];
+  return configured
+    .split(/[;,]/)
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+}
+
+function defaultUnrestrictedRoots(): string[] {
+  return uniquePaths([
+    ...configuredUnrestrictedRoots(),
+    process.cwd(),
+    path.resolve(process.cwd(), '..'),
+    os.tmpdir(),
+  ]);
+}
+
+function geminiIncludeDirectories(context?: AgentRunContext): string[] {
+  const permission = context?.permission;
+  if (!permission) return [];
+  if (permission.filesystemScope === 'unrestricted') return defaultUnrestrictedRoots();
+  return uniquePaths([permissionTargetDirectory(permission.target)]);
+}
+
 function geminiApprovalMode(context?: AgentRunContext): string {
   switch (context?.permission?.mode ?? 'plan') {
     case 'edit':
@@ -153,15 +190,17 @@ export const geminiSpec: AgentSpec = {
       '',
       '--output-format',
       'stream-json',
+      '--skip-trust',
       '--approval-mode',
       geminiApprovalMode(context),
     ];
-    const includeDir = context?.permission
-      ? permissionTargetDirectory(context.permission.target)
-      : null;
-    if (includeDir) args.push('--include-directories', includeDir);
+    const includeDirs = geminiIncludeDirectories(context);
+    if (includeDirs.length > 0) args.push('--include-directories', includeDirs.join(','));
     if (sessionId) args.push('--resume', sessionId);
     return args;
+  },
+  buildEnv() {
+    return { GEMINI_CLI_TRUST_WORKSPACE: 'true' };
   },
   buildStdin(prompt) {
     return prompt;

@@ -71,9 +71,12 @@
 
 .mission-form,
 .inline-form {
+  margin-top: 12px;
+}
+
+.mission-form {
   display: grid;
   gap: 8px;
-  margin-top: 12px;
 }
 
 .mission-switcher {
@@ -178,8 +181,7 @@
   text-transform: uppercase;
 }
 
-.mission-form textarea,
-.inline-form textarea {
+.mission-form textarea {
   resize: vertical;
   line-height: 1.35;
 }

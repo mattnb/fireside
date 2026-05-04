@@ -121,6 +121,12 @@
       </form>
       } @else {
       <div class="msg__body" [innerHTML]="item.html"></div>
+      @if (item.humanMentioned) {
+      <div class="msg__human-ping" title="This agent directly mentioned {{ authorName() }}">
+        <span aria-hidden="true"></span>
+        <strong>pinged you</strong>
+      </div>
+      }
       @if (canManageQueuedMessage(message)) {
       <div class="msg__actions" aria-label="Queued message actions">
         <button type="button" (click)="beginEdit(message)">edit</button>

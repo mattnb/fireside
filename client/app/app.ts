@@ -123,6 +123,11 @@ import {
 } from './api.types';
 import { FiresideWs } from './ws.service';
 
+const INLINE_CHAT_TOKEN_RE =
+  /`[^`]+`|@file\("[^"]+"\)|(?:^|[\s([{"'`>])@[a-z][a-z0-9-]*(?=$|[\s,;:!?)\]}"'\u2014\u2013-]|\.(?=[\s)\]}"']|$))/gi;
+const CHAT_MENTION_RE =
+  /(?:^|[\s([{"'`>])@[a-z][a-z0-9-]*(?=$|[\s,;:!?)\]}"'\u2014\u2013-]|\.(?=[\s)\]}"']|$))/gi;
+
 type TabId = 'chat' | 'mission' | 'briefings' | 'archives';
 type MissionViewId =
   | 'overview'
@@ -502,6 +507,7 @@ export class App implements OnDestroy {
           grouped: false,
           html: this.renderMessageHtml(message.text),
           isError: message.authorKind === 'system' && /failed|timed out|error/i.test(message.text),
+          humanMentioned: this.messageMentionsHuman(message),
           ...(message.authorKind === 'system'
             ? {}
             : { seenAgents: this.display.messageSeenAgents(message) }),
@@ -2543,27 +2549,55 @@ export class App implements OnDestroy {
   }
 
   private renderInlineMessageHtml(text: string): string {
-    return text
-      .split(/(`[^`]+`|@file\("[^"]+"\)|@[a-z][a-z0-9-]*(?![.\w-]))/gi)
-      .map((part) => {
-        if (!part) return '';
-        if (part.startsWith('`') && part.endsWith('`') && part.length >= 2) {
-          return `<code>${escapeHtml(part.slice(1, -1))}</code>`;
+    let html = '';
+    let lastIndex = 0;
+
+    for (const match of text.matchAll(INLINE_CHAT_TOKEN_RE)) {
+      const token = match[0] ?? '';
+      const index = match.index ?? 0;
+      if (index > lastIndex) {
+        html += this.renderInlineMarkdown(text.slice(lastIndex, index));
+      }
+      html += this.renderInlineTokenHtml(token);
+      lastIndex = index + token.length;
+    }
+
+    if (lastIndex < text.length) {
+      html += this.renderInlineMarkdown(text.slice(lastIndex));
+    }
+    return html;
+  }
+
+  private renderInlineTokenHtml(token: string): string {
+    if (!token) return '';
+    if (token.startsWith('`') && token.endsWith('`') && token.length >= 2) {
+      return `<code>${escapeHtml(token.slice(1, -1))}</code>`;
+    }
+    if (token.startsWith('@file("')) {
+      const filePath = token.slice(7, -2);
+      return `<span class="file-mention" title="${escapeHtml(filePath)}">@file ${escapeHtml(this.basename(filePath))}</span>`;
+    }
+
+    const atIndex = token.indexOf('@');
+    if (atIndex >= 0) {
+      const prefix = token.slice(0, atIndex);
+      const mentionText = token.slice(atIndex);
+      const mention = mentionText.match(/^@([a-z][a-z0-9-]*)$/i);
+      if (mention) {
+        const mentionClass = this.mentionClassForHandle(mention[1]!);
+        if (mentionClass) {
+          return `${this.renderInlineMarkdown(prefix)}<span class="mention mention--${mentionClass}">${escapeHtml(mentionText)}</span>`;
         }
-        if (part.startsWith('@file("')) {
-          const filePath = part.slice(7, -2);
-          return `<span class="file-mention" title="${escapeHtml(filePath)}">@file ${escapeHtml(this.basename(filePath))}</span>`;
-        }
-        const mention = part.match(/^@([a-z][a-z0-9-]*)$/i);
-        if (mention) {
-          const providerId = this.mentionProviderForHandle(mention[1]!);
-          if (providerId) {
-            return `<span class="mention mention--${providerId}">${escapeHtml(part)}</span>`;
-          }
-        }
-        return this.renderInlineMarkdown(part);
-      })
-      .join('');
+      }
+    }
+
+    return this.renderInlineMarkdown(token);
+  }
+
+  private mentionClassForHandle(handle: string): string | null {
+    return (
+      this.mentionProviderForHandle(handle) ?? (this.isHumanMentionHandle(handle) ? 'human' : null)
+    );
   }
 
   private mentionProviderForHandle(handle: string): ProviderId | null {
@@ -2592,6 +2626,39 @@ export class App implements OnDestroy {
       return normalized;
     }
     return null;
+  }
+
+  private isHumanMentionHandle(handle: string): boolean {
+    const normalized = this.display.mentionSlug(handle);
+    return normalized ? this.humanMentionSlugs().has(normalized) : false;
+  }
+
+  private messageMentionsHuman(message: Message): boolean {
+    if (message.authorKind !== 'agent') return false;
+    const humanSlug = this.display.mentionSlug(this.authorName());
+    if (!humanSlug) return false;
+    return this.extractMentionTokens(message.text).includes(humanSlug);
+  }
+
+  private humanMentionSlugs(): Set<string> {
+    const slugs = new Set<string>();
+    for (const name of this.humans()) {
+      const slug = this.display.mentionSlug(name);
+      if (slug) slugs.add(slug);
+    }
+    return slugs;
+  }
+
+  private extractMentionTokens(text: string): string[] {
+    const found = new Set<string>();
+    for (const match of text.matchAll(CHAT_MENTION_RE)) {
+      const token = match[0] ?? '';
+      const atIndex = token.indexOf('@');
+      if (atIndex < 0) continue;
+      const normalized = this.display.mentionSlug(token.slice(atIndex + 1));
+      if (normalized) found.add(normalized);
+    }
+    return [...found];
   }
 
   private renderInlineMarkdown(text: string): string {

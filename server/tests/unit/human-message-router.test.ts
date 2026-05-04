@@ -92,6 +92,22 @@ describe('routeHumanMessage', () => {
     });
   });
 
+  it('routes explicit display-name mentions through trailing punctuation', () => {
+    const decision = route({
+      text: '@jimmy, @sean, @alexander hello. Audit deliverable is from @sean.',
+    });
+
+    expect(decision).toMatchObject({
+      action: 'direct-agent-turn',
+      reason: 'explicit-human-mention',
+      responders: [
+        'codex-project-manager',
+        'claude-technical-lead',
+        'claude-engineering-manager',
+      ],
+    });
+  });
+
   it('starts room YOLO only for unaddressed messages with YOLO participants', () => {
     const decision = route({ text: 'team keep going' });
 

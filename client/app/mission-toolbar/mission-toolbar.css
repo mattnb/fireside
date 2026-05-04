@@ -386,12 +386,12 @@
   color: #def4e3;
 }
 
+/* Inline-form input baseline + focus glow lives in app-tokens.css. The
+ * rules below cover the mission-form and mission-action / control-strip
+ * selects that share the same shape but aren't .inline-form children. */
 .mission-form input,
 .mission-form textarea,
 .mission-form select,
-.inline-form input,
-.inline-form textarea,
-.inline-form select,
 .mission-action-select,
 .mission-action-field select,
 .control-strip select {
@@ -410,9 +410,6 @@
 .mission-form input:focus,
 .mission-form textarea:focus,
 .mission-form select:focus,
-.inline-form input:focus,
-.inline-form textarea:focus,
-.inline-form select:focus,
 .mission-action-select:focus,
 .mission-action-field select:focus,
 .control-strip select:focus {
