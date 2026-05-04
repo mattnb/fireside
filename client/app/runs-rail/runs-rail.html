@@ -1,0 +1,59 @@
+<aside class="runs-rail" aria-label="Runs">
+  <header class="runs-rail__head">
+    <h3 class="section-label runs-rail__title">Runs</h3>
+    <button
+      type="button"
+      class="runs-rail__history"
+      title="Show completed runs"
+      aria-label="Show completed runs"
+      (click)="completedRunsRequested.emit()"
+    >
+      <svg viewBox="0 0 20 20" aria-hidden="true">
+        <path
+          d="M10 3a7 7 0 1 1-6.93 8.07"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.6"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+        />
+        <path
+          d="M3 7V3.4M3 3.4h3.6"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.6"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+        />
+        <path
+          d="M10 7v3.5l2.4 1.7"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.6"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+        />
+      </svg>
+    </button>
+  </header>
+
+  <section class="runs-rail__body">
+    <div class="runs-rail__group">
+      <div class="section-label runs-rail__sub">Agents running</div>
+      @for (run of runningRuns(); track run.id) {
+      <article class="work-card">
+        <button class="work-row" type="button" (click)="runOpened.emit(run.id)">
+          <span class="work-row__top">
+            <strong>{{ display.name(run.agentId) }}</strong>
+            <em>{{ elapsed(run) }}</em>
+          </span>
+          <span>{{ runMeta(run) }}</span>
+          <small>{{ runActionSignal(run) }}</small>
+        </button>
+      </article>
+      } @empty {
+      <p class="empty-copy">no agents are running right now</p>
+      }
+    </div>
+  </section>
+</aside>

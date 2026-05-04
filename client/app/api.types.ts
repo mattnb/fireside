@@ -104,6 +104,9 @@ export interface ProviderHealth {
   quota7dPercent?: number;
   quota7dResetsAt?: number;
   quota7dWindowMinutes?: number;
+  quotaDailyPercent?: number;
+  quotaDailyResetsAt?: number;
+  quotaDailyWindowMinutes?: number;
   quotaStatus?: string;
   contextPercent?: number;
   recentFailureRate?: number;
@@ -549,6 +552,7 @@ export interface AgentQuotaWindowUsage {
 export interface AgentQuotaUsage {
   fiveHour?: AgentQuotaWindowUsage;
   sevenDay?: AgentQuotaWindowUsage;
+  daily?: AgentQuotaWindowUsage;
   planType?: string;
   rateLimitReachedType?: string | null;
   source: string;

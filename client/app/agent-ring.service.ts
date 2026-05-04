@@ -10,11 +10,7 @@ import { Injectable, computed, inject } from '@angular/core';
 import { AgentDisplayService } from './agent-display.service';
 import { formatResetWindow, formatTokenCount as fmtTokenCount } from './formatters';
 import { MissionStore } from './mission-store';
-import {
-  ringFillDash,
-  ringTrackDash,
-  quotaTone as ringQuotaTone,
-} from './quota-ring';
+import { ringFillDash, ringTrackDash, quotaTone as ringQuotaTone } from './quota-ring';
 import type {
   AgentContextUsage,
   AgentId,
@@ -54,8 +50,10 @@ export class AgentRingService {
       };
       const fiveHour = mergeWindow(existing?.fiveHour, next.fiveHour);
       const sevenDay = mergeWindow(existing?.sevenDay, next.sevenDay);
+      const daily = mergeWindow(existing?.daily, next.daily);
       if (fiveHour) merged.fiveHour = fiveHour;
       if (sevenDay) merged.sevenDay = sevenDay;
+      if (daily) merged.daily = daily;
       return merged;
     };
     for (const entry of this.store.stateSnapshot()?.contextUsage?.byAgent ?? []) {
@@ -160,9 +158,7 @@ export class AgentRingService {
         ? `provider reported: ${this.formatTokens(usage.reportedUsedTokens)} tokens`
         : '',
       usage.inputTokens !== undefined ? `input: ${this.formatTokens(usage.inputTokens)}` : '',
-      usage.outputTokens !== undefined
-        ? `output: ${this.formatTokens(usage.outputTokens)}`
-        : '',
+      usage.outputTokens !== undefined ? `output: ${this.formatTokens(usage.outputTokens)}` : '',
       usage.reasoningOutputTokens !== undefined
         ? `reasoning: ${this.formatTokens(usage.reasoningOutputTokens)}`
         : '',
@@ -193,11 +189,23 @@ export class AgentRingService {
   }
 
   fiveHourUsage(agentId: AgentId): AgentQuotaWindowUsage | null {
-    return this.quotaUsage(agentId)?.fiveHour ?? null;
+    const quota = this.quotaUsage(agentId);
+    if (this.display.agentProviderId(agentId) === 'gemini') {
+      return quota?.daily ?? quota?.fiveHour ?? null;
+    }
+    return quota?.fiveHour ?? null;
   }
 
   sevenDayUsage(agentId: AgentId): AgentQuotaWindowUsage | null {
     return this.quotaUsage(agentId)?.sevenDay ?? null;
+  }
+
+  primaryQuotaLabel(agentId: AgentId): string {
+    return this.display.agentProviderId(agentId) === 'gemini' ? '1d' : '5h';
+  }
+
+  secondaryQuotaLabel(_agentId: AgentId): string {
+    return '7d';
   }
 
   // ---- Ring geometry (r=26, C=2π·26=163.36; 116° wedge = 52.64 of arc) ----
@@ -259,14 +267,15 @@ export class AgentRingService {
 
   fiveHourTooltip(agentId: AgentId): string {
     const data = this.fiveHourUsage(agentId);
-    if (!data) return '5h quota usage: not yet tracked';
+    const label = this.primaryQuotaLabel(agentId);
+    if (!data) return `${label} quota usage: not yet tracked`;
     const reset = data.resetsAt
       ? ` (resets in ${formatResetWindow(data.resetsAt - Date.now())})`
       : '';
     const status = data.status ? ` / ${data.status}` : '';
     return data.percent === undefined
-      ? `5h quota${reset}: usage percent unavailable${status}`
-      : `5h quota usage${reset}: ${Math.round(data.percent)}%${status}`;
+      ? `${label} quota${reset}: usage percent unavailable${status}`
+      : `${label} quota usage${reset}: ${Math.round(data.percent)}%${status}`;
   }
 
   sevenDayPercent(agentId: AgentId): number | null {
@@ -288,14 +297,15 @@ export class AgentRingService {
 
   sevenDayTooltip(agentId: AgentId): string {
     const data = this.sevenDayUsage(agentId);
-    if (!data) return '7d quota usage: not yet tracked';
+    const label = this.secondaryQuotaLabel(agentId);
+    if (!data) return `${label} quota usage: not yet tracked`;
     const reset = data.resetsAt
       ? ` (resets in ${formatResetWindow(data.resetsAt - Date.now())})`
       : '';
     const status = data.status ? ` / ${data.status}` : '';
     return data.percent === undefined
-      ? `7d quota${reset}: usage percent unavailable${status}`
-      : `7d quota usage${reset}: ${Math.round(data.percent)}%${status}`;
+      ? `${label} quota${reset}: usage percent unavailable${status}`
+      : `${label} quota usage${reset}: ${Math.round(data.percent)}%${status}`;
   }
 
   // ---- Compact-agent helpers ---------------------------------------------

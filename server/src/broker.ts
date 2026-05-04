@@ -178,6 +178,7 @@ import type {
 import { logger } from './logger.js';
 import { buildRunDiagnostics, type RunDiagnostics } from './run-diagnostics.js';
 import { codexContextUsage, formatContextUsage } from './context-usage.js';
+import { maybeSampleGeminiStatsModelQuota } from './agents/gemini-quota.js';
 import { mentionAliasSlug, resolveRoomAgentReferences } from './routing/agent-references.js';
 import { routeAgentMessage } from './routing/agent-message-router.js';
 import { routeHumanMessage, type HumanRoutingDecision } from './routing/human-message-router.js';
@@ -248,14 +249,8 @@ import {
   type ParsedMissionCreateUpdate,
 } from './mission-create-updates.js';
 import { extractMissionReceipts, type ParsedMissionReceipt } from './mission-receipts.js';
-import {
-  extractAgentRosterUpdates,
-  type ParsedAgentRosterUpdate,
-} from './agent-roster-updates.js';
-import {
-  defaultAgentProfile,
-  providerIdFromAgentId,
-} from './agents/profiles.js';
+import { extractAgentRosterUpdates, type ParsedAgentRosterUpdate } from './agent-roster-updates.js';
+import { defaultAgentProfile, providerIdFromAgentId } from './agents/profiles.js';
 import { getAgentPersona, isProviderId, providerDisplayName } from './agents/personas.js';
 
 export interface BrokerDeps {
@@ -451,7 +446,9 @@ function isBrokerInternalSystemMessage(message: Message): boolean {
   return (
     /^Permission (approved|denied) for /i.test(message.text) ||
     /^\([a-z0-9-]+ started approved /i.test(message.text) ||
-    /^\([a-z0-9-]+ finished the .* follow-up without a visible chat message\.\)$/i.test(message.text) ||
+    /^\([a-z0-9-]+ finished the .* follow-up without a visible chat message\.\)$/i.test(
+      message.text,
+    ) ||
     /^\(fireside workflow contract repair for /i.test(message.text)
   );
 }
@@ -2199,6 +2196,22 @@ export class Broker extends EventEmitter {
       reply.raw.stdout,
       reply.raw.stderr,
     );
+    if (agentProfile.providerId === 'gemini') {
+      void maybeSampleGeminiStatsModelQuota().then((quotaUsage) => {
+        if (!quotaUsage) return;
+        this.recordRunAction({
+          roomId,
+          taskId: activeTask?.id ?? null,
+          runId: run.id,
+          agentId,
+          kind: 'adapter',
+          status: 'completed',
+          label: 'gemini quota sampled',
+          detail: formatContextUsage(quotaUsage),
+          contextUsage: quotaUsage,
+        });
+      });
+    }
     const extractedDrafts = extractDraftArtifacts(rawText);
     const text = extractedDrafts.visibleText;
     if (extractedDrafts.drafts.length > 0) {
@@ -2300,7 +2313,9 @@ export class Broker extends EventEmitter {
       commandKind: 'mission-phase',
       updates: extractedMissionPhases.updates,
       status: missionTask ? 'applied' : 'rejected',
-      summary: missionTask ? 'mission phase command processed' : 'mission phase rejected: no mission',
+      summary: missionTask
+        ? 'mission phase command processed'
+        : 'mission phase rejected: no mission',
     });
     const extractedMissionTasks = extractMissionTaskUpdates(extractedMissionPhases.visibleText);
     const missionTaskResult = this.applyMissionTaskUpdates({
@@ -2413,7 +2428,7 @@ export class Broker extends EventEmitter {
             ? 'mission control progress stored without visible chat text'
             : hiddenMissionRecordCount > 0
               ? 'mission receipt stored without progress'
-            : 'agent declined to add a chat message',
+              : 'agent declined to add a chat message',
       });
       if (emptyRun) this.emit('agentRunUpdated', emptyRun);
       this.recordRunAction({
@@ -2429,7 +2444,7 @@ export class Broker extends EventEmitter {
             ? 'mission control progress stored without visible chat text'
             : hiddenMissionRecordCount > 0
               ? 'mission receipt stored without progress'
-            : 'agent declined to add a chat message',
+              : 'agent declined to add a chat message',
       });
       completeAgentJob(this.deps.db, agentJob.id);
       const repairResult = await this.maybeRunWorkflowContractRepair({
@@ -3459,9 +3474,7 @@ export class Broker extends EventEmitter {
         status: processed.action.status,
         label: processed.action.label,
         detail: processed.action.detail,
-        ...(processed.action.contextUsage
-          ? { contextUsage: processed.action.contextUsage }
-          : {}),
+        ...(processed.action.contextUsage ? { contextUsage: processed.action.contextUsage } : {}),
       });
     };
   }
@@ -3574,9 +3587,7 @@ export class Broker extends EventEmitter {
   private temporaryAgentLimitPerLead(): number {
     return Math.max(
       0,
-      Math.floor(
-        this.deps.temporaryAgentLimitPerLead ?? DEFAULT_TEMPORARY_AGENT_LIMIT_PER_LEAD,
-      ),
+      Math.floor(this.deps.temporaryAgentLimitPerLead ?? DEFAULT_TEMPORARY_AGENT_LIMIT_PER_LEAD),
     );
   }
 
@@ -4169,8 +4180,7 @@ export class Broker extends EventEmitter {
     // bounded discussion thread managed below.
     if (authorKind === 'agent') return message;
 
-    const responders =
-      discussionOptions?.responders ?? this.pickResponders(room, text, authorId);
+    const responders = discussionOptions?.responders ?? this.pickResponders(room, text, authorId);
     await this.runRoomAwareDiscussionThread(roomId, room, responders, message, discussionOptions);
     return message;
   }
@@ -4336,8 +4346,13 @@ export class Broker extends EventEmitter {
         if (!message) return;
         const room = getRoom(this.deps.db, roomId);
         if (!room) return;
-        const explicitResponders = this.pickExplicitResponders(room, message.text, message.authorId);
-        const responders = explicitResponders ?? this.pickResponders(room, message.text, message.authorId);
+        const explicitResponders = this.pickExplicitResponders(
+          room,
+          message.text,
+          message.authorId,
+        );
+        const responders =
+          explicitResponders ?? this.pickResponders(room, message.text, message.authorId);
         if (responders.length === 0) {
           this.markQueuedMessagesDelivered(roomId, [message]);
           continue;
@@ -4361,11 +4376,7 @@ export class Broker extends EventEmitter {
     return room.agents.filter((a) => a !== authorId);
   }
 
-  private pickExplicitResponders(
-    room: Room,
-    text: string,
-    authorId: string,
-  ): AgentId[] | null {
+  private pickExplicitResponders(room: Room, text: string, authorId: string): AgentId[] | null {
     const references = resolveRoomAgentReferences(room, text);
     if (references.agentIds.length === 0) return null;
     return references.agentIds.filter(
@@ -4456,7 +4467,9 @@ export class Broker extends EventEmitter {
       handoffPool: options.handoffPool,
       preferResponderPool: options.responders !== undefined,
       maxRepliesPerAgent: maxReplies,
-      ...(options.maxTotalReplies !== undefined ? { maxTotalReplies: options.maxTotalReplies } : {}),
+      ...(options.maxTotalReplies !== undefined
+        ? { maxTotalReplies: options.maxTotalReplies }
+        : {}),
       ...(options.yoloState?.totalRepliesUsed !== undefined
         ? { totalRepliesUsed: options.yoloState.totalRepliesUsed }
         : {}),
@@ -4474,7 +4487,8 @@ export class Broker extends EventEmitter {
     try {
       for (
         let round = 1;
-        scheduler.candidates.length > 0 && scheduler.totalReplies < currentMaxTotalReplies(scheduler);
+        scheduler.candidates.length > 0 &&
+        scheduler.totalReplies < currentMaxTotalReplies(scheduler);
         round++
       ) {
         if (isCancelled()) return;
@@ -4488,8 +4502,7 @@ export class Broker extends EventEmitter {
                 scheduler.handoffPool.filter(
                   (id) =>
                     !scheduler.quarantinedAgents.has(id) &&
-                    (scheduler.replyCounts.get(id) ?? 0) <
-                      currentMaxRepliesPerAgent(scheduler),
+                    (scheduler.replyCounts.get(id) ?? 0) < currentMaxRepliesPerAgent(scheduler),
                 ),
               )
             : new Map<AgentId, WorkLaneAssignment>();
@@ -4514,8 +4527,7 @@ export class Broker extends EventEmitter {
               !scheduler.handoffPool.includes(agentId) ||
               busyAgents.has(agentId) ||
               scheduler.quarantinedAgents.has(agentId) ||
-              (scheduler.replyCounts.get(agentId) ?? 0) >=
-                currentMaxRepliesPerAgent(scheduler) ||
+              (scheduler.replyCounts.get(agentId) ?? 0) >= currentMaxRepliesPerAgent(scheduler) ||
               !checklistDependenciesSatisfied(freshItem, itemsById) ||
               workLaneConflictReason(freshItem, reservedContracts)
             ) {

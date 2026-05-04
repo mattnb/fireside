@@ -31,22 +31,13 @@
     [projectYoloAgents]="selectedProjectYoloAgents()"
     [roomAgents]="roomAgents()"
     [roomYoloAgents]="roomYoloAgents()"
-    [runningRuns]="runningRuns()"
     [yoloBankVisible]="roomYoloAgents().length > 0 || yoloStatus()?.active === true"
     [yoloActive]="yoloStatus()?.active === true"
     [yoloTone]="yoloTurnTone()"
     [yoloCounterText]="yoloTurnCounterText()"
     [yoloPercentRemaining]="yoloTurnPercentRemaining()"
-    [elapsedLabel]="elapsedLabelFn"
-    [runMeta]="runMetaFn"
-    [runActionSignal]="runActionSignalFn"
-    [runDraftSignal]="runDraftSignalFn"
-    [isRunStale]="isRunStaleFn"
-    [canDismissRun]="canDismissRunFn"
     (addYoloTurnsRequested)="addYoloTurns()"
     (compactRequested)="ringCtxClick($event.agentId, $event.event)"
-    (runOpened)="openRunDetail($event)"
-    (runDismissed)="dismissRun($event.run, $event.event)"
     (manageAgentsRequested)="openEditAgents()"
   ></fs-agents-panel>
 
@@ -128,19 +119,25 @@
       </section>
     </section>
     } @else if (selectedTab() === 'chat') {
-    <fs-chat-pane
-      #chatPane
-      [timeline]="chatTimeline()"
-      [composerPlaceholder]="composerPlaceholder()"
-      [isRoomWorking]="isRoomWorking()"
-      [authorName]="authorName()"
-      [permissionRequestLabel]="permissionRequestLabelFn"
-      [capabilityText]="capabilityTextFn"
-      [targetStatusText]="targetStatusTextFn"
-      (permissionDecided)="onPermissionDecided($event)"
-      (stopRequested)="stopActiveRuns()"
-      (attachRequested)="attachFileToMessage($event)"
-    ></fs-chat-pane>
+    <div class="chat-with-rail">
+      <fs-chat-pane
+        #chatPane
+        [timeline]="chatTimeline()"
+        [composerPlaceholder]="composerPlaceholder()"
+        [isRoomWorking]="isRoomWorking()"
+        [authorName]="authorName()"
+        [permissionRequestLabel]="permissionRequestLabelFn"
+        [capabilityText]="capabilityTextFn"
+        [targetStatusText]="targetStatusTextFn"
+        (permissionDecided)="onPermissionDecided($event)"
+        (stopRequested)="stopActiveRuns()"
+        (attachRequested)="attachFileToMessage($event)"
+      ></fs-chat-pane>
+      <fs-runs-rail
+        (runOpened)="openRunDetail($event)"
+        (completedRunsRequested)="openCompletedRunsModal()"
+      ></fs-runs-rail>
+    </div>
     } @else if (selectedTab() === 'briefings') {
     <fs-briefings-tab />
     } @else if (selectedTab() === 'archives') {
@@ -234,19 +231,6 @@
     </section>
     }
   </main>
-
-  <fs-context-rail
-    [artifacts]="visibleArtifacts()"
-    [totalArtifactCount]="artifacts()?.files?.length || 0"
-    [completedRuns]="completedRuns()"
-    [canRemoveArtifact]="canRemoveArtifactFn"
-    [formatBytes]="formatBytesFn"
-    [formatShortTime]="formatShortTimeFn"
-    [runMeta]="runMetaFn"
-    [runActionSignal]="runActionSignalFn"
-    (artifactRemoved)="removeArtifact($event)"
-    (runOpened)="openRunDetail($event)"
-  ></fs-context-rail>
 </div>
 
 @if (creatingMissionProjectId(); as projectId) {
@@ -362,6 +346,13 @@
   [project]="pending"
   (closed)="cancelDeleteProject()"
   (confirmed)="confirmDeleteProject($event)"
+/>
+}
+
+@if (completedRunsModalOpen()) {
+<fs-completed-runs-modal
+  (closed)="closeCompletedRunsModal()"
+  (runOpened)="closeCompletedRunsModal(); openRunDetail($event)"
 />
 }
 

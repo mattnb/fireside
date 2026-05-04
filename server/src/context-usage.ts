@@ -35,6 +35,7 @@ export interface AgentQuotaWindowUsage {
 export interface AgentQuotaUsage {
   fiveHour?: AgentQuotaWindowUsage;
   sevenDay?: AgentQuotaWindowUsage;
+  daily?: AgentQuotaWindowUsage;
   planType?: string;
   rateLimitReachedType?: string | null;
   representativeClaim?: string;
@@ -102,7 +103,12 @@ function addWindowFields<T extends AgentContextUsage>(usage: T): T {
   return { ...usage, remainingTokens, percentUsed };
 }
 
-function effectiveCodexUsedTokens(inputTokens: number, cachedInputTokens: number | undefined, outputTokens: number, contextWindow: number | undefined): {
+function effectiveCodexUsedTokens(
+  inputTokens: number,
+  cachedInputTokens: number | undefined,
+  outputTokens: number,
+  contextWindow: number | undefined,
+): {
   usedTokens: number;
   reportedUsedTokens?: number;
   estimated?: boolean;
@@ -147,12 +153,16 @@ function effectiveClaudeUsedTokens(input: {
 }
 
 function defaultCodexConfigPath(): string {
-  const home = process.env.CODEX_HOME ? path.resolve(process.env.CODEX_HOME) : path.join(os.homedir(), '.codex');
+  const home = process.env.CODEX_HOME
+    ? path.resolve(process.env.CODEX_HOME)
+    : path.join(os.homedir(), '.codex');
   return path.join(home, 'config.toml');
 }
 
 function defaultCodexHome(): string {
-  return process.env.CODEX_HOME ? path.resolve(process.env.CODEX_HOME) : path.join(os.homedir(), '.codex');
+  return process.env.CODEX_HOME
+    ? path.resolve(process.env.CODEX_HOME)
+    : path.join(os.homedir(), '.codex');
 }
 
 function codexStatePath(codexHome = defaultCodexHome()): string {
@@ -185,18 +195,19 @@ function parseRootTomlValue(raw: string): string | number | undefined {
   return undefined;
 }
 
-function readCodexRolloutPathFromState(threadId: string, codexHome = defaultCodexHome()): string | null {
+function readCodexRolloutPathFromState(
+  threadId: string,
+  codexHome = defaultCodexHome(),
+): string | null {
   const statePath = codexStatePath(codexHome);
   if (!fs.existsSync(statePath)) return null;
   try {
     const db = new Database(statePath, { readonly: true, fileMustExist: true });
     try {
-      const row = db
-        .prepare(`SELECT rollout_path FROM threads WHERE id = ?`)
-        .get(threadId) as { rollout_path?: unknown } | undefined;
-      return typeof row?.rollout_path === 'string' && row.rollout_path
-        ? row.rollout_path
-        : null;
+      const row = db.prepare(`SELECT rollout_path FROM threads WHERE id = ?`).get(threadId) as
+        | { rollout_path?: unknown }
+        | undefined;
+      return typeof row?.rollout_path === 'string' && row.rollout_path ? row.rollout_path : null;
     } finally {
       db.close();
     }
@@ -298,7 +309,11 @@ function parseClaudeQuota(raw: unknown, source: string): AgentQuotaUsage | undef
   const record = asRecord(raw);
   if (!record) return undefined;
   const fiveHour = parseQuotaWindow(record.five_hour ?? record.fiveHour, ['used_percentage'], 300);
-  const sevenDay = parseQuotaWindow(record.seven_day ?? record.sevenDay, ['used_percentage'], 10_080);
+  const sevenDay = parseQuotaWindow(
+    record.seven_day ?? record.sevenDay,
+    ['used_percentage'],
+    10_080,
+  );
   if (!fiveHour && !sevenDay) return undefined;
   return {
     ...(fiveHour ? { fiveHour } : {}),
@@ -392,10 +407,142 @@ function parseClaudeDebugQuotaHeaders(raw: string, source: string): AgentQuotaUs
   };
 }
 
-function parseCodexRolloutTokenLine(
-  line: string,
-  source: string,
-): CodexRolloutTokenUsage | null {
+function stripAnsi(value: string): string {
+  return value
+    .replace(/\x1B\[[0-?]*[ -/]*[@-~]/g, '')
+    .replace(/\x1B\][^\x07]*(?:\x07|\x1B\\)/g, '')
+    .replace(/[\u2500-\u257f]/g, ' ')
+    .replace(/\r/g, '\n');
+}
+
+function parseDurationToMs(raw: string): number | undefined {
+  const normalized = raw.toLowerCase().replace(/,/g, ' ').trim();
+  if (!normalized || /^now\b/.test(normalized)) return 0;
+  const pattern = /(\d+(?:\.\d+)?)\s*(days?|d|hours?|hrs?|h|minutes?|mins?|m|seconds?|secs?|s)/g;
+  let total = 0;
+  let matched = false;
+  for (const match of normalized.matchAll(pattern)) {
+    const amount = Number(match[1]);
+    if (!Number.isFinite(amount)) continue;
+    const unit = match[2] ?? '';
+    matched = true;
+    if (unit.startsWith('d')) total += amount * 86_400_000;
+    else if (unit.startsWith('h')) total += amount * 3_600_000;
+    else if (unit.startsWith('m')) total += amount * 60_000;
+    else if (unit.startsWith('s')) total += amount * 1000;
+  }
+  return matched ? Math.max(0, Math.trunc(total)) : undefined;
+}
+
+function firstMatch(text: string, patterns: RegExp[]): string | undefined {
+  for (const pattern of patterns) {
+    const match = text.match(pattern);
+    const value = match?.[1]?.trim();
+    if (value) return value;
+  }
+  return undefined;
+}
+
+function boundedPercentNumber(value: string | undefined): number | undefined {
+  if (!value) return undefined;
+  const parsed = Number(value.replace(/,/g, ''));
+  if (!Number.isFinite(parsed)) return undefined;
+  return Math.max(0, Math.min(100, parsed));
+}
+
+function resetFromText(text: string, now: number): number | undefined {
+  const duration = firstMatch(text, [
+    /resets?\s+(?:in|after)\s+([0-9.,\sA-Za-z]+?)(?:\b(?:status|quota|model|requests?)\b|$)/i,
+    /reset\s*time\s*[:=]\s*([0-9.,\sA-Za-z]+?)(?:\b(?:status|quota|model|requests?)\b|$)/i,
+  ]);
+  const durationMs = parseDurationToMs(duration ?? '');
+  return durationMs === undefined ? undefined : now + durationMs;
+}
+
+function statusFromGeminiStatsText(text: string): string | undefined {
+  const lowered = text.toLowerCase();
+  if (/\b(over\s+quota|quota\s+exceeded|exhausted|blocked|denied|rejected)\b/.test(lowered)) {
+    return 'limited';
+  }
+  if (/\b(rate\s+limited|capacity|temporarily\s+unavailable)\b/.test(lowered)) {
+    return 'limited';
+  }
+  if (/\b(allowed|available|ok)\b/.test(lowered)) return 'allowed';
+  return undefined;
+}
+
+export function geminiStatsModelQuotaUsage(
+  raw: string,
+  opts: { now?: number; fallbackModel?: string } = {},
+): AgentContextUsage | null {
+  const text = stripAnsi(raw)
+    .replace(/\n{2,}/g, '\n')
+    .trim();
+  if (!text || !/(\/stats|model\s+stats|quota|remaining|requests?|rate\s+limit)/i.test(text)) {
+    return null;
+  }
+  const compact = text.replace(/\s+/g, ' ');
+  const model =
+    firstMatch(compact, [
+      /\bModel(?:\s+ID)?\s*[:=]\s*([A-Za-z0-9_.:-]*gemini[A-Za-z0-9_.:-]*)/i,
+      /\b(gemini-[A-Za-z0-9_.:-]+)/i,
+    ]) ??
+    opts.fallbackModel ??
+    'gemini';
+
+  let percent = boundedPercentNumber(
+    firstMatch(compact, [
+      /\bquota(?:\s+usage|\s+used)?\s*[:=]\s*(\d+(?:\.\d+)?)\s*%/i,
+      /\b(\d+(?:\.\d+)?)\s*%\s*(?:used|usage|of\s+(?:daily\s+)?quota)/i,
+      /\bused\s*[:=]\s*(\d+(?:\.\d+)?)\s*%/i,
+    ]),
+  );
+
+  const usedLimit = compact.match(/\b(\d[\d,]*)\s*(?:\/|of)\s*(\d[\d,]*)\s*(?:requests?|reqs?)\b/i);
+  if (percent === undefined && usedLimit?.[1] && usedLimit[2]) {
+    const used = Number(usedLimit[1].replace(/,/g, ''));
+    const limit = Number(usedLimit[2].replace(/,/g, ''));
+    if (Number.isFinite(used) && Number.isFinite(limit) && limit > 0) {
+      percent = Math.max(0, Math.min(100, (used / limit) * 100));
+    }
+  }
+
+  const remainingLimit = compact.match(
+    /\b(\d[\d,]*)\s*(?:requests?\s*)?remaining\b.{0,80}?\b(?:of|limit|quota)\D{0,20}(\d[\d,]*)\b/i,
+  );
+  if (percent === undefined && remainingLimit?.[1] && remainingLimit[2]) {
+    const remaining = Number(remainingLimit[1].replace(/,/g, ''));
+    const limit = Number(remainingLimit[2].replace(/,/g, ''));
+    if (Number.isFinite(remaining) && Number.isFinite(limit) && limit > 0) {
+      percent = Math.max(0, Math.min(100, ((limit - remaining) / limit) * 100));
+    }
+  }
+
+  const now = opts.now ?? Date.now();
+  const resetsAt = resetFromText(compact, now);
+  const status = statusFromGeminiStatsText(compact);
+  if (percent === undefined && resetsAt === undefined && status === undefined) return null;
+
+  const daily: AgentQuotaWindowUsage = {
+    windowMinutes: 1_440,
+    ...(percent !== undefined ? { percent } : {}),
+    ...(resetsAt !== undefined ? { resetsAt } : {}),
+    ...(status ? { status } : {}),
+  };
+  return {
+    provider: 'gemini',
+    model,
+    usedTokens: 0,
+    quotaOnly: true,
+    quota: {
+      daily,
+      source: 'gemini:stats-model',
+    },
+    source: 'gemini:stats-model',
+  };
+}
+
+function parseCodexRolloutTokenLine(line: string, source: string): CodexRolloutTokenUsage | null {
   if (!line.includes('"token_count"')) return null;
   let parsed: unknown;
   try {
@@ -506,9 +653,7 @@ export function readCodexConfig(configPath = defaultCodexConfigPath()): CodexCon
     ...(contextWindow !== undefined ? { contextWindow } : {}),
     ...(autoCompactAtTokens !== undefined ? { autoCompactAtTokens } : {}),
     source:
-      envModel || envReasoning || envContextWindow || envAutoCompact
-        ? `${source}+env`
-        : source,
+      envModel || envReasoning || envContextWindow || envAutoCompact ? `${source}+env` : source,
   };
 }
 
@@ -746,9 +891,7 @@ export function formatContextUsage(usage: AgentContextUsage): string {
   if (usage.quotaOnly) return quota || `${usage.model}: quota update`;
   const used = `${usage.usedTokens}${usage.estimated ? ' estimated' : ''} used`;
   const window = usage.contextWindow ? `${usage.contextWindow} window` : 'window unknown';
-  const model = usage.reasoningEffort
-    ? `${usage.model}/${usage.reasoningEffort}`
-    : usage.model;
+  const model = usage.reasoningEffort ? `${usage.model}/${usage.reasoningEffort}` : usage.model;
   return `${model}: ${used} / ${window}${quota ? ` / ${quota}` : ''}`;
 }
 
@@ -766,6 +909,13 @@ export function formatQuotaUsage(quota: AgentQuotaUsage): string {
       quota.sevenDay.percent !== undefined
         ? `7d ${Math.round(quota.sevenDay.percent)}%`
         : '7d reset tracked',
+    );
+  }
+  if (quota.daily) {
+    parts.push(
+      quota.daily.percent !== undefined
+        ? `1d ${Math.round(quota.daily.percent)}%`
+        : '1d reset tracked',
     );
   }
   if (quota.planType) parts.push(quota.planType);

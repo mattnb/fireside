@@ -69,6 +69,9 @@ export interface ProviderHealth {
   quota7dPercent?: number;
   quota7dResetsAt?: number;
   quota7dWindowMinutes?: number;
+  quotaDailyPercent?: number;
+  quotaDailyResetsAt?: number;
+  quotaDailyWindowMinutes?: number;
   quotaStatus?: string;
   contextPercent?: number;
   recentFailureRate?: number;
@@ -252,7 +255,12 @@ const PERSONA_CAPABILITY_TAGS: Record<string, ProviderCapabilityTag[]> = {
   'copy-editor': ['writing'],
   'data-integrity-reviewer': ['data-integrity', 'testing', 'reliability', 'sql-data'],
   'engineering-manager': ['coordination', 'planning', 'reasoning', 'mission-receipts'],
-  'interaction-designer': ['interaction-design', 'frontend-design', 'accessibility', 'visual-design'],
+  'interaction-designer': [
+    'interaction-design',
+    'frontend-design',
+    'accessibility',
+    'visual-design',
+  ],
   'machine-learning-engineer': ['reasoning', 'performance', 'testing', 'scientific-research'],
   'performance-engineer': ['performance', 'code', 'testing', 'latency'],
   'principal-software-engineer': [
@@ -293,7 +301,9 @@ const PERSONA_CAPABILITY_TAGS: Record<string, ProviderCapabilityTag[]> = {
   ],
 };
 
-export function defaultCapabilityTagsForPersona(personaId: string | undefined): ProviderCapabilityTag[] {
+export function defaultCapabilityTagsForPersona(
+  personaId: string | undefined,
+): ProviderCapabilityTag[] {
   if (!personaId) return [];
   return PERSONA_CAPABILITY_TAGS[personaId] ?? [];
 }
@@ -304,33 +314,69 @@ export function defaultProviderPolicyForPersona(
   const capabilityTags = defaultCapabilityTagsForPersona(personaId);
   switch (personaId) {
     case 'ux-architect':
-      return { preferredProviders: ['claude', 'codex'], fallbackProviders: ['gemini'], capabilityTags };
+      return {
+        preferredProviders: ['claude', 'codex'],
+        fallbackProviders: ['gemini'],
+        capabilityTags,
+      };
     case 'ux-researcher':
-      return { preferredProviders: ['gemini', 'claude'], fallbackProviders: ['codex'], capabilityTags };
+      return {
+        preferredProviders: ['gemini', 'claude'],
+        fallbackProviders: ['codex'],
+        capabilityTags,
+      };
     case 'interaction-designer':
-      return { preferredProviders: ['gemini', 'claude'], fallbackProviders: ['codex'], capabilityTags };
+      return {
+        preferredProviders: ['gemini', 'claude'],
+        fallbackProviders: ['codex'],
+        capabilityTags,
+      };
     case 'visual-design-systems-designer':
-      return { preferredProviders: ['gemini', 'claude'], fallbackProviders: ['codex'], capabilityTags };
+      return {
+        preferredProviders: ['gemini', 'claude'],
+        fallbackProviders: ['codex'],
+        capabilityTags,
+      };
     case 'ux-accessibility-engineer':
-      return { preferredProviders: ['codex', 'claude'], fallbackProviders: ['gemini'], capabilityTags };
+      return {
+        preferredProviders: ['codex', 'claude'],
+        fallbackProviders: ['gemini'],
+        capabilityTags,
+      };
     case 'principal-software-engineer':
     case 'technical-lead':
     case 'architecture-reviewer':
     case 'reliability-engineer':
-      return { preferredProviders: ['claude', 'codex'], fallbackProviders: ['gemini'], capabilityTags };
+      return {
+        preferredProviders: ['claude', 'codex'],
+        fallbackProviders: ['gemini'],
+        capabilityTags,
+      };
     case 'quality-assurance-engineer':
     case 'testing-reviewer':
     case 'api-design-reviewer':
     case 'concurrency-reviewer':
     case 'data-integrity-reviewer':
-      return { preferredProviders: ['codex', 'claude'], fallbackProviders: ['gemini'], capabilityTags };
+      return {
+        preferredProviders: ['codex', 'claude'],
+        fallbackProviders: ['gemini'],
+        capabilityTags,
+      };
     case 'project-manager':
     case 'product-manager':
     case 'engineering-manager':
     case 'qa-lead':
-      return { preferredProviders: ['claude', 'codex'], fallbackProviders: ['gemini'], capabilityTags };
+      return {
+        preferredProviders: ['claude', 'codex'],
+        fallbackProviders: ['gemini'],
+        capabilityTags,
+      };
     default:
-      return { preferredProviders: ['claude', 'codex', 'gemini'], fallbackProviders: [], capabilityTags };
+      return {
+        preferredProviders: ['claude', 'codex', 'gemini'],
+        fallbackProviders: [],
+        capabilityTags,
+      };
   }
 }
 
@@ -368,7 +414,7 @@ function formatResetHorizon(resetsAt: number | undefined, now: number): string {
 }
 
 interface QuotaPressure {
-  label: '5h' | '7d';
+  label: '5h' | '7d' | '1d';
   percent: number;
   pressure: number;
   resetsAt?: number;
@@ -376,7 +422,7 @@ interface QuotaPressure {
 }
 
 function quotaWindowPressure(input: {
-  label: '5h' | '7d';
+  label: '5h' | '7d' | '1d';
   percent: number | undefined;
   resetsAt: number | undefined;
   windowMinutes: number | undefined;
@@ -412,10 +458,7 @@ function quotaWindowPressure(input: {
   };
 }
 
-function strongestQuotaPressure(
-  health: ProviderHealth,
-  now: number,
-): QuotaPressure | null {
+function strongestQuotaPressure(health: ProviderHealth, now: number): QuotaPressure | null {
   const pressures = [
     quotaWindowPressure({
       label: '5h',
@@ -431,6 +474,14 @@ function strongestQuotaPressure(
       resetsAt: health.quota7dResetsAt,
       windowMinutes: health.quota7dWindowMinutes,
       defaultWindowMs: 7 * 24 * 60 * 60 * 1000,
+      now,
+    }),
+    quotaWindowPressure({
+      label: '1d',
+      percent: health.quotaDailyPercent,
+      resetsAt: health.quotaDailyResetsAt,
+      windowMinutes: health.quotaDailyWindowMinutes,
+      defaultWindowMs: 24 * 60 * 60 * 1000,
       now,
     }),
   ].filter((pressure): pressure is QuotaPressure => pressure !== null);
@@ -492,27 +543,41 @@ function scoreHealth(
   if (health.recentRuns !== undefined) normalizedHealth.recentRuns = health.recentRuns;
   const quota5hPercent = boundedPercent(health.quota5hPercent);
   const quota7dPercent = boundedPercent(health.quota7dPercent);
+  const quotaDailyPercent = boundedPercent(health.quotaDailyPercent);
   const quota5hResetsAtRaw = boundedTimestamp(health.quota5hResetsAt);
   const quota7dResetsAtRaw = boundedTimestamp(health.quota7dResetsAt);
+  const quotaDailyResetsAtRaw = boundedTimestamp(health.quotaDailyResetsAt);
   const quota5hExpired = quota5hResetsAtRaw !== undefined && quota5hResetsAtRaw <= now;
   const quota7dExpired = quota7dResetsAtRaw !== undefined && quota7dResetsAtRaw <= now;
+  const quotaDailyExpired = quotaDailyResetsAtRaw !== undefined && quotaDailyResetsAtRaw <= now;
   const quota5hResetsAt = quota5hExpired ? undefined : quota5hResetsAtRaw;
   const quota7dResetsAt = quota7dExpired ? undefined : quota7dResetsAtRaw;
+  const quotaDailyResetsAt = quotaDailyExpired ? undefined : quotaDailyResetsAtRaw;
   const quota5hWindowMinutes = boundedWindowMinutes(health.quota5hWindowMinutes);
   const quota7dWindowMinutes = boundedWindowMinutes(health.quota7dWindowMinutes);
+  const quotaDailyWindowMinutes = boundedWindowMinutes(health.quotaDailyWindowMinutes);
   const normalizedContextPercent = boundedPercent(health.contextPercent);
   const recentFailureRate = boundedRate(health.recentFailureRate);
-  if (quota5hPercent !== undefined && !quota5hExpired) normalizedHealth.quota5hPercent = quota5hPercent;
-  if (quota7dPercent !== undefined && !quota7dExpired) normalizedHealth.quota7dPercent = quota7dPercent;
+  if (quota5hPercent !== undefined && !quota5hExpired)
+    normalizedHealth.quota5hPercent = quota5hPercent;
+  if (quota7dPercent !== undefined && !quota7dExpired)
+    normalizedHealth.quota7dPercent = quota7dPercent;
+  if (quotaDailyPercent !== undefined && !quotaDailyExpired)
+    normalizedHealth.quotaDailyPercent = quotaDailyPercent;
   if (quota5hResetsAt !== undefined) normalizedHealth.quota5hResetsAt = quota5hResetsAt;
   if (quota7dResetsAt !== undefined) normalizedHealth.quota7dResetsAt = quota7dResetsAt;
+  if (quotaDailyResetsAt !== undefined) normalizedHealth.quotaDailyResetsAt = quotaDailyResetsAt;
   if (quota5hWindowMinutes !== undefined && !quota5hExpired) {
     normalizedHealth.quota5hWindowMinutes = quota5hWindowMinutes;
   }
   if (quota7dWindowMinutes !== undefined && !quota7dExpired) {
     normalizedHealth.quota7dWindowMinutes = quota7dWindowMinutes;
   }
-  if (normalizedContextPercent !== undefined) normalizedHealth.contextPercent = normalizedContextPercent;
+  if (quotaDailyWindowMinutes !== undefined && !quotaDailyExpired) {
+    normalizedHealth.quotaDailyWindowMinutes = quotaDailyWindowMinutes;
+  }
+  if (normalizedContextPercent !== undefined)
+    normalizedHealth.contextPercent = normalizedContextPercent;
   if (recentFailureRate !== undefined) normalizedHealth.recentFailureRate = recentFailureRate;
 
   let score = 0;
@@ -609,7 +674,9 @@ export function scoreProvidersForSlot(input: ProviderScoringInput): ProviderScor
     if (saturation > 0) {
       const penalty = saturation * 10;
       score -= penalty;
-      warnings.push(`team already has ${saturation} ${provider.displayName ?? provider.id} slot(s)`);
+      warnings.push(
+        `team already has ${saturation} ${provider.displayName ?? provider.id} slot(s)`,
+      );
     }
 
     const healthScore = scoreHealth(input.healthByProvider?.[provider.id], reasons, warnings, now);

@@ -532,8 +532,10 @@ function mergeQuota(
     : { ...incoming, ...existing, source: existing.source };
   const fiveHour = mergeQuotaWindow(existing.fiveHour, incoming.fiveHour, preferIncoming);
   const sevenDay = mergeQuotaWindow(existing.sevenDay, incoming.sevenDay, preferIncoming);
+  const daily = mergeQuotaWindow(existing.daily, incoming.daily, preferIncoming);
   if (fiveHour) merged.fiveHour = fiveHour;
   if (sevenDay) merged.sevenDay = sevenDay;
+  if (daily) merged.daily = daily;
   return merged;
 }
 
@@ -560,7 +562,7 @@ function buildSharedProviderQuotas(
     const quota = action.contextUsage?.quota;
     if (!quota) continue;
     const providerId = providerIdForAgent(action.agentId, options.agentProviderById);
-    if (providerId !== 'claude') continue;
+    if (providerId !== 'claude' && providerId !== 'gemini') continue;
     const existing = byProvider.get(providerId);
     if (!existing) {
       byProvider.set(providerId, {

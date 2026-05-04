@@ -1,0 +1,32 @@
+<div class="modal">
+  <div class="modal__scrim" (click)="closed.emit()"></div>
+  <section
+    class="modal__panel modal__panel--wide"
+    role="dialog"
+    aria-modal="true"
+    aria-labelledby="completed-runs-title"
+  >
+    <header class="modal__head">
+      <h2 id="completed-runs-title">completed runs</h2>
+      <p>{{ completedRuns().length }} most recent — click any row to inspect details.</p>
+    </header>
+    <div class="completed-runs">
+      @for (run of completedRuns(); track run.id) {
+      <button class="completed-runs__row" type="button" (click)="runOpened.emit(run.id)">
+        <span class="completed-runs__head">
+          <span [class]="display.avatarClass(run.agentId, 'sm')"></span>
+          <strong>{{ display.name(run.agentId) }}</strong>
+          <em [class]="'completed-runs__status is-' + run.status">{{ run.status }}</em>
+        </span>
+        <p class="completed-runs__meta">{{ runMeta(run) }}</p>
+        <small class="completed-runs__signal">{{ runActionSignal(run) }}</small>
+      </button>
+      } @empty {
+      <p class="empty-copy">no completed runs yet</p>
+      }
+    </div>
+    <footer class="modal__foot">
+      <button type="button" class="control-btn" (click)="closed.emit()">close</button>
+    </footer>
+  </section>
+</div>

@@ -8,6 +8,9 @@ import {
   claudeQuotaUsage,
   codexContextUsage,
   codexContextWindowForModel,
+  formatQuotaUsage,
+  geminiContextUsage,
+  geminiStatsModelQuotaUsage,
   readCodexConfig,
   readLatestCodexRolloutTokenUsage,
 } from '../../src/context-usage.js';
@@ -350,6 +353,74 @@ describe('context usage telemetry', () => {
       reportedUsedTokens: 1_355_216,
       estimated: true,
       contextWindow: 1_000_000,
+    });
+  });
+
+  it('builds Gemini usage from stream-json result stats', () => {
+    const usage = geminiContextUsage({
+      type: 'result',
+      stats: {
+        model: 'gemini-2.5-pro',
+        usage_metadata: {
+          input_token_count: 15,
+          output_token_count: 8,
+          total_token_count: 23,
+          cached_content_token_count: 2,
+        },
+      },
+    });
+
+    expect(usage).toMatchObject({
+      provider: 'gemini',
+      model: 'gemini-2.5-pro',
+      usedTokens: 23,
+      inputTokens: 15,
+      outputTokens: 8,
+      cachedInputTokens: 2,
+      source: 'gemini:stats.usage_metadata',
+    });
+  });
+
+  it('parses Gemini /stats model quota output as a daily quota window', () => {
+    const now = 1_800_000_000_000;
+    const usage = geminiStatsModelQuotaUsage(
+      [
+        'Model: gemini-2.5-pro',
+        'Daily quota usage: 37%',
+        'Requests: 37 / 100 requests',
+        'Resets in 2h15m',
+        'Status: allowed',
+      ].join('\n'),
+      { now },
+    );
+
+    expect(usage).toMatchObject({
+      provider: 'gemini',
+      model: 'gemini-2.5-pro',
+      usedTokens: 0,
+      quotaOnly: true,
+      quota: {
+        daily: {
+          percent: 37,
+          windowMinutes: 1_440,
+          resetsAt: now + 8_100_000,
+          status: 'allowed',
+        },
+        source: 'gemini:stats-model',
+      },
+    });
+    expect(formatQuotaUsage(usage!.quota!)).toBe('quota 1d 37%');
+  });
+
+  it('derives Gemini /stats model quota percentage from remaining request counts', () => {
+    const usage = geminiStatsModelQuotaUsage(
+      'Gemini model stats\nModel ID: gemini-2.5-flash\n75 requests remaining of 100 daily quota',
+      { now: 1_800_000_000_000 },
+    );
+
+    expect(usage?.quota?.daily).toMatchObject({
+      percent: 25,
+      windowMinutes: 1_440,
     });
   });
 });

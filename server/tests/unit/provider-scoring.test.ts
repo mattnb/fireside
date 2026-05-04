@@ -139,12 +139,39 @@ describe('provider scoring', () => {
     });
 
     expect(result.selectedProviderId).toBe('claude');
-    expect(result.candidates.find((candidate) => candidate.providerId === 'claude')?.reasons).toContain(
-      'quota manageable pressure 30 (7d 80%, resets in 8h0m)',
-    );
-    expect(result.candidates.find((candidate) => candidate.providerId === 'codex')?.warnings).toContain(
-      'quota elevated pressure 71 (7d 50%, resets in 5d0h)',
-    );
+    expect(
+      result.candidates.find((candidate) => candidate.providerId === 'claude')?.reasons,
+    ).toContain('quota manageable pressure 30 (7d 80%, resets in 8h0m)');
+    expect(
+      result.candidates.find((candidate) => candidate.providerId === 'codex')?.warnings,
+    ).toContain('quota elevated pressure 71 (7d 50%, resets in 5d0h)');
+  });
+
+  it('uses Gemini daily quota pressure when available', () => {
+    const now = 1_800_000_000_000;
+    const result = scoreProvidersForSlot({
+      now,
+      providers,
+      slot: {
+        personaId: 'ux-researcher',
+        preferredProviders: ['gemini', 'claude'],
+        capabilityTags: ['ux-research', 'broad-ideation'],
+      },
+      healthByProvider: {
+        gemini: {
+          available: true,
+          authenticated: true,
+          quotaDailyPercent: 92,
+          quotaDailyResetsAt: now + 20 * 60 * 60 * 1000,
+          quotaDailyWindowMinutes: 24 * 60,
+        },
+        claude: { available: true, authenticated: true },
+      },
+    });
+
+    expect(
+      result.candidates.find((candidate) => candidate.providerId === 'gemini')?.warnings,
+    ).toContain('quota critical pressure 100 (1d 92%, resets in 20h0m)');
   });
 
   it('ignores expired quota windows instead of treating them as active pressure', () => {
@@ -205,9 +232,9 @@ describe('provider scoring', () => {
     });
 
     expect(result.selectedProviderId).toBe('claude');
-    expect(result.candidates.find((candidate) => candidate.providerId === 'codex')?.warnings).toContain(
-      'recent failure rate 67%',
-    );
+    expect(
+      result.candidates.find((candidate) => candidate.providerId === 'codex')?.warnings,
+    ).toContain('recent failure rate 67%');
   });
 
   it('uses team balance as a tie breaker without making health unknown fatal', () => {
@@ -223,7 +250,9 @@ describe('provider scoring', () => {
     });
 
     expect(result.selectedProviderId).toBe('codex');
-    expect(result.candidates.find((candidate) => candidate.providerId === 'claude')?.warnings).toEqual(
+    expect(
+      result.candidates.find((candidate) => candidate.providerId === 'claude')?.warnings,
+    ).toEqual(
       expect.arrayContaining([
         'team already has 3 Claude slot(s)',
         'health unknown; using static capability profile only',
@@ -268,9 +297,9 @@ describe('provider scoring', () => {
     expect(result.candidates[0]?.reasons).toEqual(
       expect.arrayContaining(['strong web-research', 'strong exact-retrieval']),
     );
-    expect(result.candidates.find((candidate) => candidate.providerId === 'claude')?.reasons).toContain(
-      'some exact-retrieval',
-    );
+    expect(
+      result.candidates.find((candidate) => candidate.providerId === 'claude')?.reasons,
+    ).toContain('some exact-retrieval');
   });
 
   it('routes long autonomous tool loops toward Claude while flagging Gemini weakness', () => {
@@ -325,7 +354,9 @@ describe('provider scoring', () => {
     });
 
     expect(result.selectedProviderId).toBe('codex');
-    expect(result.candidates.find((candidate) => candidate.providerId === 'gemini')?.warnings).toEqual(
+    expect(
+      result.candidates.find((candidate) => candidate.providerId === 'gemini')?.warnings,
+    ).toEqual(
       expect.arrayContaining(['provider explicitly avoided for this slot', 'weak sql-data']),
     );
   });

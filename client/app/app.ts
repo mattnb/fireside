@@ -44,7 +44,8 @@ import {
   type MissionActionKind,
   type MissionActionScope,
 } from './mission-toolbar/mission-toolbar';
-import { ContextRail } from './context-rail/context-rail';
+import { RunsRail } from './runs-rail/runs-rail';
+import { CompletedRunsModal } from './completed-runs-modal/completed-runs-modal';
 import type { DraftRoomAgent } from './room-agent-types';
 import type { ChatTimelineItem } from './chat-types';
 import { type EvidenceEvent, type EvidenceEventKind } from './evidence-timeline';
@@ -61,11 +62,7 @@ import {
   oneLine as fmtOneLine,
   pad2 as fmtPad2,
 } from './formatters';
-import {
-  quotaTone as ringQuotaTone,
-  ringFillDash,
-  ringTrackDash,
-} from './quota-ring';
+import { quotaTone as ringQuotaTone, ringFillDash, ringTrackDash } from './quota-ring';
 import {
   permissionModeLabel as permModeLabel,
   permissionRequestLabel as permRequestLabel,
@@ -100,7 +97,6 @@ import {
   AgentRunDetail,
   AgentQuotaUsage,
   AgentQuotaWindowUsage,
-  Artifact,
   ArtifactListing,
   CapabilityProfile,
   CollaborationItem,
@@ -193,7 +189,8 @@ const FRIENDLY_AGENT_NAMES = [
     Sidebar,
     Topbar,
     MissionToolbar,
-    ContextRail,
+    RunsRail,
+    CompletedRunsModal,
     ArchivesView,
     DeleteProjectModal,
     ToastHost,
@@ -230,7 +227,9 @@ export class App implements OnDestroy {
   private readonly clockTimer = window.setInterval(() => this.now.set(Date.now()), 1000);
 
   readonly agentChoices: AgentId[] = ['claude', 'codex', 'gemini'];
-  get agentCatalog() { return this.store.agentCatalog; }
+  get agentCatalog() {
+    return this.store.agentCatalog;
+  }
   readonly tabs: Array<{ id: TabId; label: string }> = [
     { id: 'chat', label: 'Chat' },
     { id: 'mission', label: 'Mission Control' },
@@ -262,14 +261,19 @@ export class App implements OnDestroy {
   readonly creatingProject = signal(false);
   readonly creatingMissionProjectId = signal<string | null>(null);
   readonly pendingProjectDeletion = signal<Project | null>(null);
+  readonly completedRunsModalOpen = signal(false);
   readonly newRoomAgentRows = signal<DraftRoomAgent[]>(this.defaultDraftRoomAgents());
   readonly newRoomLeadClientId = signal<string>('');
-  readonly newRoomProviderRecommendations = signal<Record<string, ProviderScoreSlotResult | undefined>>({});
+  readonly newRoomProviderRecommendations = signal<
+    Record<string, ProviderScoreSlotResult | undefined>
+  >({});
   readonly deletingRoomId = signal<string | null>(null);
   readonly editingAgents = signal(false);
   readonly editRoomAgentRows = signal<DraftRoomAgent[]>([]);
   readonly editRoomLeadClientId = signal<string>('');
-  readonly editRoomProviderRecommendations = signal<Record<string, ProviderScoreSlotResult | undefined>>({});
+  readonly editRoomProviderRecommendations = signal<
+    Record<string, ProviderScoreSlotResult | undefined>
+  >({});
   readonly newRoomAgentValidationError = computed(() =>
     this.agentDraftValidationError(this.newRoomAgentRows()),
   );
@@ -277,34 +281,86 @@ export class App implements OnDestroy {
     this.agentDraftValidationError(this.editRoomAgentRows()),
   );
   readonly compactAgent = signal<AgentId | null>(null);
-  get compactingAgent() { return this.store.compactingAgent; }
+  get compactingAgent() {
+    return this.store.compactingAgent;
+  }
   readonly compactError = signal('');
-  get projects() { return this.store.projects; }
-  get rooms() { return this.store.rooms; }
-  get stateSnapshot() { return this.store.stateSnapshot; }
-  get selectedProjectId() { return this.store.selectedProjectId; }
-  get selectedRoomId() { return this.store.selectedRoomId; }
-  get messages() { return this.store.messages; }
-  get permissionRequests() { return this.store.permissionRequests; }
-  get tasks() { return this.store.tasks; }
-  get runs() { return this.store.runs; }
-  get runActions() { return this.store.runActions; }
-  get routingDecisions() { return this.store.routingDecisions; }
-  get missionCommandEvents() { return this.store.missionCommandEvents; }
-  get turnOutcomes() { return this.store.turnOutcomes; }
-  get artifacts() { return this.store.artifacts; }
-  get collaboration() { return this.store.collaboration; }
-  get briefings() { return this.store.briefings; }
-  get taskControl() { return this.store.taskControl; }
-  get yoloStatus() { return this.store.yoloStatus; }
-  get missionActionPopoverOpen() { return this.store.missionActionPopoverOpen; }
-  get selectedMissionAction() { return this.store.selectedMissionAction; }
-  get missionActionScope() { return this.store.missionActionScope; }
-  get missionActionAgent() { return this.store.missionActionAgent; }
-  get selectedMissionActionAgents() { return this.store.selectedMissionActionAgents; }
-  get missionActionChecklistItemId() { return this.store.missionActionChecklistItemId; }
+  get projects() {
+    return this.store.projects;
+  }
+  get rooms() {
+    return this.store.rooms;
+  }
+  get stateSnapshot() {
+    return this.store.stateSnapshot;
+  }
+  get selectedProjectId() {
+    return this.store.selectedProjectId;
+  }
+  get selectedRoomId() {
+    return this.store.selectedRoomId;
+  }
+  get messages() {
+    return this.store.messages;
+  }
+  get permissionRequests() {
+    return this.store.permissionRequests;
+  }
+  get tasks() {
+    return this.store.tasks;
+  }
+  get runs() {
+    return this.store.runs;
+  }
+  get runActions() {
+    return this.store.runActions;
+  }
+  get routingDecisions() {
+    return this.store.routingDecisions;
+  }
+  get missionCommandEvents() {
+    return this.store.missionCommandEvents;
+  }
+  get turnOutcomes() {
+    return this.store.turnOutcomes;
+  }
+  get artifacts() {
+    return this.store.artifacts;
+  }
+  get collaboration() {
+    return this.store.collaboration;
+  }
+  get briefings() {
+    return this.store.briefings;
+  }
+  get taskControl() {
+    return this.store.taskControl;
+  }
+  get yoloStatus() {
+    return this.store.yoloStatus;
+  }
+  get missionActionPopoverOpen() {
+    return this.store.missionActionPopoverOpen;
+  }
+  get selectedMissionAction() {
+    return this.store.selectedMissionAction;
+  }
+  get missionActionScope() {
+    return this.store.missionActionScope;
+  }
+  get missionActionAgent() {
+    return this.store.missionActionAgent;
+  }
+  get selectedMissionActionAgents() {
+    return this.store.selectedMissionActionAgents;
+  }
+  get missionActionChecklistItemId() {
+    return this.store.missionActionChecklistItemId;
+  }
   readonly openRunDetailId = signal<string | null>(null);
-  get runDetail() { return this.store.runDetail; }
+  get runDetail() {
+    return this.store.runDetail;
+  }
   readonly runDetailLoading = signal(false);
   readonly runDetailError = signal('');
   readonly taskInspectorItemId = signal<string | null>(null);
@@ -312,7 +368,9 @@ export class App implements OnDestroy {
     localStorage.getItem('fireside.showLowSignalRunEvents') === 'true',
   );
 
-  get selectedRoom() { return this.store.selectedRoom; }
+  get selectedRoom() {
+    return this.store.selectedRoom;
+  }
   readonly selectedProject = computed(
     () => this.projects().find((project) => project.id === this.selectedProjectId()) ?? null,
   );
@@ -352,7 +410,9 @@ export class App implements OnDestroy {
     const roomIds = new Set(this.selectedProjectRooms().map((room) => room.id));
     return snapshot?.rooms.filter((room) => roomIds.has(room.id)) ?? [];
   });
-  get selectedRoomSnapshot() { return this.store.selectedRoomSnapshot; }
+  get selectedRoomSnapshot() {
+    return this.store.selectedRoomSnapshot;
+  }
   readonly projectDashboardSummary = computed(() =>
     this.buildProjectDashboardSummary(this.selectedProjectRoomSnapshots()),
   );
@@ -360,7 +420,9 @@ export class App implements OnDestroy {
     () => this.tasks().find((task) => ACTIVE_TASK_STATUSES.includes(task.status)) ?? null,
   );
   readonly roomAgents = computed(() => this.selectedRoom()?.agents ?? []);
-  get roomYoloAgents() { return this.store.roomYoloAgents; }
+  get roomYoloAgents() {
+    return this.store.roomYoloAgents;
+  }
   readonly agentProviders = computed(() => this.agentCatalog().providers);
   readonly agentPersonas = computed(() => this.agentCatalog().personas);
   readonly latestContextUsageByAgent = computed(() => {
@@ -382,8 +444,10 @@ export class App implements OnDestroy {
       };
       const fiveHour = mergeWindow(existing?.fiveHour, next.fiveHour);
       const sevenDay = mergeWindow(existing?.sevenDay, next.sevenDay);
+      const daily = mergeWindow(existing?.daily, next.daily);
       if (fiveHour) merged.fiveHour = fiveHour;
       if (sevenDay) merged.sevenDay = sevenDay;
+      if (daily) merged.daily = daily;
       return merged;
     };
     for (const entry of this.stateSnapshot()?.contextUsage?.byAgent ?? []) {
@@ -415,7 +479,9 @@ export class App implements OnDestroy {
     names.add(this.authorName());
     return [...names].sort((a, b) => a.localeCompare(b));
   });
-  get runningRuns() { return this.store.runningRuns; }
+  get runningRuns() {
+    return this.store.runningRuns;
+  }
   readonly isRoomWorking = computed(() => this.runningRuns().length > 0);
   readonly visibleArtifacts = computed(() => this.artifacts()?.files.slice(0, 8) ?? []);
   readonly completedRuns = computed(() =>
@@ -423,9 +489,7 @@ export class App implements OnDestroy {
       .filter((run) => run.status !== 'running')
       .slice(0, 8),
   );
-  readonly taskInspectorCard = computed(() =>
-    this.graph.findCard(this.taskInspectorItemId()),
-  );
+  readonly taskInspectorCard = computed(() => this.graph.findCard(this.taskInspectorItemId()));
   readonly chatTimeline = computed(() => {
     const rawItems: ChatTimelineItem[] = [
       ...this.messages()
@@ -699,6 +763,14 @@ export class App implements OnDestroy {
     this.pendingProjectDeletion.set(null);
   }
 
+  openCompletedRunsModal(): void {
+    this.completedRunsModalOpen.set(true);
+  }
+
+  closeCompletedRunsModal(): void {
+    this.completedRunsModalOpen.set(false);
+  }
+
   confirmDeleteProject(project: Project): void {
     this.pendingProjectDeletion.set(null);
     if (project.id === 'general') return;
@@ -723,7 +795,8 @@ export class App implements OnDestroy {
     const targetProjectId = projectId ?? this.selectedProjectId();
     if (!targetProjectId) return;
     this.creatingProject.set(false);
-    const nextProjectId = this.creatingMissionProjectId() === targetProjectId ? null : targetProjectId;
+    const nextProjectId =
+      this.creatingMissionProjectId() === targetProjectId ? null : targetProjectId;
     this.creatingMissionProjectId.set(nextProjectId);
     if (nextProjectId) {
       this.refreshNewRoomProviderRecommendations();
@@ -747,7 +820,12 @@ export class App implements OnDestroy {
   addNewRoomAgent(): void {
     this.newRoomAgentRows.update((rows) => [
       ...rows,
-      this.createDraftAgent('claude', 'generalist', false, this.suggestDraftAgentName('claude', rows)),
+      this.createDraftAgent(
+        'claude',
+        'generalist',
+        false,
+        this.suggestDraftAgentName('claude', rows),
+      ),
     ]);
     this.refreshNewRoomProviderRecommendations();
   }
@@ -828,7 +906,12 @@ export class App implements OnDestroy {
   addEditRoomAgent(): void {
     this.editRoomAgentRows.update((rows) => [
       ...rows,
-      this.createDraftAgent('claude', 'generalist', false, this.suggestDraftAgentName('claude', rows)),
+      this.createDraftAgent(
+        'claude',
+        'generalist',
+        false,
+        this.suggestDraftAgentName('claude', rows),
+      ),
     ]);
     this.refreshEditRoomProviderRecommendations();
   }
@@ -1066,7 +1149,9 @@ export class App implements OnDestroy {
       const persona = this.display.personaForId(row.personaId);
       const displayName = this.uniqueDisplayName(
         this.cleanDisplayName(row.displayName) ||
-          (persona.id === 'generalist' ? provider.displayName : `${provider.displayName} ${persona.name}`),
+          (persona.id === 'generalist'
+            ? provider.displayName
+            : `${provider.displayName} ${persona.name}`),
         seenDisplayNames,
       );
       const base =
@@ -1089,7 +1174,9 @@ export class App implements OnDestroy {
   private draftDefaultDisplayName(providerId: ProviderId, personaId: string): string {
     const provider = this.display.providerForId(providerId);
     const persona = this.display.personaForId(personaId);
-    return persona.id === 'generalist' ? provider.displayName : `${provider.displayName} ${persona.name}`;
+    return persona.id === 'generalist'
+      ? provider.displayName
+      : `${provider.displayName} ${persona.name}`;
   }
 
   private nextDraftDisplayName(
@@ -1152,10 +1239,17 @@ export class App implements OnDestroy {
     return `${base} ${counter}`;
   }
 
-  private draftAgentHandle(row: DraftRoomAgent, rows: DraftRoomAgent[], displayName: string): string {
+  private draftAgentHandle(
+    row: DraftRoomAgent,
+    rows: DraftRoomAgent[],
+    displayName: string,
+  ): string {
     const displaySlug = this.routeHandleSlug(displayName);
-    const sameProviderCount = rows.filter((candidate) => candidate.providerId === row.providerId).length;
-    if (displaySlug && (sameProviderCount <= 1 || displaySlug !== row.providerId)) return displaySlug;
+    const sameProviderCount = rows.filter(
+      (candidate) => candidate.providerId === row.providerId,
+    ).length;
+    if (displaySlug && (sameProviderCount <= 1 || displaySlug !== row.providerId))
+      return displaySlug;
     return this.routeHandleSlug((row.agentId ?? displaySlug) || row.providerId) || row.providerId;
   }
 
@@ -1189,7 +1283,11 @@ export class App implements OnDestroy {
     const participants: Array<{ label: string; displayName: string; handle: string }> = [];
     const humanName = this.cleanDisplayName(this.authorName());
     if (humanName) {
-      participants.push({ label: `human "${humanName}"`, displayName: humanName, handle: humanName });
+      participants.push({
+        label: `human "${humanName}"`,
+        displayName: humanName,
+        handle: humanName,
+      });
     }
     for (const row of rows) {
       const displayName =
@@ -1254,10 +1352,7 @@ export class App implements OnDestroy {
     return candidate;
   }
 
-  private yoloAgentsFromDraftRows(
-    rows: DraftRoomAgent[],
-    profiles: RoomAgentProfile[],
-  ): AgentId[] {
+  private yoloAgentsFromDraftRows(rows: DraftRoomAgent[], profiles: RoomAgentProfile[]): AgentId[] {
     return rows
       .map((row, index) => (row.yolo ? profiles[index]?.id : ''))
       .filter((agentId): agentId is AgentId => Boolean(agentId));
@@ -1388,7 +1483,8 @@ export class App implements OnDestroy {
 
   startCompactAgent(agentId: AgentId): void {
     const roomId = this.selectedRoomId();
-    if (!roomId || !this.display.canCompactAgent(agentId) || this.display.isAgentRunning(agentId)) return;
+    if (!roomId || !this.display.canCompactAgent(agentId) || this.display.isAgentRunning(agentId))
+      return;
     this.compactError.set('');
     this.compactingAgent.set(agentId);
     this.api.agents.compact(roomId, agentId, this.authorName()).subscribe({
@@ -1510,16 +1606,6 @@ export class App implements OnDestroy {
         this.loadArtifacts(roomId);
       });
     });
-  }
-
-  canRemoveArtifact(artifact: Artifact): boolean {
-    return artifact.kind === 'fixture' || artifact.kind === 'draft-artifact';
-  }
-
-  removeArtifact(artifact: Artifact): void {
-    const roomId = this.selectedRoomId();
-    if (!roomId || !this.canRemoveArtifact(artifact)) return;
-    this.api.artifacts.remove(roomId, artifact).subscribe(() => this.loadArtifacts(roomId));
   }
 
   decidePermission(request: PermissionRequest, decision: 'approved' | 'denied'): void {
@@ -1671,7 +1757,9 @@ export class App implements OnDestroy {
     if (!roomId || batch.length === 0) return;
 
     const owners = [
-      ...new Set(batch.map((item) => item.ownerAgentId).filter((owner): owner is string => !!owner)),
+      ...new Set(
+        batch.map((item) => item.ownerAgentId).filter((owner): owner is string => !!owner),
+      ),
     ];
     const address = owners.length ? owners.map((owner) => `@${owner}`).join(' ') : 'Team';
     const batchLines = batch.map((item) => {
@@ -1788,7 +1876,7 @@ export class App implements OnDestroy {
 
   assignChecklistOwner(item: TaskChecklistItem, event: Event): void {
     const ownerAgentId =
-      event.target instanceof HTMLSelectElement ? event.target.value : item.ownerAgentId ?? '';
+      event.target instanceof HTMLSelectElement ? event.target.value : (item.ownerAgentId ?? '');
     if (ownerAgentId === (item.ownerAgentId ?? '')) return;
     this.updateChecklistItemFromUi(item, {
       ownerAgentId,
@@ -2081,9 +2169,6 @@ export class App implements OnDestroy {
   readonly elapsedLabelFn = this.elapsedLabel.bind(this);
   readonly runMetaFn = this.runMeta.bind(this);
   readonly runActionSignalFn = this.runActionSignal.bind(this);
-  readonly runDraftSignalFn = this.runDraftSignal.bind(this);
-  readonly isRunStaleFn = this.isRunStale.bind(this);
-  readonly canDismissRunFn = this.canDismissRun.bind(this);
   readonly permissionModeLabelFn = this.permissionModeLabel.bind(this);
   readonly formatDateTimeFn = this.formatDateTime.bind(this);
   readonly formatShortTimeFn = this.formatShortTime.bind(this);
@@ -2100,10 +2185,12 @@ export class App implements OnDestroy {
   readonly taskScopeContractLabelFn = this.taskScopeContractLabel.bind(this);
   readonly taskExpectedTouchesLabelFn = this.taskExpectedTouchesLabel.bind(this);
   readonly checklistNotesFn = this.checklistNotes.bind(this);
-  readonly canRemoveArtifactFn = this.canRemoveArtifact.bind(this);
   readonly formatBytesFn = this.formatBytes.bind(this);
 
-  onPermissionDecided(payload: { request: PermissionRequest; decision: 'approved' | 'denied' }): void {
+  onPermissionDecided(payload: {
+    request: PermissionRequest;
+    decision: 'approved' | 'denied';
+  }): void {
     this.decidePermission(payload.request, payload.decision);
   }
 
@@ -2426,7 +2513,6 @@ export class App implements OnDestroy {
       .replace(/[^a-z0-9]+/g, '-')
       .replace(/^-+|-+$/g, '');
   }
-
 
   private isHiddenSystemMessage(message: Message): boolean {
     if (message.authorKind !== 'system') return false;

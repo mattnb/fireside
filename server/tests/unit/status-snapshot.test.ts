@@ -494,7 +494,9 @@ describe('status snapshot', () => {
     });
 
     const snapshot = buildStatusSnapshot({ db });
-    const byAgent = new Map(snapshot.rooms[0]!.contextUsage.byAgent.map((entry) => [entry.agentId, entry]));
+    const byAgent = new Map(
+      snapshot.rooms[0]!.contextUsage.byAgent.map((entry) => [entry.agentId, entry]),
+    );
 
     expect(byAgent.get('sean')?.usage).toMatchObject({
       provider: 'claude',
@@ -514,6 +516,81 @@ describe('status snapshot', () => {
       },
     });
     expect(byAgent.has('codex-reviewer')).toBe(false);
+  });
+
+  it('shares Gemini account quota across Gemini-backed room agents', () => {
+    const room = createRoom(db, {
+      name: 'multi-gemini-quota',
+      agents: ['holly', 'biggs', 'sean'],
+      agentProfiles: [
+        {
+          id: 'holly',
+          providerId: 'gemini',
+          displayName: 'Holly',
+          personaId: 'ux-researcher',
+          personaName: 'UX Researcher',
+          personaSummary: 'Broad synthesis and research.',
+        },
+        {
+          id: 'biggs',
+          providerId: 'gemini',
+          displayName: 'Biggs',
+          personaId: 'quality-assurance-engineer',
+          personaName: 'Quality Assurance Engineer',
+          personaSummary: 'Tests behavior.',
+        },
+        {
+          id: 'sean',
+          providerId: 'claude',
+          displayName: 'Sean',
+          personaId: 'technical-lead',
+          personaName: 'Technical Lead',
+          personaSummary: 'Owns technical direction.',
+        },
+      ],
+    });
+    const run = insertRun(db, {
+      roomId: room.id,
+      triggerMessageId: 'msg-holly',
+      agentId: 'holly',
+      status: 'completed',
+      completedAt: Date.now(),
+    });
+    createAgentRunAction(db, {
+      roomId: room.id,
+      taskId: null,
+      runId: run.id,
+      agentId: 'holly',
+      kind: 'adapter',
+      status: 'completed',
+      label: 'gemini quota sampled',
+      contextUsage: {
+        provider: 'gemini',
+        model: 'gemini-2.5-pro',
+        usedTokens: 0,
+        quotaOnly: true,
+        quota: {
+          daily: { percent: 32, windowMinutes: 1440, resetsAt: 1_800_050_000_000 },
+          source: 'gemini:stats-model',
+        },
+        source: 'gemini:stats-model',
+      },
+    });
+
+    const snapshot = buildStatusSnapshot({ db });
+    const byAgent = new Map(
+      snapshot.rooms[0]!.contextUsage.byAgent.map((entry) => [entry.agentId, entry]),
+    );
+
+    expect(byAgent.get('holly')?.usage.quota?.daily).toMatchObject({ percent: 32 });
+    expect(byAgent.get('biggs')?.usage).toMatchObject({
+      provider: 'gemini',
+      quotaOnly: true,
+      quota: {
+        daily: { percent: 32 },
+      },
+    });
+    expect(byAgent.has('sean')).toBe(false);
   });
 
   it('projects per-agent workflow state from runs, permissions, and checklist ownership', () => {

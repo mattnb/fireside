@@ -17,7 +17,7 @@ fs-root {
   position: relative;
   z-index: 2;
   display: grid;
-  grid-template-columns: 252px 390px minmax(0, 1fr) minmax(300px, 360px);
+  grid-template-columns: 252px 390px minmax(0, 1fr);
   width: 100%;
   height: 100dvh;
   min-height: 0;
@@ -723,6 +723,30 @@ fs-root {
   min-height: 0;
   /* overflow: hidden; */
   /* background: rgba(23, 29, 38, 0.42); */
+}
+
+/* Chat tab splits the workspace content row into chat + runs-rail. The
+ * chat-pane is capped at 124ch (see app-chat.css), so flex lets the rail
+ * sit directly adjacent to the chat with a fixed 32px gap rather than
+ * floating against the workspace's right edge. Other tabs (mission control,
+ * briefings, archives, project dashboard) render directly into the content
+ * row and use the full width. */
+.chat-with-rail {
+  display: flex;
+  align-items: stretch;
+  gap: 32px;
+  min-height: 0;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.chat-with-rail > .chat-pane {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.chat-with-rail > .runs-rail {
+  flex: 0 0 340px;
 }
 
 .topbar {

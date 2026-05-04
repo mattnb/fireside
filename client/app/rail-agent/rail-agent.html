@@ -139,11 +139,15 @@
       <text class="rail-agent__wedge-pct" x="50" y="16">
         {{ ring.ctxPercentRounded(agentId()) }}%
       </text>
-      <text class="rail-agent__wedge-lbl" x="89" y="68">5h</text>
+      <text class="rail-agent__wedge-lbl" x="89" y="68">
+        {{ ring.primaryQuotaLabel(agentId()) }}
+      </text>
       <text class="rail-agent__wedge-pct" x="89" y="78">
         {{ ring.fiveHourPercentRounded(agentId()) }}
       </text>
-      <text class="rail-agent__wedge-lbl" x="11" y="68">7d</text>
+      <text class="rail-agent__wedge-lbl" x="11" y="68">
+        {{ ring.secondaryQuotaLabel(agentId()) }}
+      </text>
       <text class="rail-agent__wedge-pct" x="11" y="78">
         {{ ring.sevenDayPercentRounded(agentId()) }}
       </text>
@@ -154,11 +158,8 @@
       [class]="display.avatarClass(agentId(), 'sm') + ' rail-agent__glyph'"
     ></span>
 
-    @if (
-      display.canCompactAgent(agentId()) &&
-      !display.isAgentRunning(agentId()) &&
-      store.compactingAgent() !== agentId()
-    ) {
+    @if ( display.canCompactAgent(agentId()) && !display.isAgentRunning(agentId()) &&
+    store.compactingAgent() !== agentId() ) {
     <span class="rail-agent__compact-hint" aria-hidden="true">
       <svg viewBox="0 0 640 640">
         <path
@@ -175,8 +176,7 @@
       <span class="rail-agent__name">{{ display.name(agentId()) }}</span>
       @if (isLead()) {
       <span class="rail-agent__lead">lead</span>
-      }
-      @if (display.isTemporary(agentId())) {
+      } @if (display.isTemporary(agentId())) {
       <span class="rail-agent__temp" [title]="display.temporaryTitle(agentId())">temp</span>
       }
     </div>

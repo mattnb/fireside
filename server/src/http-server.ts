@@ -129,7 +129,7 @@ function quotaResetMillis(value: number | undefined): number | undefined {
 
 function mergeQuotaWindow(
   health: ProviderHealth,
-  prefix: 'quota5h' | 'quota7d',
+  prefix: 'quota5h' | 'quota7d' | 'quotaDaily',
   quota: { percent?: number; resetsAt?: number; windowMinutes?: number } | undefined,
   now: number,
 ): void {
@@ -138,14 +138,30 @@ function mergeQuotaWindow(
   const expired = resetsAt !== undefined && resetsAt <= now;
   if (expired) return;
 
-  const percentKey = `${prefix}Percent` as 'quota5hPercent' | 'quota7dPercent';
-  const resetsAtKey = `${prefix}ResetsAt` as 'quota5hResetsAt' | 'quota7dResetsAt';
-  const windowKey = `${prefix}WindowMinutes` as 'quota5hWindowMinutes' | 'quota7dWindowMinutes';
+  const percentKey = `${prefix}Percent` as
+    | 'quota5hPercent'
+    | 'quota7dPercent'
+    | 'quotaDailyPercent';
+  const resetsAtKey = `${prefix}ResetsAt` as
+    | 'quota5hResetsAt'
+    | 'quota7dResetsAt'
+    | 'quotaDailyResetsAt';
+  const windowKey = `${prefix}WindowMinutes` as
+    | 'quota5hWindowMinutes'
+    | 'quota7dWindowMinutes'
+    | 'quotaDailyWindowMinutes';
   if (quota.percent !== undefined && Number.isFinite(quota.percent)) {
-    health[percentKey] = Math.max(health[percentKey] ?? 0, Math.max(0, Math.min(100, quota.percent)));
+    health[percentKey] = Math.max(
+      health[percentKey] ?? 0,
+      Math.max(0, Math.min(100, quota.percent)),
+    );
   }
   if (resetsAt !== undefined) health[resetsAtKey] = resetsAt;
-  if (quota.windowMinutes !== undefined && Number.isFinite(quota.windowMinutes) && quota.windowMinutes > 0) {
+  if (
+    quota.windowMinutes !== undefined &&
+    Number.isFinite(quota.windowMinutes) &&
+    quota.windowMinutes > 0
+  ) {
     health[windowKey] = Math.trunc(quota.windowMinutes);
   }
 }
@@ -206,8 +222,12 @@ function providerHealthFromSnapshot(
     const quota = entry.usage.quota;
     mergeQuotaWindow(health, 'quota5h', quota?.fiveHour, now);
     mergeQuotaWindow(health, 'quota7d', quota?.sevenDay, now);
+    mergeQuotaWindow(health, 'quotaDaily', quota?.daily, now);
     const quotaStatus =
-      quota?.fiveHour?.status ?? quota?.sevenDay?.status ?? quota?.rateLimitReachedType;
+      quota?.fiveHour?.status ??
+      quota?.sevenDay?.status ??
+      quota?.daily?.status ??
+      quota?.rateLimitReachedType;
     if (quotaStatus) health.quotaStatus = quotaStatus;
   }
 
@@ -371,7 +391,9 @@ export function buildHttpServer(deps: HttpDeps) {
       if (!archiveResult) {
         return reply
           .code(req.params.id === 'general' ? 400 : 404)
-          .send({ error: req.params.id === 'general' ? 'cannot archive default project' : 'not found' });
+          .send({
+            error: req.params.id === 'general' ? 'cannot archive default project' : 'not found',
+          });
       }
       updated = archiveResult;
     }
@@ -492,7 +514,14 @@ export function buildHttpServer(deps: HttpDeps) {
 
   app.patch<{
     Params: { id: string };
-    Body: { agents?: AgentId[]; yoloAgents?: AgentId[]; leadAgentId?: AgentId | null; agentProfiles?: RoomAgentProfile[]; projectId?: string; humanName?: string };
+    Body: {
+      agents?: AgentId[];
+      yoloAgents?: AgentId[];
+      leadAgentId?: AgentId | null;
+      agentProfiles?: RoomAgentProfile[];
+      projectId?: string;
+      humanName?: string;
+    };
   }>('/api/rooms/:id', async (req, reply) => {
     const { agents, yoloAgents, leadAgentId, agentProfiles, projectId, humanName } =
       req.body ??
@@ -1156,7 +1185,6 @@ export function buildHttpServer(deps: HttpDeps) {
     },
   );
 
-
   app.post<{ Params: { id: string }; Body: { sourcePath: string } }>(
     '/api/rooms/:id/fixtures',
     async (req, reply) => {
@@ -1218,7 +1246,12 @@ export function buildHttpServer(deps: HttpDeps) {
       return reply.code(400).send({ error: 'authorId and text required' });
     }
     try {
-      return deps.broker.editQueuedHumanMessage(req.params.id, req.params.messageId, authorId, text);
+      return deps.broker.editQueuedHumanMessage(
+        req.params.id,
+        req.params.messageId,
+        authorId,
+        text,
+      );
     } catch (err) {
       if (err instanceof QueuedMessageMutationError) {
         return reply.code(err.statusCode).send({ error: err.message });

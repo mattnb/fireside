@@ -4,6 +4,33 @@
 
 No queued implementation items.
 
+## Completed 2026-05-04
+
+### Add best-effort Gemini quota sampling
+
+Problem:
+- Gemini `stream-json` result stats surfaced token usage, but not a quota window, leaving the agent
+  rail visually inconsistent with Claude and Codex.
+- The official Gemini CLI `/stats model` surface is interactive-only, so headless `-p` calls do not
+  execute it as a CLI command.
+
+Remediation:
+- Added a throttled Gemini quota sampler that keeps existing `stream-json` token telemetry intact
+  and, at most once every 30 minutes, best-effort opens an interactive Gemini CLI session through an
+  optional PTY to request `/stats model`.
+- Parsed `/stats model` output into a provider-neutral `daily` quota window and records a
+  quota-only run action when usable data is available.
+- Gemini-backed agents now share the latest Gemini account quota across the room, the provider
+  scorer can account for daily quota pressure, and the agent rail labels Gemini's primary quota
+  wedge as `1d` instead of pretending it is a 5-hour window.
+- The sampler is fail-soft: missing PTY support, unavailable stats output, or parse failures leave
+  normal Gemini turns unaffected.
+
+Verification:
+- Full Vitest suite passes: 64 files / 447 tests.
+- Typecheck, server build, client build, and diff whitespace checks pass. The Angular client build
+  still reports the existing initial bundle budget warning.
+
 ## Completed 2026-05-03
 
 ### Add explicit room team lead routing
