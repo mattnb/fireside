@@ -13,10 +13,13 @@ hosted Fireside service.
 
 Fireside is portable source code, but it is not yet a packaged desktop app.
 
-The strongest path today is Windows with Node 20+ and the `claude`, `codex`, and
-`gemini` CLIs available on `PATH`. The core server and Angular client are
-standard Node/TypeScript, but a few conveniences are Windows-first, especially
-the native file/folder picker and subprocess behavior around local CLIs.
+It runs on Windows, macOS, and Linux with Node 20+ and the `claude`, `codex`,
+and `gemini` CLIs available on `PATH`. The core server and Angular client are
+standard Node/TypeScript. The native file/folder picker shells out to a
+platform dialog: PowerShell `FolderBrowserDialog`/`OpenFileDialog` on Windows,
+`osascript`'s `choose folder`/`choose file` on macOS, and `zenity` (with
+`kdialog` as a fallback) on Linux. Linux users without either dialog tool will
+need to install one to use the picker — typing paths manually still works.
 
 ## Prerequisites
 
@@ -151,8 +154,10 @@ land in chat.
 ## Known Caveats
 
 - The app is local-first and trusts your local CLI installations.
-- Windows is the best-supported platform right now.
-- The native file/folder picker is Windows-specific today.
+- Windows has the most testing miles. macOS and Linux paths are implemented
+  but exercised less day-to-day.
+- The native folder/file picker requires PowerShell on Windows, `osascript`
+  on macOS (built in), and `zenity` or `kdialog` on Linux.
 - Provider CLI output formats can change. Adapter tests cover current known
   behavior, but future CLI releases may require adapter updates.
 - YOLO/full-auto modes can grant powerful local permissions. Use them only in
