@@ -2,6 +2,7 @@
 import type { AgentId, ProviderId, RoomAgentProfile } from './agents/types.js';
 import { getAgentPersona } from './agents/personas.js';
 import { roomAgentHandleForProfile } from './agents/profiles.js';
+import { parseMentionTokens } from './mentions.js';
 import type { PermissionGrant } from './permissions.js';
 import type { AuthorKind } from './repos/messages.js';
 import type { TaskPromptContext } from './task-summary.js';
@@ -108,6 +109,9 @@ export interface BuildTurnPromptStats {
 const DEFAULT_MAX_HISTORY = 80;
 const DEFAULT_MAX_PROMPT_CHARS = 16_000;
 const MIN_LATEST_MESSAGE_CHARS = 1_000;
+const LATEST_MESSAGE_OVERRUN_CHARS = 8_000;
+const MENTION_LINE_SUMMARY_HEADER =
+  '[Important @mention lines preserved from omitted latest message:]';
 export type PromptDetail = 'full' | 'compact' | 'minimal';
 
 function formatLine(
@@ -194,6 +198,76 @@ function truncateMiddle(text: string, maxChars: number): string {
   const head = Math.ceil(available * 0.65);
   const tail = available - head;
   return `${text.slice(0, head)}${marker}${tail > 0 ? text.slice(-tail) : ''}`;
+}
+
+function uniqueMentionLines(text: string): string[] {
+  const lines: string[] = [];
+  const seen = new Set<string>();
+  for (const line of text.split(/\r?\n/)) {
+    const cleaned = line.trim();
+    if (!cleaned || parseMentionTokens(cleaned).length === 0) continue;
+    const key = cleaned.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    lines.push(cleaned);
+  }
+  return lines;
+}
+
+function buildMentionLineSummary(text: string, maxChars: number): string {
+  const mentionLines = uniqueMentionLines(text);
+  if (mentionLines.length === 0 || maxChars <= MENTION_LINE_SUMMARY_HEADER.length + 16) {
+    return '';
+  }
+
+  const output = [MENTION_LINE_SUMMARY_HEADER];
+  let omitted = 0;
+
+  for (const line of mentionLines) {
+    const currentLength = output.join('\n').length;
+    const remaining = maxChars - currentLength - 1;
+    if (remaining <= 16) {
+      omitted += 1;
+      continue;
+    }
+    const next = line.length <= remaining ? line : truncateMiddle(line, remaining);
+    if (output.join('\n').length + 1 + next.length <= maxChars) {
+      output.push(next);
+    } else {
+      omitted += 1;
+    }
+  }
+
+  if (output.length === 1) return '';
+
+  if (omitted > 0) {
+    const omittedLine = `[... ${omitted} additional @mention line(s) omitted ...]`;
+    if (output.join('\n').length + 1 + omittedLine.length <= maxChars) {
+      output.push(omittedLine);
+    }
+  }
+
+  return output.join('\n');
+}
+
+function truncateLatestMessageForPrompt(text: string, maxChars: number): string {
+  if (text.length <= maxChars) return text;
+  const mentionBudget = Math.min(
+    Math.max(Math.floor(maxChars * 0.45), 400),
+    Math.max(0, maxChars - 200),
+  );
+  const mentionSummary = buildMentionLineSummary(text, mentionBudget);
+  if (!mentionSummary) return truncateMiddle(text, maxChars);
+
+  const excerptBudget = maxChars - mentionSummary.length - 2;
+  if (excerptBudget < 120) return mentionSummary;
+
+  const excerpt = truncateMiddle(text, excerptBudget);
+  return `${excerpt}\n\n${mentionSummary}`;
+}
+
+function latestMessageOverrunLimit(maxPromptChars: number): number {
+  return maxPromptChars + LATEST_MESSAGE_OVERRUN_CHARS;
 }
 
 function compact(text: string, maxChars: number): string {
@@ -682,49 +756,59 @@ export function buildTurnPromptResult(opts: BuildTurnOptions): {
     prompt = renderPrompt(opts, recent, newMessage, budgetNoticeLines, detail);
   }
 
-  for (
-    let attempt = 0;
-    prompt.length > maxPromptChars &&
-    newMessage.text.length > MIN_LATEST_MESSAGE_CHARS &&
-    attempt < 5;
-    attempt++
-  ) {
-    const excess = prompt.length - maxPromptChars;
-    const nextLimit = Math.max(MIN_LATEST_MESSAGE_CHARS, newMessage.text.length - excess - 256);
-    if (nextLimit >= newMessage.text.length) break;
-    newMessage = { ...newMessage, text: truncateMiddle(newMessage.text, nextLimit) };
-    latestMessageTruncated = true;
+  if (prompt.length > maxPromptChars && prompt.length <= latestMessageOverrunLimit(maxPromptChars)) {
     budgetNoticeLines = [
       ``,
-      `Prompt budget: ${droppedByBudget} older recent message(s) were omitted and the latest oversized message was excerpted to keep this turn under approximately ${maxPromptChars} characters.`,
+      `Prompt budget: optional instructions were minimized and ${droppedByBudget} older recent message(s) were omitted; the latest message was preserved in full, allowing a bounded overrun of the ${maxPromptChars} character target.`,
     ];
     prompt = renderPrompt(opts, recent, newMessage, budgetNoticeLines, detail);
   }
 
-  for (
-    let attempt = 0;
-    prompt.length > maxPromptChars &&
-    (latestMessageTruncated || newMessage.text.length > MIN_LATEST_MESSAGE_CHARS) &&
-    newMessage.text.length > 200 &&
-    attempt < 5;
-    attempt++
-  ) {
-    const excess = prompt.length - maxPromptChars;
-    const nextLimit = Math.max(200, newMessage.text.length - excess - 128);
-    if (nextLimit >= newMessage.text.length) break;
-    newMessage = { ...newMessage, text: truncateMiddle(newMessage.text, nextLimit) };
-    latestMessageTruncated = true;
-    budgetNoticeLines = [
-      ``,
-      `Prompt budget: ${droppedByBudget} older recent message(s) were omitted and the latest oversized message was excerpted to keep this turn under approximately ${maxPromptChars} characters.`,
-    ];
-    prompt = renderPrompt(opts, recent, newMessage, budgetNoticeLines, detail);
+  if (prompt.length > latestMessageOverrunLimit(maxPromptChars)) {
+    for (
+      let attempt = 0;
+      prompt.length > maxPromptChars &&
+      newMessage.text.length > MIN_LATEST_MESSAGE_CHARS &&
+      attempt < 12;
+      attempt++
+    ) {
+      const excess = prompt.length - maxPromptChars;
+      const nextLimit = Math.max(MIN_LATEST_MESSAGE_CHARS, newMessage.text.length - excess - 256);
+      if (nextLimit >= newMessage.text.length) break;
+      newMessage = { ...newMessage, text: truncateLatestMessageForPrompt(newMessage.text, nextLimit) };
+      latestMessageTruncated = true;
+      budgetNoticeLines = [
+        ``,
+        `Prompt budget: ${droppedByBudget} older recent message(s) were omitted and the latest extremely large message was excerpted to keep this turn near ${maxPromptChars} characters. If a full latest-message artifact path is present, read it before acting.`,
+      ];
+      prompt = renderPrompt(opts, recent, newMessage, budgetNoticeLines, detail);
+    }
+
+    for (
+      let attempt = 0;
+      prompt.length > maxPromptChars &&
+      (latestMessageTruncated || newMessage.text.length > MIN_LATEST_MESSAGE_CHARS) &&
+      newMessage.text.length > 200 &&
+      attempt < 12;
+      attempt++
+    ) {
+      const excess = prompt.length - maxPromptChars;
+      const nextLimit = Math.max(200, newMessage.text.length - excess - 128);
+      if (nextLimit >= newMessage.text.length) break;
+      newMessage = { ...newMessage, text: truncateLatestMessageForPrompt(newMessage.text, nextLimit) };
+      latestMessageTruncated = true;
+      budgetNoticeLines = [
+        ``,
+        `Prompt budget: ${droppedByBudget} older recent message(s) were omitted and the latest extremely large message was excerpted to keep this turn near ${maxPromptChars} characters. If a full latest-message artifact path is present, read it before acting.`,
+      ];
+      prompt = renderPrompt(opts, recent, newMessage, budgetNoticeLines, detail);
+    }
   }
 
   if (prompt.length > maxPromptChars && !latestMessageTruncated) {
     budgetNoticeLines = [
       ``,
-      `Prompt budget: optional instructions were minimized, but the latest short message was preserved in full even though the prompt remains over the ${maxPromptChars} character target.`,
+      `Prompt budget: optional instructions were minimized, but the latest message was preserved in full even though the prompt remains over the ${maxPromptChars} character target.`,
     ];
     prompt = renderPrompt(opts, recent, newMessage, budgetNoticeLines, detail);
   }

@@ -181,11 +181,14 @@
       }
     </div>
     <span class="rail-agent__persona">{{ display.personaName(agentId()) }}</span>
+    @if (display.configuredModelLabel(agentId())) {
+    <span class="rail-agent__model">{{ display.configuredModelLabel(agentId()) }}</span>
+    }
     <span class="rail-agent__status">{{ display.railStatus(agentId()) }}</span>
-    @if (ring.contextUsage(agentId()); as usage) {
+    @if (!display.configuredModelLabel(agentId())) { @if (ring.contextUsage(agentId()); as usage) {
     <span class="rail-agent__usage" [title]="ring.contextTitle(usage)">
       {{ ring.contextModelLabel(usage) }}
     </span>
-    }
+    } }
   </div>
 </div>

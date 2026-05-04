@@ -70,4 +70,5 @@ export class RunDetailModal {
 
   readonly closed = output<void>();
   readonly lowSignalToggled = output<Event>();
+  readonly stopRequested = output<string>();
 }

@@ -9,5 +9,9 @@ export type DraftRoomAgent = {
   providerId: ProviderId;
   displayName: string;
   personaId: string;
+  modelId?: string;
+  reasoningEffort?: string;
+  autoCompactEnabled: boolean;
+  autoCompactPercent: number;
   yolo: boolean;
 };

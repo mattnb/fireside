@@ -17,6 +17,7 @@ export type AgentRunLifecycleState =
   | 'failed'
   | 'timed_out'
   | 'canceled_by_reconciliation'
+  | 'canceled_by_user'
   | 'retry_queued'
   | 'released';
 

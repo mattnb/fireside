@@ -61,7 +61,7 @@ describe('run lifecycle state machine', () => {
     expect(canTransitionRunLifecycle('start', 'streaming_turn')).toBe(false);
     expect(validateRunLifecycleTransition('start', 'streaming_turn')).toMatchObject({
       ok: false,
-      allowed: ['preparing_workspace', 'canceled_by_reconciliation'],
+      allowed: ['preparing_workspace', 'canceled_by_reconciliation', 'canceled_by_user'],
     });
     expect(() => transitionRunLifecycle(lifecycle, 'streaming_turn')).toThrow(
       RunLifecycleTransitionError,

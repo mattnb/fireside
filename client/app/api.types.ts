@@ -20,6 +20,7 @@ export type RunLifecycleState =
   | 'failed'
   | 'timed_out'
   | 'canceled_by_reconciliation'
+  | 'canceled_by_user'
   | 'retry_queued'
   | 'released';
 export type CapabilityProfile = 'plan' | 'edit' | 'full-auto' | string;
@@ -161,6 +162,10 @@ export interface RoomAgentProfile {
   personaId: string;
   personaName: string;
   personaSummary: string;
+  modelId?: string;
+  reasoningEffort?: string;
+  autoCompactEnabled?: boolean;
+  autoCompactPercent?: number;
   temporary?: boolean;
   spawnedBy?: AgentId;
   spawnedByPersonaId?: string;

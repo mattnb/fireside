@@ -41,7 +41,6 @@
     (manageAgentsRequested)="openEditAgents()"
   ></fs-agents-panel>
 
-
   <main class="workspace">
     <fs-topbar
       [channelName]="topbarChannelName()"
@@ -155,9 +154,7 @@
       ></fs-mission-toolbar>
 
       @if (selectedMissionView() === 'overview') {
-      <fs-overview-view
-        (attentionItemOpened)="openAttentionItem($event)"
-      ></fs-overview-view>
+      <fs-overview-view (attentionItemOpened)="openAttentionItem($event)"></fs-overview-view>
 
       } @else if (selectedMissionView() === 'health') {
       <fs-autonomy-health-view
@@ -247,15 +244,17 @@
   (agentNameSet)="setNewRoomAgentName($event.clientId, $event.event)"
   (agentProviderSet)="setNewRoomAgentProvider($event.clientId, $event.event)"
   (agentPersonaSet)="setNewRoomAgentPersona($event.clientId, $event.event)"
+  (agentModelSet)="setNewRoomAgentModel($event.clientId, $event.event)"
+  (agentReasoningSet)="setNewRoomAgentReasoning($event.clientId, $event.event)"
+  (agentAutoCompactToggled)="toggleNewRoomAgentAutoCompact($event.clientId, $event.event)"
+  (agentAutoCompactPercentSet)="setNewRoomAgentAutoCompactPercent($event.clientId, $event.event)"
   (agentYoloToggled)="toggleNewRoomAgentYolo($event.clientId, $event.event)"
   (agentLeadSet)="setNewRoomLeadAgent($event)"
   (agentProviderRecommended)="applyNewRoomProviderRecommendation($event.clientId, $event.providerId)"
   (agentRemoved)="removeNewRoomAgent($event)"
   (agentAdded)="addNewRoomAgent()"
 ></fs-create-room-modal>
-}
-
-@if (editingAgents()) {
+} @if (editingAgents()) {
 <fs-edit-agents-modal
   [roomName]="selectedRoom()?.name ?? ''"
   [agentRows]="editRoomAgentRows()"
@@ -269,6 +268,10 @@
   (agentNameSet)="setEditRoomAgentName($event.clientId, $event.event)"
   (agentProviderSet)="setEditRoomAgentProvider($event.clientId, $event.event)"
   (agentPersonaSet)="setEditRoomAgentPersona($event.clientId, $event.event)"
+  (agentModelSet)="setEditRoomAgentModel($event.clientId, $event.event)"
+  (agentReasoningSet)="setEditRoomAgentReasoning($event.clientId, $event.event)"
+  (agentAutoCompactToggled)="toggleEditRoomAgentAutoCompact($event.clientId, $event.event)"
+  (agentAutoCompactPercentSet)="setEditRoomAgentAutoCompactPercent($event.clientId, $event.event)"
   (agentYoloToggled)="toggleEditRoomAgentYolo($event.clientId, $event.event)"
   (agentLeadSet)="setEditRoomLeadAgent($event)"
   (agentProviderRecommended)="applyEditRoomProviderRecommendation($event.clientId, $event.providerId)"
@@ -338,18 +341,15 @@
   [runActionDetail]="runActionDetailFn"
   (closed)="closeRunDetail()"
   (lowSignalToggled)="setShowLowSignalRunEvents($event)"
+  (stopRequested)="onRunDetailStopRequested($event)"
 ></fs-run-detail-modal>
-}
-
-@if (pendingProjectDeletion(); as pending) {
+} @if (pendingProjectDeletion(); as pending) {
 <fs-delete-project-modal
   [project]="pending"
   (closed)="cancelDeleteProject()"
   (confirmed)="confirmDeleteProject($event)"
 />
-}
-
-@if (completedRunsModalOpen()) {
+} @if (completedRunsModalOpen()) {
 <fs-completed-runs-modal
   (closed)="closeCompletedRunsModal()"
   (runOpened)="closeCompletedRunsModal(); openRunDetail($event)"

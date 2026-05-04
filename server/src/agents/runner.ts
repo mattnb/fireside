@@ -2,6 +2,7 @@
 import { runSubprocess } from '../windows/spawn.js';
 import type {
   AgentReply,
+  AgentModelSettings,
   AgentRunContext,
   AgentSpec,
   AgentStreamEvent,
@@ -16,6 +17,7 @@ export interface RunAgentOptions {
   cwd?: string;
   permission?: AgentRunContext['permission'];
   turnKind?: AgentRunContext['turnKind'];
+  model?: AgentModelSettings;
   cancelSignal?: AbortSignal;
   onStreamEvent?: (event: AgentStreamEvent) => void;
 }
@@ -57,10 +59,11 @@ function emitStreamEvents(
 export async function runAgentTurn(opts: RunAgentOptions): Promise<AgentReply> {
   const { spec, prompt, sessionId } = opts;
   const context: AgentRunContext | undefined =
-    opts.permission || opts.turnKind
+    opts.permission || opts.turnKind || opts.model
       ? {
           ...(opts.permission ? { permission: opts.permission } : {}),
           ...(opts.turnKind ? { turnKind: opts.turnKind } : {}),
+          ...(opts.model ? { model: opts.model } : {}),
         }
       : undefined;
   const args = context

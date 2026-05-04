@@ -46,6 +46,7 @@ export async function start(config: Config = loadConfig()): Promise<FiresideServ
       onStreamEvent,
       timeoutMs,
       turnKind,
+      modelSettings,
     ) =>
       runAgentTurn({
         spec,
@@ -53,6 +54,7 @@ export async function start(config: Config = loadConfig()): Promise<FiresideServ
         sessionId,
         ...(permission !== undefined ? { permission } : {}),
         ...(turnKind !== undefined ? { turnKind } : {}),
+        ...(modelSettings !== undefined ? { model: modelSettings } : {}),
         ...(cancelSignal !== undefined ? { cancelSignal } : {}),
         ...(onStreamEvent !== undefined ? { onStreamEvent } : {}),
         ...(timeoutMs !== undefined ? { timeoutMs } : {}),
@@ -61,6 +63,9 @@ export async function start(config: Config = loadConfig()): Promise<FiresideServ
     maxPromptChars: config.maxPromptChars,
     largeMessageThresholdChars: config.largeMessageThresholdChars,
     resumeCliSessions: config.resumeCliSessions,
+    autoCompactEnabled: config.autoCompactEnabled,
+    autoCompactPercent: config.autoCompactPercent,
+    autoCompactTokenLimit: config.autoCompactTokenLimit,
     getSpec: (id: AgentId) => {
       try {
         return getAgentSpec(id);

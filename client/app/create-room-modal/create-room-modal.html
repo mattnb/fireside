@@ -27,6 +27,9 @@
         <span>name</span>
         <span>provider</span>
         <span>persona</span>
+        <span>model</span>
+        <span>effort</span>
+        <span>compact</span>
         <span>yolo</span>
         <span>lead</span>
       </div>
@@ -71,6 +74,62 @@
               }
             </select>
           </label>
+          <label class="room-agent-model">
+            <input
+              type="text"
+              autocomplete="off"
+              spellcheck="false"
+              [attr.list]="'agent-model-presets-' + row.clientId"
+              [value]="row.modelId ?? ''"
+              aria-label="Agent model"
+              [placeholder]="display.draftModelPlaceholder(row)"
+              (input)="agentModelSet.emit({ clientId: row.clientId, event: $event })"
+            />
+            <datalist [id]="'agent-model-presets-' + row.clientId">
+              @for (model of display.draftModelPresets(row); track model) { @if (model) {
+              <option [value]="model"></option>
+              } }
+            </datalist>
+          </label>
+          <label
+            class="room-agent-effort"
+            [class.is-disabled]="!display.draftSupportsReasoningEffort(row)"
+          >
+            <select
+              [value]="row.reasoningEffort ?? ''"
+              [disabled]="!display.draftSupportsReasoningEffort(row)"
+              aria-label="Agent reasoning effort"
+              (change)="agentReasoningSet.emit({ clientId: row.clientId, event: $event })"
+            >
+              @for (effort of display.draftReasoningEfforts(row); track effort) {
+              <option [value]="effort" [selected]="effort === (row.reasoningEffort ?? '')">
+                {{ effort || 'default effort' }}
+              </option>
+              }
+            </select>
+          </label>
+          <label
+            class="room-agent-compact"
+            title="Automatically compact this agent's provider context at this percentage"
+          >
+            <input
+              type="checkbox"
+              [checked]="row.autoCompactEnabled"
+              aria-label="Enable automatic context compaction"
+              (change)="agentAutoCompactToggled.emit({ clientId: row.clientId, event: $event })"
+            />
+            <input
+              type="number"
+              min="1"
+              max="100"
+              step="1"
+              [value]="row.autoCompactPercent"
+              [disabled]="!row.autoCompactEnabled"
+              aria-label="Auto compact percent"
+              (input)="agentAutoCompactPercentSet.emit({ clientId: row.clientId, event: $event })"
+            />
+            <span>%</span>
+          </label>
           <label class="room-agent-yolo" title="Participates in YOLO rounds">
             <input
               type="checkbox"
@@ -106,12 +165,12 @@
               <strong>{{ recommendationLabel(recommendation) }}</strong>
               @if (recommendationDetail(recommendation)) {
               <span>{{ recommendationDetail(recommendation) }}</span>
-              }
-              @if (whyNotCurrent(row, recommendation)) {
+              } @if (whyNotCurrent(row, recommendation)) {
               <span class="provider-rec__why">{{ whyNotCurrent(row, recommendation) }}</span>
               }
             </div>
-            @if (recommendation.selectedProviderId && !recommendation.recommendationMatchesCurrent) {
+            @if (recommendation.selectedProviderId && !recommendation.recommendationMatchesCurrent)
+            {
             <button
               type="button"
               class="provider-rec__use"
@@ -131,9 +190,7 @@
     </div>
     <footer class="modal__foot">
       <button class="control-btn" type="button" (click)="agentAdded.emit()">add agent</button>
-      <button class="control-btn" type="button" (click)="closed.emit()">
-        cancel
-      </button>
+      <button class="control-btn" type="button" (click)="closed.emit()">cancel</button>
       <button
         class="control-btn control-btn--primary"
         type="submit"

@@ -20,6 +20,10 @@ export interface RoomAgentProfile {
   personaId: string;
   personaName: string;
   personaSummary: string;
+  modelId?: string;
+  reasoningEffort?: string;
+  autoCompactEnabled?: boolean;
+  autoCompactPercent?: number;
   temporary?: boolean;
   spawnedBy?: AgentId;
   spawnedByPersonaId?: string;
@@ -35,6 +39,12 @@ export type AgentTurnKind = 'chat' | 'permission-operation' | 'work-lane' | 'wor
 export interface AgentRunContext {
   permission?: PermissionGrant;
   turnKind?: AgentTurnKind;
+  model?: AgentModelSettings;
+}
+
+export interface AgentModelSettings {
+  modelId?: string;
+  reasoningEffort?: string;
 }
 
 export type AgentStreamName = 'stdout' | 'stderr';
@@ -59,7 +69,11 @@ export interface AgentSpec {
    *  goes via the CLI's argv (per the CLI's contract). */
   buildStdin?: (prompt: string, sessionId: string | null, context?: AgentRunContext) => string;
   /** Optional per-turn environment overrides merged into the subprocess env. */
-  buildEnv?: (prompt: string, sessionId: string | null, context?: AgentRunContext) => Record<string, string>;
+  buildEnv?: (
+    prompt: string,
+    sessionId: string | null,
+    context?: AgentRunContext,
+  ) => Record<string, string>;
   /** Converts live stdout/stderr lines into provider-neutral progress events. */
   parseStreamLine?: (
     line: string,

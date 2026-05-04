@@ -3,14 +3,15 @@
  * mission/room create, edit-agents, compact-agent.
  */
 
-
-
 .room-agent-choice {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(92px, 0.8fr) minmax(106px, 1fr) 52px 50px 24px;
+  grid-template-columns: minmax(0, 1fr) minmax(92px, 0.65fr) minmax(116px, 0.85fr) minmax(
+      146px,
+      0.9fr
+    ) minmax(92px, 0.6fr) minmax(100px, 0.54fr) 52px 50px 24px;
   grid-template-areas:
-    'name provider persona yolo lead remove'
-    'rec rec rec rec rec rec';
+    'name provider persona model effort compact yolo lead remove'
+    'rec rec rec rec rec rec rec rec rec';
   align-items: center;
   gap: 7px;
   min-width: 0;
@@ -29,7 +30,9 @@
 }
 
 .room-agent-provider,
-.room-agent-persona {
+.room-agent-persona,
+.room-agent-model,
+.room-agent-effort {
   grid-area: provider;
   display: grid;
   grid-template-columns: minmax(0, 1fr);
@@ -41,6 +44,32 @@
 .room-agent-persona {
   grid-area: persona;
   grid-template-columns: minmax(0, 1fr);
+}
+
+.room-agent-model {
+  grid-area: model;
+}
+
+.room-agent-effort {
+  grid-area: effort;
+}
+
+.room-agent-compact {
+  grid-area: compact;
+  display: grid;
+  grid-template-columns: 14px minmax(42px, 1fr) auto;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.room-agent-effort.is-disabled {
+  opacity: 0.46;
 }
 
 .room-agent-choice .avatar--sm {
@@ -253,11 +282,11 @@
 }
 
 .modal__panel--agents {
-  width: min(720px, calc(100vw - 34px));
+  width: min(1120px, calc(100vw - 34px));
 }
 
 .modal__panel--mission-create {
-  width: min(820px, calc(100vw - 34px));
+  width: min(1220px, calc(100vw - 34px));
 }
 
 .modal__head,

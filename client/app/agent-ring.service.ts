@@ -318,6 +318,9 @@ export class AgentRingService {
     if (providerId === 'codex') {
       return 'Manual compaction asks Codex CLI to compact its stored CLI session context.';
     }
+    if (providerId === 'gemini') {
+      return 'Manual compaction asks Gemini CLI to compress its stored CLI session context.';
+    }
     return 'Manual compaction is not configured for this provider yet.';
   }
 

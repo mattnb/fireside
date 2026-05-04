@@ -1054,6 +1054,19 @@ export function buildHttpServer(deps: HttpDeps) {
     },
   );
 
+  app.post<{ Params: { id: string; runId: string }; Body: { authorId?: string } }>(
+    '/api/rooms/:id/runs/:runId/stop',
+    async (req, reply) => {
+      const result = deps.broker.stopAgentRun(
+        req.params.id,
+        req.params.runId,
+        typeof req.body?.authorId === 'string' ? req.body.authorId.slice(0, 80) : 'human',
+      );
+      if (!result.ok) return reply.code(result.statusCode).send({ error: result.error });
+      return result.run;
+    },
+  );
+
   app.post<{ Params: { id: string; agentId: AgentId }; Body: { authorId?: string } }>(
     '/api/rooms/:id/agents/:agentId/compact',
     async (req, reply) => {

@@ -1,11 +1,19 @@
 import { getAgentPersona, isProviderId, providerDisplayName } from './personas.js';
 import type { AgentId, ProviderId, RoomAgentProfile } from './types.js';
 
+const DEFAULT_AUTO_COMPACT_PERCENT = 70;
+
 interface RawRoomAgentProfile {
   id?: unknown;
   providerId?: unknown;
   displayName?: unknown;
   personaId?: unknown;
+  modelId?: unknown;
+  model?: unknown;
+  reasoningEffort?: unknown;
+  effort?: unknown;
+  autoCompactEnabled?: unknown;
+  autoCompactPercent?: unknown;
   temporary?: unknown;
   spawnedBy?: unknown;
   spawnedByPersonaId?: unknown;
@@ -55,10 +63,36 @@ function cleanText(value: unknown, maxChars = 500): string {
   return typeof value === 'string' ? value.replace(/\s+/g, ' ').trim().slice(0, maxChars) : '';
 }
 
+function cleanModelId(value: unknown): string {
+  return typeof value === 'string' ? value.replace(/\s+/g, '').trim().slice(0, 120) : '';
+}
+
+function cleanReasoningEffort(value: unknown): string {
+  if (typeof value !== 'string') return '';
+  return value
+    .replace(/\s+/g, '')
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]/g, '')
+    .slice(0, 32);
+}
+
 function positiveInteger(value: unknown): number | undefined {
-  if (typeof value !== 'number' || !Number.isFinite(value)) return undefined;
-  const integer = Math.floor(value);
+  const number =
+    typeof value === 'number'
+      ? value
+      : typeof value === 'string' && value.trim()
+        ? Number(value.trim())
+        : NaN;
+  if (!Number.isFinite(number)) return undefined;
+  const integer = Math.floor(number);
   return integer > 0 ? integer : undefined;
+}
+
+function cleanPercent(value: unknown): number | undefined {
+  const integer = positiveInteger(value);
+  if (integer === undefined) return undefined;
+  return Math.max(1, Math.min(100, integer));
 }
 
 function uniqueDisplayName(base: string, seen: Set<string>): string {
@@ -149,7 +183,7 @@ export function providerIdFromAgentId(agentId: AgentId): ProviderId | null {
 
 export function isCompactableProviderAgent(agentId: AgentId): boolean {
   const providerId = providerIdFromAgentId(agentId);
-  return providerId === 'claude' || providerId === 'codex';
+  return providerId === 'claude' || providerId === 'codex' || providerId === 'gemini';
 }
 
 export function defaultAgentProfile(agentId: AgentId): RoomAgentProfile {
@@ -162,6 +196,8 @@ export function defaultAgentProfile(agentId: AgentId): RoomAgentProfile {
     personaId: persona.id,
     personaName: persona.name,
     personaSummary: persona.summary,
+    autoCompactEnabled: true,
+    autoCompactPercent: DEFAULT_AUTO_COMPACT_PERCENT,
   };
 }
 
@@ -193,6 +229,11 @@ export function normalizeRoomAgentProfiles(input: {
           ? providerDisplayName(providerId)
           : `${providerDisplayName(providerId)} ${persona.name}`;
       const maxTurns = positiveInteger(raw.maxTurns);
+      const modelId = cleanModelId(raw.modelId ?? raw.model);
+      const reasoningEffort = cleanReasoningEffort(raw.reasoningEffort ?? raw.effort);
+      const autoCompactPercent = cleanPercent(raw.autoCompactPercent);
+      const autoCompactEnabled =
+        typeof raw.autoCompactEnabled === 'boolean' ? raw.autoCompactEnabled : true;
       profiles.push({
         id,
         providerId,
@@ -200,6 +241,10 @@ export function normalizeRoomAgentProfiles(input: {
         personaId: persona.id,
         personaName: persona.name,
         personaSummary: persona.summary,
+        ...(modelId ? { modelId } : {}),
+        ...(reasoningEffort ? { reasoningEffort } : {}),
+        autoCompactEnabled,
+        autoCompactPercent: autoCompactPercent ?? DEFAULT_AUTO_COMPACT_PERCENT,
         ...(raw.temporary === true ? { temporary: true } : {}),
         ...(raw.spawnedBy ? { spawnedBy: cleanText(raw.spawnedBy, 80) } : {}),
         ...(raw.spawnedByPersonaId
@@ -235,7 +280,9 @@ export function parseRoomAgentProfiles(json: string, agents: AgentId[]): RoomAge
   try {
     const parsed = JSON.parse(json) as unknown;
     if (Array.isArray(parsed) && parsed.length > 0) {
-      const profiles = normalizeRoomAgentProfiles({ agentProfiles: parsed as RawRoomAgentProfile[] });
+      const profiles = normalizeRoomAgentProfiles({
+        agentProfiles: parsed as RawRoomAgentProfile[],
+      });
       const byId = new Map(profiles.map((profile) => [profile.id, profile]));
       return agents.map((agentId) => byId.get(agentId) ?? defaultAgentProfile(agentId));
     }

@@ -131,7 +131,12 @@ function inferRunExecutionState(job: AgentJob | null, run: AgentRun | null): Run
   if (run?.status === 'permission-requested') return 'waiting_on_permission';
   if (run?.lifecycleState === 'retry_queued') return 'retrying';
   if (run?.status === 'running') return 'running';
-  if (run?.lifecycleState === 'canceled_by_reconciliation') return 'canceled';
+  if (
+    run?.lifecycleState === 'canceled_by_reconciliation' ||
+    run?.lifecycleState === 'canceled_by_user'
+  ) {
+    return 'canceled';
+  }
   if (run?.status === 'failed' || job?.status === 'failed') return 'failed';
   if (run?.status === 'completed' || run?.status === 'empty' || job?.status === 'completed') {
     return 'completed';

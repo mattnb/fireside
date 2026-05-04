@@ -31,6 +31,17 @@ describe('claude adapter', () => {
     expect(argv).toContain('abc-123');
   });
 
+  it('passes explicit model and effort settings', () => {
+    const argv = claudeSpec.buildArgs('hi', null, {
+      model: { modelId: 'claude-sonnet-4-6', reasoningEffort: 'low' },
+    });
+
+    expect(argv).toContain('--model');
+    expect(argv).toContain('claude-sonnet-4-6');
+    expect(argv).toContain('--effort');
+    expect(argv).toContain('low');
+  });
+
   it('builds argv with an approved edit permission grant', () => {
     const argv = claudeSpec.buildArgs('edit', null, {
       permission: {

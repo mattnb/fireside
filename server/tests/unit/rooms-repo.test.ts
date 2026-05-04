@@ -190,14 +190,65 @@ describe('rooms repo', () => {
       ],
     });
 
-    expect(room.agentProfiles.map((profile) => profile.providerId)).toEqual([
-      'codex',
-      'codex',
-    ]);
+    expect(room.agentProfiles.map((profile) => profile.providerId)).toEqual(['codex', 'codex']);
     expect(getRoom(db, room.id)?.agentProfiles.map((profile) => profile.providerId)).toEqual([
       'codex',
       'codex',
     ]);
+  });
+
+  it('persists per-agent model settings', () => {
+    const room = createRoom(db, {
+      name: 'model controls',
+      agentProfiles: [
+        {
+          id: 'sean',
+          providerId: 'claude',
+          displayName: 'Sean',
+          personaId: 'principal-software-engineer',
+          personaName: 'Principal Software Engineer',
+          personaSummary: '',
+          modelId: 'claude-sonnet-4-6',
+          reasoningEffort: 'low',
+        },
+      ],
+    });
+
+    expect(room.agentProfiles[0]).toMatchObject({
+      modelId: 'claude-sonnet-4-6',
+      reasoningEffort: 'low',
+    });
+    expect(getRoom(db, room.id)?.agentProfiles[0]).toMatchObject({
+      modelId: 'claude-sonnet-4-6',
+      reasoningEffort: 'low',
+    });
+  });
+
+  it('persists per-agent auto compact settings', () => {
+    const room = createRoom(db, {
+      name: 'context controls',
+      agentProfiles: [
+        {
+          id: 'jimmy',
+          providerId: 'claude',
+          displayName: 'Jimmy',
+          personaId: 'project-manager',
+          personaName: 'Project Manager',
+          personaSummary: '',
+          autoCompactEnabled: false,
+          autoCompactPercent: 40,
+        },
+      ],
+    });
+
+    expect(room.agentProfiles[0]).toMatchObject({
+      autoCompactEnabled: false,
+      autoCompactPercent: 40,
+    });
+    expect(getRoom(db, room.id)?.agentProfiles[0]).toMatchObject({
+      autoCompactEnabled: false,
+      autoCompactPercent: 40,
+    });
   });
 
   it('deduplicates exact legacy agent ids without collapsing provider instances', () => {
@@ -275,6 +326,50 @@ describe('rooms repo', () => {
 
     expect(getRoom(db, room.id)?.agentProfiles[0]?.providerId).toBe('codex');
     expect(getCliSessionId(db, room.id, 'gemini-qa-lead')).toBeNull();
+  });
+
+  it('setRoomAgents removes sessions when an existing agent changes model settings', () => {
+    const room = createRoom(db, {
+      name: 'model switch',
+      agentProfiles: [
+        {
+          id: 'sean',
+          providerId: 'claude',
+          displayName: 'Sean',
+          personaId: 'principal-software-engineer',
+          personaName: 'Principal Software Engineer',
+          personaSummary: '',
+          modelId: 'claude-opus-4-7',
+          reasoningEffort: 'xhigh',
+        },
+      ],
+    });
+    upsertCliSessionId(db, room.id, 'sean', 'old-claude-session', 'claude');
+
+    setRoomAgents(
+      db,
+      room.id,
+      ['sean'],
+      ['sean'],
+      [
+        {
+          id: 'sean',
+          providerId: 'claude',
+          displayName: 'Sean',
+          personaId: 'principal-software-engineer',
+          personaName: 'Principal Software Engineer',
+          personaSummary: '',
+          modelId: 'claude-sonnet-4-6',
+          reasoningEffort: 'low',
+        },
+      ],
+    );
+
+    expect(getRoom(db, room.id)?.agentProfiles[0]).toMatchObject({
+      modelId: 'claude-sonnet-4-6',
+      reasoningEffort: 'low',
+    });
+    expect(getCliSessionId(db, room.id, 'sean')).toBeNull();
   });
 
   it('deleteRoom removes the room and cascades messages', () => {

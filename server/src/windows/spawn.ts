@@ -1,7 +1,14 @@
 // server/src/windows/spawn.ts
 import { execa, type ExecaError } from 'execa';
-import { killTree } from './tree-kill.js';
+import { isPidAlive, killTree } from './tree-kill.js';
 import { normalizeLineEndings, stripBom } from './encoding.js';
+
+// Time we give a subprocess to react to a SIGINT before escalating to
+// SIGKILL on POSIX platforms. Long enough for a provider CLI to flush
+// partial output, short enough that a stuck process doesn't make the user
+// wait. Windows skips this phase entirely — tree-kill maps every signal to
+// `taskkill /T /F` so there's no graceful equivalent.
+const GRACEFUL_CANCEL_KILL_DELAY_MS = 150;
 
 /**
  * We never need `shell: true`. `execa` (via `cross-spawn`) already handles the
@@ -240,12 +247,24 @@ export async function runSubprocess(opts: RunOptions): Promise<RunResult> {
   const cancelListener = async (): Promise<void> => {
     if (completed) return;
     canceled = true;
-    if (child.pid) {
+    if (!child.pid) return;
+    if (process.platform !== 'win32') {
+      // Graceful phase: SIGINT lets the provider CLI flush partial output
+      // and release resources before we hard-kill. If the process exits
+      // cleanly within the grace window we never need to escalate.
       try {
-        await killTree(child.pid, 'SIGKILL');
+        await killTree(child.pid, 'SIGINT');
       } catch {
         // best effort
       }
+      await new Promise((resolve) => setTimeout(resolve, GRACEFUL_CANCEL_KILL_DELAY_MS));
+      if (completed) return;
+      if (!(await isPidAlive(child.pid))) return;
+    }
+    try {
+      await killTree(child.pid, 'SIGKILL');
+    } catch {
+      // best effort
     }
   };
   if (opts.cancelSignal) {

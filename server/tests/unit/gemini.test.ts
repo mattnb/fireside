@@ -1,5 +1,5 @@
 // server/tests/unit/gemini.test.ts
-import { describe, it, expect } from 'vitest';
+import { afterEach, beforeEach, describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
@@ -11,8 +11,21 @@ import { AgentParseError } from '../../src/agents/types.js';
 const FIXTURE_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../fixtures');
 const headless = readFileSync(path.join(FIXTURE_DIR, 'gemini-headless.json'), 'utf8');
 const withPreamble = readFileSync(path.join(FIXTURE_DIR, 'gemini-with-preamble.json'), 'utf8');
+const ORIGINAL_GEMINI_MODEL = process.env.FIRESIDE_GEMINI_MODEL;
 
 describe('gemini adapter', () => {
+  beforeEach(() => {
+    delete process.env.FIRESIDE_GEMINI_MODEL;
+  });
+
+  afterEach(() => {
+    if (ORIGINAL_GEMINI_MODEL === undefined) {
+      delete process.env.FIRESIDE_GEMINI_MODEL;
+    } else {
+      process.env.FIRESIDE_GEMINI_MODEL = ORIGINAL_GEMINI_MODEL;
+    }
+  });
+
   it('builds argv for fresh session and sends the prompt through stdin', () => {
     const argv = geminiSpec.buildArgs('hi', null);
     expect(argv).toEqual([
@@ -23,6 +36,8 @@ describe('gemini adapter', () => {
       '--skip-trust',
       '--approval-mode',
       'plan',
+      '--model',
+      'gemini-3.1-pro-preview',
     ]);
     expect(argv).not.toContain('hi');
     expect(argv).not.toContain('--resume');
@@ -42,9 +57,28 @@ describe('gemini adapter', () => {
       '--skip-trust',
       '--approval-mode',
       'plan',
+      '--model',
+      'gemini-3.1-pro-preview',
       '--resume',
       'session-abc',
     ]);
+  });
+
+  it('passes explicit model settings', () => {
+    const argv = geminiSpec.buildArgs('hi', null, {
+      model: { modelId: 'gemini-3-flash-preview' },
+    });
+
+    expect(argv).toContain('--model');
+    expect(argv).toContain('gemini-3-flash-preview');
+  });
+
+  it('allows the default Gemini model to be configured from env', () => {
+    process.env.FIRESIDE_GEMINI_MODEL = 'gemini-3.1-flash-lite-preview';
+    const argv = geminiSpec.buildArgs('hi', null);
+
+    expect(argv).toContain('--model');
+    expect(argv).toContain('gemini-3.1-flash-lite-preview');
   });
 
   it('builds argv with an approved edit permission grant', () => {
@@ -115,8 +149,18 @@ describe('gemini adapter', () => {
         status: 'success',
         output: 'Read lines 1-100 of 510 from mockups-preview.html',
       }),
-      JSON.stringify({ type: 'message', role: 'assistant', content: '@jimmy verified ', delta: true }),
-      JSON.stringify({ type: 'message', role: 'assistant', content: 'the visual foundation.', delta: true }),
+      JSON.stringify({
+        type: 'message',
+        role: 'assistant',
+        content: '@jimmy verified ',
+        delta: true,
+      }),
+      JSON.stringify({
+        type: 'message',
+        role: 'assistant',
+        content: 'the visual foundation.',
+        delta: true,
+      }),
       JSON.stringify({
         type: 'tool_result',
         status: 'success',
@@ -183,7 +227,7 @@ describe('gemini adapter', () => {
         kind: 'usage',
         status: 'completed',
         label: 'gemini result received',
-        detail: 'gemini-2.0-flash-exp: 23 used / window unknown',
+        detail: 'gemini-2.0-flash-exp: 23 used / 1000000 window',
         contextUsage: {
           provider: 'gemini',
           model: 'gemini-2.0-flash-exp',
@@ -191,6 +235,9 @@ describe('gemini adapter', () => {
           inputTokens: 15,
           cachedInputTokens: 0,
           outputTokens: 8,
+          contextWindow: 1000000,
+          remainingTokens: 999977,
+          percentUsed: 0.0023,
           source: 'gemini:stats.usage_metadata',
         },
       },
@@ -218,7 +265,7 @@ describe('gemini adapter', () => {
         kind: 'usage',
         status: 'completed',
         label: 'gemini result received',
-        detail: 'gemini-2.5-flash-lite: 12 used / window unknown',
+        detail: 'gemini-2.5-flash-lite: 12 used / 1000000 window',
         contextUsage: {
           provider: 'gemini',
           model: 'gemini-2.5-flash-lite',
@@ -226,6 +273,9 @@ describe('gemini adapter', () => {
           inputTokens: 10,
           cachedInputTokens: 3,
           outputTokens: 2,
+          contextWindow: 1000000,
+          remainingTokens: 999988,
+          percentUsed: 0.0012000000000000001,
           source: 'gemini:stats.models.tokens',
         },
       },

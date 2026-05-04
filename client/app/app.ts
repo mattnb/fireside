@@ -171,6 +171,7 @@ const FRIENDLY_AGENT_NAMES = [
   'Anita',
   'Francesco',
 ];
+const DEFAULT_AGENT_AUTO_COMPACT_PERCENT = 70;
 
 @Component({
   selector: 'fs-root',
@@ -854,6 +855,8 @@ export class App implements OnDestroy {
               ...row,
               providerId,
               displayName: this.nextDraftDisplayName(row, rows, providerId, row.personaId),
+              modelId: '',
+              reasoningEffort: '',
             }
           : row,
       ),
@@ -885,6 +888,35 @@ export class App implements OnDestroy {
     );
   }
 
+  setNewRoomAgentModel(clientId: string, event: Event): void {
+    const modelId = this.cleanAgentModelId(this.formControlValue(event));
+    this.newRoomAgentRows.update((rows) =>
+      rows.map((row) => (row.clientId === clientId ? { ...row, modelId } : row)),
+    );
+  }
+
+  setNewRoomAgentReasoning(clientId: string, event: Event): void {
+    const reasoningEffort = this.cleanAgentReasoningEffort(this.formControlValue(event));
+    this.newRoomAgentRows.update((rows) =>
+      rows.map((row) => (row.clientId === clientId ? { ...row, reasoningEffort } : row)),
+    );
+  }
+
+  toggleNewRoomAgentAutoCompact(clientId: string, event: Event): void {
+    const autoCompactEnabled =
+      event.target instanceof HTMLInputElement ? event.target.checked : true;
+    this.newRoomAgentRows.update((rows) =>
+      rows.map((row) => (row.clientId === clientId ? { ...row, autoCompactEnabled } : row)),
+    );
+  }
+
+  setNewRoomAgentAutoCompactPercent(clientId: string, event: Event): void {
+    const autoCompactPercent = this.cleanAutoCompactPercent(this.formControlValue(event));
+    this.newRoomAgentRows.update((rows) =>
+      rows.map((row) => (row.clientId === clientId ? { ...row, autoCompactPercent } : row)),
+    );
+  }
+
   toggleNewRoomAgentYolo(clientId: string, event: Event): void {
     const yolo = event.target instanceof HTMLInputElement ? event.target.checked : false;
     this.newRoomAgentRows.update((rows) =>
@@ -904,6 +936,8 @@ export class App implements OnDestroy {
               ...row,
               providerId,
               displayName: this.nextDraftDisplayName(row, rows, providerId, row.personaId),
+              modelId: '',
+              reasoningEffort: '',
             }
           : row,
       ),
@@ -940,6 +974,8 @@ export class App implements OnDestroy {
               ...row,
               providerId,
               displayName: this.nextDraftDisplayName(row, rows, providerId, row.personaId),
+              modelId: '',
+              reasoningEffort: '',
             }
           : row,
       ),
@@ -971,6 +1007,35 @@ export class App implements OnDestroy {
     );
   }
 
+  setEditRoomAgentModel(clientId: string, event: Event): void {
+    const modelId = this.cleanAgentModelId(this.formControlValue(event));
+    this.editRoomAgentRows.update((rows) =>
+      rows.map((row) => (row.clientId === clientId ? { ...row, modelId } : row)),
+    );
+  }
+
+  setEditRoomAgentReasoning(clientId: string, event: Event): void {
+    const reasoningEffort = this.cleanAgentReasoningEffort(this.formControlValue(event));
+    this.editRoomAgentRows.update((rows) =>
+      rows.map((row) => (row.clientId === clientId ? { ...row, reasoningEffort } : row)),
+    );
+  }
+
+  toggleEditRoomAgentAutoCompact(clientId: string, event: Event): void {
+    const autoCompactEnabled =
+      event.target instanceof HTMLInputElement ? event.target.checked : true;
+    this.editRoomAgentRows.update((rows) =>
+      rows.map((row) => (row.clientId === clientId ? { ...row, autoCompactEnabled } : row)),
+    );
+  }
+
+  setEditRoomAgentAutoCompactPercent(clientId: string, event: Event): void {
+    const autoCompactPercent = this.cleanAutoCompactPercent(this.formControlValue(event));
+    this.editRoomAgentRows.update((rows) =>
+      rows.map((row) => (row.clientId === clientId ? { ...row, autoCompactPercent } : row)),
+    );
+  }
+
   toggleEditRoomAgentYolo(clientId: string, event: Event): void {
     const yolo = event.target instanceof HTMLInputElement ? event.target.checked : false;
     this.editRoomAgentRows.update((rows) =>
@@ -990,6 +1055,8 @@ export class App implements OnDestroy {
               ...row,
               providerId,
               displayName: this.nextDraftDisplayName(row, rows, providerId, row.personaId),
+              modelId: '',
+              reasoningEffort: '',
             }
           : row,
       ),
@@ -1103,6 +1170,10 @@ export class App implements OnDestroy {
     yolo = false,
     displayName = '',
     agentId?: AgentId,
+    modelId = '',
+    reasoningEffort = '',
+    autoCompactEnabled = true,
+    autoCompactPercent = DEFAULT_AGENT_AUTO_COMPACT_PERCENT,
   ): DraftRoomAgent {
     this.draftAgentCounter += 1;
     return {
@@ -1111,6 +1182,10 @@ export class App implements OnDestroy {
       providerId,
       displayName: displayName || this.draftDefaultDisplayName(providerId, personaId),
       personaId,
+      ...(modelId ? { modelId } : {}),
+      ...(reasoningEffort ? { reasoningEffort } : {}),
+      autoCompactEnabled,
+      autoCompactPercent: this.cleanAutoCompactPercent(String(autoCompactPercent)),
       yolo,
     };
   }
@@ -1175,6 +1250,14 @@ export class App implements OnDestroy {
         personaId: persona.id,
         personaName: persona.name,
         personaSummary: persona.summary,
+        ...(this.cleanAgentModelId(row.modelId ?? '')
+          ? { modelId: this.cleanAgentModelId(row.modelId ?? '') }
+          : {}),
+        ...(this.cleanAgentReasoningEffort(row.reasoningEffort ?? '')
+          ? { reasoningEffort: this.cleanAgentReasoningEffort(row.reasoningEffort ?? '') }
+          : {}),
+        autoCompactEnabled: row.autoCompactEnabled !== false,
+        autoCompactPercent: this.cleanAutoCompactPercent(String(row.autoCompactPercent)),
       };
     });
   }
@@ -1230,6 +1313,33 @@ export class App implements OnDestroy {
 
   private cleanDisplayName(value: string): string {
     return value.replace(/\s+/g, ' ').trim().slice(0, 80);
+  }
+
+  private formControlValue(event: Event): string {
+    const target = event.target;
+    if (target instanceof HTMLInputElement || target instanceof HTMLSelectElement) {
+      return target.value;
+    }
+    return '';
+  }
+
+  private cleanAgentModelId(value: string): string {
+    return value.replace(/\s+/g, '').trim().slice(0, 120);
+  }
+
+  private cleanAgentReasoningEffort(value: string): string {
+    return value
+      .replace(/\s+/g, '')
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9_-]/g, '')
+      .slice(0, 32);
+  }
+
+  private cleanAutoCompactPercent(value: string): number {
+    const parsed = Number(value.trim());
+    if (!Number.isFinite(parsed)) return DEFAULT_AGENT_AUTO_COMPACT_PERCENT;
+    return Math.max(1, Math.min(100, Math.floor(parsed)));
   }
 
   private routeHandleSlug(value: string): string {
@@ -1385,6 +1495,10 @@ export class App implements OnDestroy {
         room.yoloAgents.includes(agentId),
         profile.displayName,
         agentId,
+        profile.modelId ?? '',
+        profile.reasoningEffort ?? '',
+        profile.autoCompactEnabled ?? true,
+        profile.autoCompactPercent ?? DEFAULT_AGENT_AUTO_COMPACT_PERCENT,
       );
     });
   }
@@ -1653,6 +1767,22 @@ export class App implements OnDestroy {
     this.runDetail.set(null);
     this.runDetailError.set('');
     this.runDetailLoading.set(false);
+  }
+
+  onRunDetailStopRequested(runId: string): void {
+    const roomId = this.store.selectedRoomId();
+    if (!roomId) return;
+    this.api.runs.stop(roomId, runId, this.authorName()).subscribe({
+      next: (updated) => {
+        this.toasts.push({ message: `stopped @${updated.agentId}'s active run` });
+        // Refresh the modal so the UI reflects the canceled state immediately.
+        if (this.openRunDetailId() === runId) this.openRunDetail(runId, true);
+      },
+      error: (err: unknown) => {
+        const message = err instanceof Error ? err.message : 'failed to stop run';
+        this.toasts.push({ message: `stop failed: ${message}` });
+      },
+    });
   }
 
   private runIdleMs(run: AgentRun): number {

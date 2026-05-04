@@ -324,6 +324,63 @@ describe('buildTurnPrompt', () => {
     expect(prompt).toContain('final');
   });
 
+  it('preserves the latest handoff message in full within the bounded overrun window', () => {
+    const latest = [
+      'Please hand this entire note to the next agent.',
+      'BEGIN-LATEST-HANDOFF',
+      'x'.repeat(5_200),
+      'END-LATEST-HANDOFF',
+    ].join('\n');
+    const result = buildTurnPromptResult({
+      agentId: 'codex',
+      roomName: 'general',
+      history: Array.from({ length: 6 }, (_, i) => ({
+        authorId: 'human',
+        authorKind: 'human' as const,
+        text: `history-${i} ${'old '.repeat(300)}`,
+      })),
+      newMessage: { authorId: 'claude', authorKind: 'agent', text: latest },
+      maxHistory: 6,
+      maxPromptChars: 3_000,
+    });
+
+    expect(result.prompt.length).toBeGreaterThan(3_000);
+    expect(result.prompt).toContain('BEGIN-LATEST-HANDOFF');
+    expect(result.prompt).toContain('END-LATEST-HANDOFF');
+    expect(result.prompt).not.toContain('omitted to fit the live prompt budget');
+    expect(result.stats.latestMessageTruncated).toBe(false);
+    expect(result.stats.latestMessageOriginalChars).toBe(result.stats.latestMessageChars);
+    expect(result.stats.overBudgetChars).toBeGreaterThan(0);
+    expect(result.stats.budgetNotices.join('\n')).toContain('latest message was preserved in full');
+  });
+
+  it('preserves @mention handoff lines when an extremely large latest message must be excerpted', () => {
+    const latest = [
+      'BEGIN-HUGE-LATEST',
+      'x'.repeat(12_000),
+      '@nat please verify the accessibility findings before the gate closes.',
+      'More middle context that would normally be omitted.',
+      '@temur pick up the dashboard rebuild after Nat signs off.',
+      '@jimmy coordinate the phase gate once those two checks land.',
+      'y'.repeat(12_000),
+      'END-HUGE-LATEST',
+    ].join('\n');
+    const result = buildTurnPromptResult({
+      agentId: 'codex',
+      roomName: 'general',
+      history: [],
+      newMessage: { authorId: 'rob', authorKind: 'agent', text: latest },
+      maxPromptChars: 4_000,
+    });
+
+    expect(result.stats.latestMessageTruncated).toBe(true);
+    expect(result.prompt.length).toBeLessThanOrEqual(4_000);
+    expect(result.prompt).toContain('Important @mention lines preserved');
+    expect(result.prompt).toContain('@nat please verify');
+    expect(result.prompt).toContain('@temur pick up');
+    expect(result.prompt).toContain('@jimmy coordinate');
+  });
+
   it('keeps the collaboration note terminator visible in compact prompts', () => {
     const prompt = buildTurnPrompt({
       agentId: 'codex',

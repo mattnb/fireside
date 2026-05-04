@@ -200,6 +200,16 @@
       }
     </div>
     <footer class="modal__foot">
+      @if (runDetail()?.run?.status === 'running') {
+      <button
+        type="button"
+        class="control-btn control-btn--danger"
+        (click)="stopRequested.emit(runDetail()!.run.id)"
+        title="Abort this run's provider subprocess"
+      >
+        stop run
+      </button>
+      }
       <button type="button" class="control-btn" (click)="closed.emit()">close</button>
     </footer>
   </section>

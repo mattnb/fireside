@@ -232,6 +232,21 @@ function codexPermissionArgs(context?: AgentRunContext): string[] {
   }
 }
 
+function codexTomlString(value: string): string {
+  return `"${value.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
+}
+
+function codexModelArgs(context?: AgentRunContext): string[] {
+  const args: string[] = [];
+  const modelId = context?.model?.modelId;
+  const reasoningEffort = context?.model?.reasoningEffort;
+  if (modelId) args.push('-m', modelId);
+  if (reasoningEffort) {
+    args.push('-c', `model_reasoning_effort=${codexTomlString(reasoningEffort)}`);
+  }
+  return args;
+}
+
 function codexShouldUseReplySchema(context?: AgentRunContext): boolean {
   // The reply schema is valuable for pure chat turns because it keeps Codex
   // from answering the room instructions instead of the user. It is harmful
@@ -254,9 +269,17 @@ export const codexSpec: AgentSpec = {
       // `codex exec resume` does not accept `--output-schema`; rely on the
       // parser's raw-text fallback for resumed turns. Avoid --last so rooms do
       // not cross-resume each other.
-      return ['exec', 'resume', ...codexPermissionArgs(context), '--json', sessionId, '-'];
+      return [
+        'exec',
+        'resume',
+        ...codexModelArgs(context),
+        ...codexPermissionArgs(context),
+        '--json',
+        sessionId,
+        '-',
+      ];
     }
-    const args = ['exec', ...codexPermissionArgs(context), '--json'];
+    const args = ['exec', ...codexModelArgs(context), ...codexPermissionArgs(context), '--json'];
     if (codexShouldUseReplySchema(context)) {
       args.push('--output-schema', ensureSchemaFile());
     }

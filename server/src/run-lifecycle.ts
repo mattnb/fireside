@@ -15,6 +15,7 @@ export const RUN_LIFECYCLE_OUTCOME_STATES = [
   'timed_out',
   'stalled',
   'canceled_by_reconciliation',
+  'canceled_by_user',
 ] as const;
 
 export const RUN_LIFECYCLE_DISPOSITION_STATES = ['retry_queued', 'released'] as const;
@@ -42,6 +43,7 @@ export type RunLifecycleReason =
   | 'run_timed_out'
   | 'run_stalled'
   | 'reconciliation_canceled'
+  | 'user_canceled'
   | 'retry_scheduled'
   | 'retry_already_queued'
   | 'retry_limit_reached'
@@ -156,13 +158,14 @@ const DISPOSITION_STATE_SET = new Set<RunLifecycleState>(RUN_LIFECYCLE_DISPOSITI
 const FAILURE_OUTCOME_STATE_SET = new Set<RunLifecycleState>(FAILURE_OUTCOME_STATES);
 
 export const RUN_LIFECYCLE_TRANSITIONS = {
-  start: ['preparing_workspace', 'canceled_by_reconciliation'],
+  start: ['preparing_workspace', 'canceled_by_reconciliation', 'canceled_by_user'],
   preparing_workspace: [
     'building_prompt',
     'failed',
     'timed_out',
     'stalled',
     'canceled_by_reconciliation',
+    'canceled_by_user',
   ],
   building_prompt: [
     'launching_agent_process',
@@ -170,6 +173,7 @@ export const RUN_LIFECYCLE_TRANSITIONS = {
     'timed_out',
     'stalled',
     'canceled_by_reconciliation',
+    'canceled_by_user',
   ],
   launching_agent_process: [
     'initializing_session',
@@ -178,6 +182,7 @@ export const RUN_LIFECYCLE_TRANSITIONS = {
     'timed_out',
     'stalled',
     'canceled_by_reconciliation',
+    'canceled_by_user',
   ],
   initializing_session: [
     'streaming_turn',
@@ -185,6 +190,7 @@ export const RUN_LIFECYCLE_TRANSITIONS = {
     'timed_out',
     'stalled',
     'canceled_by_reconciliation',
+    'canceled_by_user',
   ],
   streaming_turn: [
     'finishing',
@@ -193,13 +199,22 @@ export const RUN_LIFECYCLE_TRANSITIONS = {
     'timed_out',
     'stalled',
     'canceled_by_reconciliation',
+    'canceled_by_user',
   ],
-  finishing: ['succeeded', 'failed', 'timed_out', 'stalled', 'canceled_by_reconciliation'],
+  finishing: [
+    'succeeded',
+    'failed',
+    'timed_out',
+    'stalled',
+    'canceled_by_reconciliation',
+    'canceled_by_user',
+  ],
   succeeded: ['released'],
   failed: ['retry_queued', 'released'],
   timed_out: ['retry_queued', 'released'],
   stalled: ['retry_queued', 'released'],
   canceled_by_reconciliation: ['released'],
+  canceled_by_user: ['released'],
   retry_queued: [],
   released: [],
 } satisfies Record<RunLifecycleState, readonly RunLifecycleState[]>;
@@ -227,6 +242,7 @@ const DEFAULT_REASON_BY_STATE = {
   timed_out: 'run_timed_out',
   stalled: 'run_stalled',
   canceled_by_reconciliation: 'reconciliation_canceled',
+  canceled_by_user: 'user_canceled',
   retry_queued: 'retry_scheduled',
   released: 'released',
 } satisfies Record<RunLifecycleState, RunLifecycleReason>;

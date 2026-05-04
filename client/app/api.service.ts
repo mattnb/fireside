@@ -160,6 +160,8 @@ export class FiresideApi {
       this.http.get<AgentRunDetail>(`/api/rooms/${roomId}/runs/${runId}`),
     dismiss: (roomId: string, runId: string, authorId: string) =>
       this.http.post<AgentRun>(`/api/rooms/${roomId}/runs/${runId}/dismiss`, { authorId }),
+    stop: (roomId: string, runId: string, authorId: string) =>
+      this.http.post<AgentRun>(`/api/rooms/${roomId}/runs/${runId}/stop`, { authorId }),
     actions: (roomId: string, limit = 250) =>
       this.http.get<AgentRunAction[]>(`/api/rooms/${roomId}/actions`, { params: { limit } }),
   };

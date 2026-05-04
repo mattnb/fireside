@@ -64,7 +64,13 @@ interface CodexRolloutTokenUsage {
 
 const CODEX_CONTEXT_WINDOWS: Array<[RegExp, number]> = [
   [/^gpt-5\.5$/i, 400_000],
+  [/^gpt-5(?:\.[0-9]+)?(?:-[a-z0-9]+)*$/i, 400_000],
   [/^gpt-5(?:\.[1-5])?-codex$/i, 400_000],
+];
+
+const GEMINI_CONTEXT_WINDOWS: Array<[RegExp, number]> = [
+  [/^gemini-3(?:\.\d+)?-(?:pro|flash|flash-lite)-preview$/i, 1_000_000],
+  [/^gemini-/i, 1_000_000],
 ];
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -665,6 +671,14 @@ export function codexContextWindowForModel(model: string | undefined): number | 
   return undefined;
 }
 
+export function geminiContextWindowForModel(model: string | undefined): number | undefined {
+  if (!model) return undefined;
+  for (const [pattern, contextWindow] of GEMINI_CONTEXT_WINDOWS) {
+    if (pattern.test(model)) return contextWindow;
+  }
+  return undefined;
+}
+
 export function codexContextUsage(
   rawUsage: unknown,
   opts: { threadId?: string; codexHome?: string } = {},
@@ -849,13 +863,16 @@ export function geminiContextUsage(obj: Record<string, unknown>): AgentContextUs
       numberFromRecord(usage, 'totalTokenCount') ??
       Math.max(0, (inputTokens ?? 0) + (outputTokens ?? 0));
     if (usedTokens > 0) {
+      const model = stringValue(stats.model) ?? stringValue(obj.model) ?? 'gemini';
+      const contextWindow = geminiContextWindowForModel(model);
       return addWindowFields({
         provider: 'gemini',
-        model: stringValue(stats.model) ?? stringValue(obj.model) ?? 'gemini',
+        model,
         usedTokens,
         ...(inputTokens !== undefined ? { inputTokens } : {}),
         ...(cachedInputTokens !== undefined ? { cachedInputTokens } : {}),
         ...(outputTokens !== undefined ? { outputTokens } : {}),
+        ...(contextWindow !== undefined ? { contextWindow } : {}),
         source: 'gemini:stats.usage_metadata',
       });
     }
@@ -873,6 +890,7 @@ export function geminiContextUsage(obj: Record<string, unknown>): AgentContextUs
     const usedTokens =
       numberFromRecord(tokens, 'total') ?? Math.max(0, (inputTokens ?? 0) + (outputTokens ?? 0));
     if (usedTokens <= 0) continue;
+    const contextWindow = geminiContextWindowForModel(model);
     return addWindowFields({
       provider: 'gemini',
       model,
@@ -880,6 +898,7 @@ export function geminiContextUsage(obj: Record<string, unknown>): AgentContextUs
       ...(inputTokens !== undefined ? { inputTokens } : {}),
       ...(cachedInputTokens !== undefined ? { cachedInputTokens } : {}),
       ...(outputTokens !== undefined ? { outputTokens } : {}),
+      ...(contextWindow !== undefined ? { contextWindow } : {}),
       source: 'gemini:stats.models.tokens',
     });
   }

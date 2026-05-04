@@ -1,5 +1,6 @@
 import type {
   AgentReply,
+  AgentModelSettings,
   AgentSpec,
   AgentStreamEvent,
   AgentTurnKind,
@@ -17,6 +18,7 @@ export interface ProviderTurnRunAgent {
     onStreamEvent?: (event: AgentStreamEvent) => void,
     timeoutMs?: number | null,
     turnKind?: AgentTurnKind,
+    modelSettings?: AgentModelSettings,
   ): Promise<AgentReply>;
 }
 
@@ -48,6 +50,7 @@ export interface ExecuteProviderTurnInput {
   attempt: number;
   maxRetryAttempts?: number;
   turnKind?: AgentTurnKind;
+  modelSettings?: AgentModelSettings;
 }
 
 export async function executeProviderTurn(
@@ -73,6 +76,7 @@ export async function executeProviderTurn(
       input.onStreamEvent,
       input.permission?.source === 'yolo' ? null : undefined,
       input.turnKind,
+      input.modelSettings,
     );
     return { ok: true, reply };
   } catch (err) {

@@ -114,6 +114,38 @@ describe('agent turn executor', () => {
     expect(seenTurnKind).toBe('work-lane');
   });
 
+  it('forwards model settings to the provider runner', async () => {
+    let seenModelSettings: unknown;
+
+    await executeProviderTurn({
+      runAgent: async (
+        _spec,
+        _prompt,
+        _sessionId,
+        _permission,
+        _signal,
+        _onStream,
+        _timeoutMs,
+        _turnKind,
+        modelSettings,
+      ) => {
+        seenModelSettings = modelSettings;
+        return { text: '', sessionId: null, raw: { stdout: '', stderr: '' } };
+      },
+      spec,
+      prompt: '',
+      sessionId: null,
+      registerAbortController: () => {},
+      unregisterAbortController: () => {},
+      startHeartbeat: () => () => {},
+      yoloMode: true,
+      attempt: 1,
+      modelSettings: { modelId: 'gpt-5.4', reasoningEffort: 'low' },
+    });
+
+    expect(seenModelSettings).toEqual({ modelId: 'gpt-5.4', reasoningEffort: 'low' });
+  });
+
   it('classifies YOLO provider failures and computes retry decisions', async () => {
     const error = new Error('provider exited');
     Object.assign(error, { stdout: 'raw out', stderr: 'raw err' });

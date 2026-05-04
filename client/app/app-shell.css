@@ -623,7 +623,10 @@ fs-root {
 
 .room-create__agent-head {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(92px, 0.8fr) minmax(106px, 1fr) 52px 24px;
+  grid-template-columns: minmax(0, 1fr) minmax(92px, 0.65fr) minmax(116px, 0.85fr) minmax(
+      146px,
+      0.9fr
+    ) minmax(92px, 0.6fr) minmax(100px, 0.54fr) 52px 50px;
   gap: 8px;
   color: var(--text-muted);
   font-family: var(--font-mono);
@@ -1201,7 +1204,6 @@ fs-root {
   padding: 8px 9px;
 }
 
-
 .ledger-row--receipt {
   border-color: rgba(94, 196, 144, 0.24);
   background: rgba(94, 196, 144, 0.055);
@@ -1332,7 +1334,10 @@ fs-root {
 
 .mission-create-modal .room-create__agent-head,
 .mission-create-modal .room-agent-choice {
-  grid-template-columns: minmax(180px, 1fr) minmax(118px, 0.65fr) minmax(170px, 0.9fr) 58px 50px 24px;
+  grid-template-columns: minmax(160px, 1fr) minmax(108px, 0.58fr) minmax(150px, 0.8fr) minmax(
+      160px,
+      0.88fr
+    ) minmax(104px, 0.58fr) minmax(106px, 0.54fr) 58px 50px 24px;
 }
 
 @media (max-width: 860px) {
@@ -1436,8 +1441,12 @@ fs-root {
       'name remove'
       'provider provider'
       'persona persona'
+      'model model'
+      'effort effort'
+      'compact compact'
       'yolo yolo'
-      'lead lead';
+      'lead lead'
+      'rec rec';
   }
 
   .mission-board__col-strip {

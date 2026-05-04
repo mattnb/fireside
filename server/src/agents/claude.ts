@@ -343,6 +343,15 @@ function claudePermissionToolArgs(context?: AgentRunContext): string[] {
   }
 }
 
+function claudeModelArgs(context?: AgentRunContext): string[] {
+  const args: string[] = [];
+  const modelId = context?.model?.modelId;
+  const reasoningEffort = context?.model?.reasoningEffort;
+  if (modelId) args.push('--model', modelId);
+  if (reasoningEffort) args.push('--effort', reasoningEffort);
+  return args;
+}
+
 export const claudeSpec: AgentSpec = {
   id: 'claude',
   displayName: 'Claude Code',
@@ -355,6 +364,7 @@ export const claudeSpec: AgentSpec = {
       '--output-format',
       'stream-json',
       '--include-partial-messages',
+      ...claudeModelArgs(context),
       '--permission-mode',
       claudePermissionMode(context),
       ...claudePermissionToolArgs(context),

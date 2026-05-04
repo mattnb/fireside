@@ -3,8 +3,6 @@
  * + dismiss button, the YOLO turn bank, and agent context-usage bars.
  */
 
-
-
 .agent-compact-btn {
   appearance: none;
   display: grid;
@@ -599,15 +597,20 @@
 
 .room-agent-choice input[type='checkbox'],
 .agent-toggle__yolo input,
-.agent-toggle__check input {
+.agent-toggle__check input,
+.room-agent-compact input[type='checkbox'],
+.agent-toggle__compact input[type='checkbox'] {
   margin: 0;
   accent-color: var(--accent);
 }
 
 .room-agent-name input,
+.room-agent-choice input[type='text'],
+.room-agent-choice input[type='number'],
 .room-agent-choice select,
 .agent-toggle__select input,
-.agent-toggle__select select {
+.agent-toggle__select select,
+.agent-toggle__compact input[type='number'] {
   min-width: 0;
   width: 100%;
   border: 1px solid var(--border-soft);
@@ -620,10 +623,18 @@
 }
 
 .room-agent-name input,
+.room-agent-choice input[type='text'],
 .agent-toggle__select input {
   font-family: var(--font-sans);
   font-weight: 700;
   text-transform: none;
+}
+
+.room-agent-compact input[type='number'],
+.agent-toggle__compact input[type='number'] {
+  font-family: var(--font-mono);
+  font-weight: 800;
+  padding-inline: 5px;
 }
 
 .room-agent-yolo,
@@ -658,6 +669,29 @@
   text-transform: uppercase;
 }
 
+.agent-toggle__compact {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.agent-toggle__compact-row {
+  display: grid;
+  grid-template-columns: 14px minmax(42px, 1fr) auto;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+}
+
+.agent-toggle__select.is-disabled {
+  opacity: 0.46;
+}
+
 .room-agent-yolo input,
 .agent-toggle__yolo input {
   accent-color: var(--accent-warning);
@@ -669,7 +703,10 @@
 
 .agent-toggle {
   display: grid;
-  grid-template-columns: 34px minmax(140px, 1fr) minmax(120px, 0.75fr) minmax(150px, 1fr) auto auto 24px;
+  grid-template-columns: 34px minmax(120px, 0.9fr) minmax(112px, 0.65fr) minmax(
+      132px,
+      0.85fr
+    ) minmax(146px, 0.9fr) minmax(96px, 0.55fr) minmax(98px, 0.5fr) auto auto 24px;
   align-items: center;
   gap: 10px;
   min-width: 0;

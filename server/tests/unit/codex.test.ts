@@ -79,6 +79,20 @@ describe('codex adapter', () => {
     expect(argv).not.toContain('again');
   });
 
+  it('passes explicit model and reasoning settings to fresh and resumed turns', () => {
+    const context = {
+      model: { modelId: 'gpt-5.4', reasoningEffort: 'low' },
+    };
+    const freshArgv = codexSpec.buildArgs('hi', null, context);
+    const resumedArgv = codexSpec.buildArgs('again', 'abc-123', context);
+
+    for (const argv of [freshArgv, resumedArgv]) {
+      expect(argv).toContain('-m');
+      expect(argv).toContain('gpt-5.4');
+      expect(argv).toContain('model_reasoning_effort="low"');
+    }
+  });
+
   it('builds argv with an edit permission grant', () => {
     const argv = codexSpec.buildArgs('edit', null, {
       permission: {

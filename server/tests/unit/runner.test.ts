@@ -132,6 +132,25 @@ describe('runAgentTurn — cwd resolution', () => {
     expect(callArgs.args).toEqual(['--work-turn']);
   });
 
+  it('passes model context to adapter argument builders', async () => {
+    const buildArgs = vi.fn(() => ['--model-turn']);
+    const spec = makeSpec({ buildArgs });
+    await runAgentTurn({
+      spec,
+      prompt: 'hi',
+      sessionId: null,
+      model: { modelId: 'gpt-5.4', reasoningEffort: 'low' },
+    });
+
+    expect(buildArgs).toHaveBeenCalledWith('hi', null, {
+      model: { modelId: 'gpt-5.4', reasoningEffort: 'low' },
+    });
+    const firstCall = runSubprocessMock.mock.calls[0];
+    expect(firstCall).toBeDefined();
+    const callArgs = (firstCall as unknown as [{ args: string[] }])[0];
+    expect(callArgs.args).toEqual(['--model-turn']);
+  });
+
   it('passes adapter env overrides to runSubprocess', async () => {
     const buildEnv = vi.fn(() => ({ ANTHROPIC_LOG: 'debug' }));
     const spec = makeSpec({ buildEnv });

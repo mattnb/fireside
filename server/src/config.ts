@@ -11,6 +11,9 @@ export interface Config {
   maxPromptChars: number;
   largeMessageThresholdChars: number;
   resumeCliSessions: boolean;
+  autoCompactEnabled: boolean;
+  autoCompactPercent: number;
+  autoCompactTokenLimit: number;
 }
 
 function envFlag(name: string, defaultValue = false): boolean {
@@ -77,5 +80,8 @@ export function loadConfig(): Config {
     maxPromptChars: envNumber('FIRESIDE_MAX_PROMPT_CHARS', 16_000),
     largeMessageThresholdChars: envNumber('FIRESIDE_LARGE_MESSAGE_CHARS', 6_000),
     resumeCliSessions: envFlag('FIRESIDE_RESUME_CLI_SESSIONS', true),
+    autoCompactEnabled: envFlag('FIRESIDE_AUTO_COMPACT_ENABLED', true),
+    autoCompactPercent: envNumber('FIRESIDE_AUTO_COMPACT_PERCENT', 70),
+    autoCompactTokenLimit: envNumber('FIRESIDE_AUTO_COMPACT_TOKEN_LIMIT', 220_000),
   };
 }

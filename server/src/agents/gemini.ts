@@ -15,6 +15,7 @@ import { formatContextUsage, geminiContextUsage } from '../context-usage.js';
 // names act as forward-compat fallbacks should the CLI evolve.
 const RESPONSE_FIELDS = ['response', 'result', 'text', 'output'];
 const SESSION_FIELDS = ['session_id', 'sessionId', 'session'];
+const DEFAULT_GEMINI_MODEL = 'gemini-3.1-pro-preview';
 
 function pickString(obj: Record<string, unknown>, fields: string[]): string | null {
   for (const f of fields) {
@@ -97,7 +98,8 @@ function geminiStreamEvents(line: string): AgentStreamEvent[] {
         {
           kind: 'message',
           status: obj.delta === true ? 'running' : 'completed',
-          label: obj.delta === true ? 'gemini assistant text streaming' : 'gemini assistant message',
+          label:
+            obj.delta === true ? 'gemini assistant text streaming' : 'gemini assistant message',
           detail: excerpt(obj.content),
         },
       ];
@@ -174,6 +176,12 @@ function geminiApprovalMode(context?: AgentRunContext): string {
   }
 }
 
+function geminiModelArgs(context?: AgentRunContext): string[] {
+  const modelId =
+    context?.model?.modelId || process.env.FIRESIDE_GEMINI_MODEL || DEFAULT_GEMINI_MODEL;
+  return modelId ? ['--model', modelId] : [];
+}
+
 export const geminiSpec: AgentSpec = {
   id: 'gemini',
   displayName: 'Gemini',
@@ -193,6 +201,7 @@ export const geminiSpec: AgentSpec = {
       '--skip-trust',
       '--approval-mode',
       geminiApprovalMode(context),
+      ...geminiModelArgs(context),
     ];
     const includeDirs = geminiIncludeDirectories(context);
     if (includeDirs.length > 0) args.push('--include-directories', includeDirs.join(','));

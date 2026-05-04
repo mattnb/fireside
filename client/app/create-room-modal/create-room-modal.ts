@@ -39,6 +39,10 @@ export class CreateRoomModal {
   readonly agentNameSet = output<{ clientId: string; event: Event }>();
   readonly agentProviderSet = output<{ clientId: string; event: Event }>();
   readonly agentPersonaSet = output<{ clientId: string; event: Event }>();
+  readonly agentModelSet = output<{ clientId: string; event: Event }>();
+  readonly agentReasoningSet = output<{ clientId: string; event: Event }>();
+  readonly agentAutoCompactToggled = output<{ clientId: string; event: Event }>();
+  readonly agentAutoCompactPercentSet = output<{ clientId: string; event: Event }>();
   readonly agentYoloToggled = output<{ clientId: string; event: Event }>();
   readonly agentLeadSet = output<string>();
   readonly agentProviderRecommended = output<{ clientId: string; providerId: ProviderId }>();
@@ -54,14 +58,18 @@ export class CreateRoomModal {
   }
 
   currentCandidate(row: DraftRoomAgent, recommendation: ProviderScoreSlotResult) {
-    return recommendation.candidates.find((candidate) => candidate.providerId === row.providerId) ?? null;
+    return (
+      recommendation.candidates.find((candidate) => candidate.providerId === row.providerId) ?? null
+    );
   }
 
   recommendationLabel(recommendation: ProviderScoreSlotResult): string {
     const providerId = recommendation.selectedProviderId;
     if (!providerId) return 'No provider recommendation available';
     const provider = this.display.providerForId(providerId).displayName;
-    return recommendation.recommendationMatchesCurrent ? `${provider} is recommended` : `Recommended: ${provider}`;
+    return recommendation.recommendationMatchesCurrent
+      ? `${provider} is recommended`
+      : `Recommended: ${provider}`;
   }
 
   recommendationDetail(recommendation: ProviderScoreSlotResult): string {

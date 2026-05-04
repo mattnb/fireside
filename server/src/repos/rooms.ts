@@ -47,6 +47,18 @@ function parseAgents(json: string): AgentId[] {
   }
 }
 
+function profileRuntimeSettingsChanged(
+  previous: RoomAgentProfile | undefined,
+  next: RoomAgentProfile,
+): boolean {
+  if (!previous) return false;
+  return (
+    previous.providerId !== next.providerId ||
+    (previous.modelId ?? '') !== (next.modelId ?? '') ||
+    (previous.reasoningEffort ?? '') !== (next.reasoningEffort ?? '')
+  );
+}
+
 function rowToRoom(row: RoomRow): Room {
   const agents = parseAgents(row.agents_json);
   const yoloAgents = parseAgents(row.yolo_agents_json).filter((agent) => agents.includes(agent));
@@ -145,11 +157,11 @@ export function setRoomAgents(
   const nextAgents = nextProfiles.map((profile) => profile.id);
   const removed = room.agents.filter((a) => !nextAgents.includes(a));
   const currentProfilesById = new Map(room.agentProfiles.map((profile) => [profile.id, profile]));
-  const providerChanged = nextProfiles
+  const runtimeSettingsChanged = nextProfiles
     .filter((profile) => currentProfilesById.get(profile.id)?.providerId !== undefined)
-    .filter((profile) => currentProfilesById.get(profile.id)!.providerId !== profile.providerId)
+    .filter((profile) => profileRuntimeSettingsChanged(currentProfilesById.get(profile.id), profile))
     .map((profile) => profile.id);
-  const sessionsToDelete = [...new Set([...removed, ...providerChanged])];
+  const sessionsToDelete = [...new Set([...removed, ...runtimeSettingsChanged])];
   const nextYoloAgents = (yoloAgents ?? room.yoloAgents).filter((agent) =>
     nextAgents.includes(agent),
   );

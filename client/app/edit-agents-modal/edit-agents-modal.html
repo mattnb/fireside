@@ -9,14 +9,14 @@
     <header class="modal__head">
       <h2 id="edit-agents-title">agents in #{{ roomName() }}</h2>
       <p>
-        Name each participant, choose their provider and persona, then choose who joins
-        autonomous YOLO rounds.
+        Name each participant, choose their provider and persona, then choose who joins autonomous
+        YOLO rounds.
       </p>
     </header>
     <div class="agent-editor">
       @for (row of agentRows(); track row.clientId) {
       <article class="agent-toggle">
-        <span [class]="display.draftProviderAvatarClass(row)"></span>
+        <span [class]="display.draftProviderAvatarClass(row) + ' agent-toggle__avatar'"></span>
         <label class="agent-toggle__select agent-toggle__select--name">
           <span>name</span>
           <input
@@ -29,7 +29,7 @@
             (input)="agentNameSet.emit({ clientId: row.clientId, event: $event })"
           />
         </label>
-        <label class="agent-toggle__select">
+        <label class="agent-toggle__select agent-toggle__select--provider">
           <span>provider</span>
           <select
             [value]="row.providerId"
@@ -56,6 +56,67 @@
             </option>
             }
           </select>
+        </label>
+        <label class="agent-toggle__select agent-toggle__select--model">
+          <span>model</span>
+          <input
+            type="text"
+            autocomplete="off"
+            spellcheck="false"
+            [attr.list]="'edit-agent-model-presets-' + row.clientId"
+            [value]="row.modelId ?? ''"
+            aria-label="Agent model"
+            [placeholder]="display.draftModelPlaceholder(row)"
+            (input)="agentModelSet.emit({ clientId: row.clientId, event: $event })"
+          />
+          <datalist [id]="'edit-agent-model-presets-' + row.clientId">
+            @for (model of display.draftModelPresets(row); track model) { @if (model) {
+            <option [value]="model"></option>
+            } }
+          </datalist>
+        </label>
+        <label
+          class="agent-toggle__select agent-toggle__select--effort"
+          [class.is-disabled]="!display.draftSupportsReasoningEffort(row)"
+        >
+          <span>effort</span>
+          <select
+            [value]="row.reasoningEffort ?? ''"
+            [disabled]="!display.draftSupportsReasoningEffort(row)"
+            aria-label="Agent reasoning effort"
+            (change)="agentReasoningSet.emit({ clientId: row.clientId, event: $event })"
+          >
+            @for (effort of display.draftReasoningEfforts(row); track effort) {
+            <option [value]="effort" [selected]="effort === (row.reasoningEffort ?? '')">
+              {{ effort || 'default' }}
+            </option>
+            }
+          </select>
+        </label>
+        <label
+          class="agent-toggle__compact"
+          title="Automatically compact this agent's provider context at this percentage"
+        >
+          <span>compact</span>
+          <span class="agent-toggle__compact-row">
+            <input
+              type="checkbox"
+              [checked]="row.autoCompactEnabled"
+              aria-label="Enable automatic context compaction"
+              (change)="agentAutoCompactToggled.emit({ clientId: row.clientId, event: $event })"
+            />
+            <input
+              type="number"
+              min="1"
+              max="100"
+              step="1"
+              [value]="row.autoCompactPercent"
+              [disabled]="!row.autoCompactEnabled"
+              aria-label="Auto compact percent"
+              (input)="agentAutoCompactPercentSet.emit({ clientId: row.clientId, event: $event })"
+            />
+            <span>%</span>
+          </span>
         </label>
         <label class="agent-toggle__yolo" title="Participates in YOLO rounds">
           <input
@@ -92,8 +153,7 @@
             <strong>{{ recommendationLabel(recommendation) }}</strong>
             @if (recommendationDetail(recommendation)) {
             <span>{{ recommendationDetail(recommendation) }}</span>
-            }
-            @if (whyNotCurrent(row, recommendation)) {
+            } @if (whyNotCurrent(row, recommendation)) {
             <span class="provider-rec__why">{{ whyNotCurrent(row, recommendation) }}</span>
             }
           </div>
@@ -109,8 +169,7 @@
         </div>
         }
       </article>
-      }
-      @if (agentValidationError()) {
+      } @if (agentValidationError()) {
       <p class="agent-validation">{{ agentValidationError() }}</p>
       }
     </div>

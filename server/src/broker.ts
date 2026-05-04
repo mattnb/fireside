@@ -135,6 +135,7 @@ import {
   listAgentRunActions,
   listRecentAgentRunActions,
   listRecentContextUsageActions,
+  listRecentContextUsageActionsForRoom,
   type AgentRunAction,
   type CreateAgentRunActionInput,
 } from './repos/run-actions.js';
@@ -170,6 +171,7 @@ import { loadWorkflowProfile, type WorkflowProfile } from './workflow-profile.js
 import { getWorkspacePath } from './workspaces.js';
 import type {
   AgentId,
+  AgentModelSettings,
   AgentReply,
   AgentSpec,
   AgentStreamEvent,
@@ -180,7 +182,10 @@ import type {
 import { logger } from './logger.js';
 import { buildRunDiagnostics, type RunDiagnostics } from './run-diagnostics.js';
 import { codexContextUsage, formatContextUsage } from './context-usage.js';
-import { geminiTerminalQuotaUsage, maybeSampleGeminiStatsModelQuota } from './agents/gemini-quota.js';
+import {
+  geminiTerminalQuotaUsage,
+  maybeSampleGeminiStatsModelQuota,
+} from './agents/gemini-quota.js';
 import {
   formatProviderCapacityBlock,
   latestProviderCapacityBlock,
@@ -217,6 +222,11 @@ import {
   describeRunHeartbeat,
   processProviderSignalEvent,
 } from './orchestration/run-activity.js';
+import {
+  autoContextMaintenanceDecision,
+  type AutoCompactionConfig,
+  type AutoContextMaintenanceDecision,
+} from './orchestration/auto-compaction.js';
 import {
   executeProviderTurn,
   rawOutputFromError,
@@ -272,6 +282,7 @@ export interface BrokerDeps {
     onStreamEvent?: (event: AgentStreamEvent) => void,
     timeoutMs?: number | null,
     turnKind?: AgentTurnKind,
+    modelSettings?: AgentModelSettings,
   ) => Promise<AgentReply>;
   getSpec: (id: AgentId) => AgentSpec | undefined;
   maxHistory?: number;
@@ -285,6 +296,9 @@ export interface BrokerDeps {
   temporaryAgentMaxTurns?: number;
   contextDir?: string;
   resumeCliSessions?: boolean;
+  autoCompactEnabled?: boolean;
+  autoCompactPercent?: number;
+  autoCompactTokenLimit?: number;
 }
 
 const DEFAULT_MAX_AGENT_REPLIES_PER_THREAD = 5;
@@ -300,6 +314,7 @@ const RUN_SIGNAL_UPDATE_THROTTLE_MS = 2_500;
 const STREAM_MESSAGE_THROTTLE_MS = 1_000;
 const AGENT_JOB_LEASE_MS = 15 * 60 * 1000;
 const COMPACT_PROMPT = '/compact';
+const GEMINI_COMPACT_PROMPT = '/compress';
 const ACTIVE_TASK_STATUSES = new Set<Task['status']>(['active', 'blocked', 'verifying']);
 
 interface DiscussionTurn {
@@ -423,6 +438,7 @@ interface AgentTurnResult {
   runId?: string;
   failed?: boolean;
   error?: string;
+  handoffs?: AgentId[];
   workDispatches?: MissionWorkDispatch[];
 }
 
@@ -451,6 +467,26 @@ function cleanVisibleAgentMessage(agentId: AgentId, text: string): string {
     .trim();
 }
 
+function uniqueAgentIds(agents: AgentId[]): AgentId[] {
+  return agents.filter((agent, index) => agents.indexOf(agent) === index);
+}
+
+function agentModelSettings(profile: RoomAgentProfile): AgentModelSettings | undefined {
+  if (!profile.modelId && !profile.reasoningEffort) return undefined;
+  return {
+    ...(profile.modelId ? { modelId: profile.modelId } : {}),
+    ...(profile.reasoningEffort ? { reasoningEffort: profile.reasoningEffort } : {}),
+  };
+}
+
+function compactPromptForProvider(providerId: ProviderId): string {
+  return providerId === 'gemini' ? GEMINI_COMPACT_PROMPT : COMPACT_PROMPT;
+}
+
+function terminalRunStatus(status: AgentRun['status'] | undefined): boolean {
+  return status === 'completed' || status === 'failed' || status === 'empty';
+}
+
 function isBrokerInternalSystemMessage(message: Message): boolean {
   if (message.authorKind !== 'system') return false;
   return (
@@ -464,14 +500,14 @@ function isBrokerInternalSystemMessage(message: Message): boolean {
 }
 
 function isWorkflowRepairTrigger(message: Message): boolean {
-  return message.authorKind === 'system' && /^\(fireside workflow contract repair for /i.test(message.text);
+  return (
+    message.authorKind === 'system' &&
+    /^\(fireside workflow contract repair for /i.test(message.text)
+  );
 }
 
 function providerCompactionWarning(agentId: AgentId, stderr: string): string | null {
-  if (
-    providerIdFromAgentId(agentId) === 'codex' &&
-    isCodexRolloutThreadMissing(stderr)
-  ) {
+  if (providerIdFromAgentId(agentId) === 'codex' && isCodexRolloutThreadMissing(stderr)) {
     return 'Codex CLI returned success, but stderr reported that it failed to record rollout items for the resumed thread. The local rollout may not fully reflect the compaction turn.';
   }
   return null;
@@ -533,6 +569,12 @@ export class Broker extends EventEmitter {
     string,
     { roomId: string; controller: AbortController }
   >();
+  // Runs that the user has explicitly stopped via the per-run stop button.
+  // Populated by `stopAgentRun()` before it calls `controller.abort()`.
+  // Consumed by the agent-turn-executor's cancel branch through
+  // `consumeUserStopReason()` so the run lands in `canceled_by_user` with a
+  // human-readable reason instead of the default `canceled_by_reconciliation`.
+  private userStoppedRuns = new Map<string, string>();
   private queuedHumanMessageIds = new Map<string, Set<string>>();
   private drainingQueuedRooms = new Set<string>();
   private yoloLaunchRepairInFlight = new Set<string>();
@@ -1117,16 +1159,93 @@ export class Broker extends EventEmitter {
     return updated;
   }
 
+  // Targeted stop for a single in-flight run. Different from `dismissAgentRun`,
+  // which only marks the database row terminal — `stopAgentRun` actually
+  // aborts the active subprocess so the provider CLI exits and the agent
+  // stops working. Used by the per-run "Stop" affordance in the run detail
+  // modal.
+  stopAgentRun(
+    roomId: string,
+    runId: string,
+    authorId: string,
+  ): {
+    ok: boolean;
+    statusCode: number;
+    error?: string;
+    run?: AgentRunSummary;
+  } {
+    const room = getRoom(this.deps.db, roomId);
+    if (!room) return { ok: false, statusCode: 404, error: 'room not found' };
+
+    const run = getAgentRun(this.deps.db, runId);
+    if (!run || run.roomId !== roomId) {
+      return { ok: false, statusCode: 404, error: 'run not found' };
+    }
+
+    // Idempotent on already-terminal runs: surface the current row so the
+    // caller can refresh its UI without a second fetch.
+    if (run.status !== 'running') {
+      return { ok: true, statusCode: 200, run };
+    }
+
+    const reason = `${authorId || 'human'} stopped this run`;
+    const active = this.activeRunAbortControllers.get(run.id);
+
+    if (active && !active.controller.signal.aborted) {
+      // Mark the run as user-stopped before triggering the abort. The
+      // executor's cancel branch consults `consumeUserStopReason` to write
+      // 'canceled_by_user' + this reason instead of the default
+      // 'canceled_by_reconciliation' + provider error.
+      this.userStoppedRuns.set(run.id, reason);
+      active.controller.abort();
+    } else {
+      // No live controller (already aborted, or the row is stuck running
+      // without one — both edge cases). Write the lifecycle directly so the
+      // run history is honest about who ended it.
+      this.updateRunLifecycle({
+        runId: run.id,
+        state: 'canceled_by_user',
+        reason,
+      });
+      this.userStoppedRuns.delete(run.id);
+    }
+
+    this.recordRunAction({
+      roomId,
+      taskId: run.taskId,
+      runId: run.id,
+      agentId: run.agentId,
+      kind: 'run',
+      status: 'failed',
+      label: 'run stopped',
+      detail: reason,
+    });
+
+    this.appendDirect(
+      roomId,
+      'system',
+      'system',
+      `${authorId || 'human'} stopped @${run.agentId}'s active run.`,
+    );
+
+    const refreshed = getAgentRun(this.deps.db, run.id);
+    return { ok: true, statusCode: 200, ...(refreshed ? { run: refreshed } : {}) };
+  }
+
   startAgentCompaction(roomId: string, agentId: AgentId, authorId: string): AgentCompactionResult {
     const room = getRoom(this.deps.db, roomId);
     if (!room) return { ok: false, statusCode: 404, error: 'room not found' };
     const agentProfile =
       room.agentProfiles.find((profile) => profile.id === agentId) ?? defaultAgentProfile(agentId);
-    if (agentProfile.providerId !== 'claude' && agentProfile.providerId !== 'codex') {
+    if (
+      agentProfile.providerId !== 'claude' &&
+      agentProfile.providerId !== 'codex' &&
+      agentProfile.providerId !== 'gemini'
+    ) {
       return {
         ok: false,
         statusCode: 400,
-        error: 'manual compaction is only available for claude and codex',
+        error: 'manual compaction is only available for claude, codex, and gemini',
       };
     }
     if (!room.agents.includes(agentId)) {
@@ -1159,17 +1278,18 @@ export class Broker extends EventEmitter {
     if (!spec) {
       return { ok: false, statusCode: 503, error: `no adapter for agent "${agentId}"` };
     }
+    const compactPrompt = compactPromptForProvider(agentProfile.providerId);
     const run = createAgentRun(this.deps.db, {
       roomId,
       taskId: task?.id ?? null,
       triggerMessageId: trigger.id,
       agentId,
       permissionMode: 'plan',
-      promptChars: COMPACT_PROMPT.length,
+      promptChars: compactPrompt.length,
       estimatedPromptTokens: 2,
       liveMessages: 0,
       contextArtifacts: 0,
-      promptText: COMPACT_PROMPT,
+      promptText: compactPrompt,
       lifecycleState: 'launching_agent_process',
       lifecycleReason: 'manual compaction requested',
       maxTurns: 1,
@@ -1193,7 +1313,7 @@ export class Broker extends EventEmitter {
       kind: 'adapter',
       status: 'running',
       label: 'agent process started',
-      detail: `${spec.command} / compact`,
+      detail: `${spec.command} ${compactPrompt}`,
     });
     void this.runAgentCompaction({
       roomId,
@@ -1203,6 +1323,10 @@ export class Broker extends EventEmitter {
       spec,
       sessionId,
       providerId: agentProfile.providerId,
+      compactPrompt,
+      ...(agentModelSettings(agentProfile)
+        ? { modelSettings: agentModelSettings(agentProfile) }
+        : {}),
     });
     return { ok: true, run };
   }
@@ -1268,6 +1392,208 @@ export class Broker extends EventEmitter {
       detail:
         action.label === 'codex turn completed' ? formatContextUsage(corrected) : action.detail,
     };
+  }
+
+  private autoCompactionConfig(profile: RoomAgentProfile): AutoCompactionConfig {
+    const agentPercent = profile.autoCompactPercent;
+    return {
+      enabled:
+        this.deps.resumeCliSessions === true &&
+        this.deps.autoCompactEnabled !== false &&
+        profile.autoCompactEnabled !== false,
+      percentThreshold: agentPercent ?? this.deps.autoCompactPercent ?? 70,
+      tokenThreshold: agentPercent !== undefined ? 0 : (this.deps.autoCompactTokenLimit ?? 220_000),
+    };
+  }
+
+  private latestContextUsageForAgent(
+    roomId: string,
+    agentId: AgentId,
+    sessionId: string,
+  ): AgentRunAction | null {
+    for (const action of listRecentContextUsageActionsForRoom(this.deps.db, roomId, 300)) {
+      if (action.agentId !== agentId) continue;
+      const normalized = this.normalizeActionContextUsage(action);
+      const usage = normalized.contextUsage;
+      if (!usage || usage.quotaOnly) continue;
+      const run = getAgentRun(this.deps.db, normalized.runId);
+      if (run?.cliSessionId && run.cliSessionId !== sessionId) continue;
+      return normalized;
+    }
+    return null;
+  }
+
+  private latestContextMaintenanceAt(roomId: string, agentId: AgentId): number {
+    const maintenanceLabels = new Set([
+      'context compacted',
+      'context compacted with provider warning',
+      'context session reset',
+      'auto compaction failed',
+    ]);
+    for (const action of listRecentAgentRunActions(this.deps.db, roomId, 300)) {
+      if (action.agentId === agentId && maintenanceLabels.has(action.label)) {
+        return action.createdAt;
+      }
+    }
+    return 0;
+  }
+
+  private async maybeMaintainAgentContextBeforeTurn(input: {
+    roomId: string;
+    agentId: AgentId;
+    trigger: Message;
+    profile: RoomAgentProfile;
+    spec: AgentSpec;
+  }): Promise<void> {
+    const config = this.autoCompactionConfig(input.profile);
+    if (!config.enabled) return;
+    const sessionId = this.getResumableCliSessionId(input.roomId, input.agentId);
+    if (!sessionId) return;
+
+    const usageAction = this.latestContextUsageForAgent(input.roomId, input.agentId, sessionId);
+    const usage = usageAction?.contextUsage;
+    if (!usage) return;
+    if (this.latestContextMaintenanceAt(input.roomId, input.agentId) >= usageAction.createdAt) {
+      return;
+    }
+
+    const decision = autoContextMaintenanceDecision(input.profile, usage, config);
+    if (!decision) return;
+
+    logger.info(
+      {
+        roomId: input.roomId,
+        agentId: input.agentId,
+        providerId: input.profile.providerId,
+        action: decision.action,
+        usedTokens: decision.usedTokens,
+        thresholdTokens: decision.thresholdTokens,
+        contextWindow: decision.contextWindow ?? null,
+      },
+      'auto context maintenance scheduled',
+    );
+    if (decision.action === 'compact') {
+      await this.runAutoAgentCompaction({ ...input, sessionId, decision });
+    } else {
+      this.resetAgentContextSessionBeforeTurn({ ...input, sessionId, decision });
+    }
+  }
+
+  private async runAutoAgentCompaction(input: {
+    roomId: string;
+    agentId: AgentId;
+    trigger: Message;
+    profile: RoomAgentProfile;
+    spec: AgentSpec;
+    sessionId: string;
+    decision: AutoContextMaintenanceDecision;
+  }): Promise<void> {
+    const task = getActiveTask(this.deps.db, input.roomId);
+    const compactPrompt = compactPromptForProvider(input.profile.providerId);
+    const run = createAgentRun(this.deps.db, {
+      roomId: input.roomId,
+      taskId: task?.id ?? null,
+      triggerMessageId: input.trigger.id,
+      agentId: input.agentId,
+      permissionMode: 'plan',
+      promptChars: compactPrompt.length,
+      estimatedPromptTokens: 2,
+      liveMessages: 0,
+      contextArtifacts: 0,
+      promptText: compactPrompt,
+      lifecycleState: 'launching_agent_process',
+      lifecycleReason: input.decision.reason,
+      maxTurns: 1,
+    });
+    this.emit('agentRunUpdated', run);
+    this.recordRunAction({
+      roomId: input.roomId,
+      taskId: task?.id ?? null,
+      runId: run.id,
+      agentId: input.agentId,
+      kind: 'run',
+      status: 'info',
+      label: 'auto compaction requested',
+      detail: input.decision.reason,
+    });
+    this.recordRunAction({
+      roomId: input.roomId,
+      taskId: task?.id ?? null,
+      runId: run.id,
+      agentId: input.agentId,
+      kind: 'adapter',
+      status: 'running',
+      label: 'agent process started',
+      detail: `${input.spec.command} ${compactPrompt}`,
+    });
+    await this.runAgentCompaction({
+      roomId: input.roomId,
+      taskId: task?.id ?? null,
+      runId: run.id,
+      agentId: input.agentId,
+      spec: input.spec,
+      sessionId: input.sessionId,
+      providerId: input.profile.providerId,
+      compactPrompt,
+      ...(agentModelSettings(input.profile)
+        ? { modelSettings: agentModelSettings(input.profile) }
+        : {}),
+      drainQueuedAfter: false,
+    });
+  }
+
+  private resetAgentContextSessionBeforeTurn(input: {
+    roomId: string;
+    agentId: AgentId;
+    trigger: Message;
+    sessionId: string;
+    decision: AutoContextMaintenanceDecision;
+  }): void {
+    const task = getActiveTask(this.deps.db, input.roomId);
+    const run = createAgentRun(this.deps.db, {
+      roomId: input.roomId,
+      taskId: task?.id ?? null,
+      triggerMessageId: input.trigger.id,
+      agentId: input.agentId,
+      permissionMode: 'plan',
+      promptChars: 0,
+      estimatedPromptTokens: 0,
+      liveMessages: 0,
+      contextArtifacts: 0,
+      promptText: '',
+      lifecycleState: 'finishing',
+      lifecycleReason: input.decision.reason,
+      maxTurns: 1,
+    });
+    this.emit('agentRunUpdated', run);
+    this.recordRunAction({
+      roomId: input.roomId,
+      taskId: task?.id ?? null,
+      runId: run.id,
+      agentId: input.agentId,
+      kind: 'run',
+      status: 'info',
+      label: 'auto context reset requested',
+      detail: input.decision.reason,
+    });
+    deleteCliSessionId(this.deps.db, input.roomId, input.agentId);
+    const completedRun = updateAgentRun(this.deps.db, run.id, {
+      status: 'completed',
+      completedAt: Date.now(),
+      lifecycleState: 'succeeded',
+      lifecycleReason: 'context session reset',
+    });
+    if (completedRun) this.emit('agentRunUpdated', completedRun);
+    this.recordRunAction({
+      roomId: input.roomId,
+      taskId: task?.id ?? null,
+      runId: run.id,
+      agentId: input.agentId,
+      kind: 'run',
+      status: 'completed',
+      label: 'context session reset',
+      detail: `cleared resumable session ${input.sessionId}; ${input.decision.reason}`,
+    });
   }
 
   listArtifacts(roomId: string): ConversationArtifactListing | null {
@@ -1400,7 +1726,7 @@ export class Broker extends EventEmitter {
       await this.drainQueuedHumanMessages(request.roomId);
       return;
     }
-    await this.runAgentHandoffs(request.roomId, request.agentId, result.message);
+    await this.runAgentHandoffs(request.roomId, request.agentId, result.message, result.handoffs);
     await this.drainQueuedHumanMessages(request.roomId);
   }
 
@@ -1515,7 +1841,7 @@ export class Broker extends EventEmitter {
     try {
       const result = await this.runAgentReply(roomId, leadAgentId, trigger);
       if (result.message) {
-        await this.runAgentHandoffs(roomId, leadAgentId, result.message);
+        await this.runAgentHandoffs(roomId, leadAgentId, result.message, result.handoffs);
       }
       await this.drainQueuedHumanMessages(roomId);
     } finally {
@@ -1906,6 +2232,14 @@ export class Broker extends EventEmitter {
       });
       return { message: null, progressed: false };
     }
+    await this.maybeMaintainAgentContextBeforeTurn({
+      roomId,
+      agentId,
+      trigger,
+      profile: agentProfile,
+      spec,
+    });
+    if (cancelSignal?.aborted) return { message: null, progressed: false };
     const maxHistory = this.deps.maxHistory ?? DEFAULT_PROMPT_HISTORY;
     const preparedContext = prepareAgentTurnContext({
       db: this.deps.db,
@@ -2148,6 +2482,7 @@ export class Broker extends EventEmitter {
         : effectivePermission
           ? 'permission-operation'
           : 'chat';
+    const modelSettings = agentModelSettings(agentProfile);
 
     const providerTurn = await executeProviderTurn({
       runAgent: this.deps.runAgent,
@@ -2168,6 +2503,7 @@ export class Broker extends EventEmitter {
       attempt,
       maxRetryAttempts: 3,
       turnKind,
+      ...(modelSettings ? { modelSettings } : {}),
     });
     if (!providerTurn.ok) {
       const errMsg = providerTurn.error;
@@ -2177,14 +2513,15 @@ export class Broker extends EventEmitter {
           ? geminiTerminalQuotaUsage(`${errMsg}\n${raw.stdout}\n${raw.stderr}`)
           : null;
       const canceled = providerTurn.canceled;
+      const cancelInfo = canceled ? this.consumeUserStopReason(run.id) : null;
       const failedRun = updateAgentRun(this.deps.db, run.id, {
         status: 'failed',
         completedAt: Date.now(),
         error: errMsg,
         stdout: raw.stdout,
         stderr: raw.stderr,
-        lifecycleState: canceled ? 'canceled_by_reconciliation' : 'failed',
-        lifecycleReason: errMsg,
+        lifecycleState: cancelInfo ? cancelInfo.lifecycleState : 'failed',
+        lifecycleReason: cancelInfo?.reason ?? errMsg,
       });
       if (failedRun) this.emit('agentRunUpdated', failedRun);
       this.recordDiagnosticActions(
@@ -2902,6 +3239,7 @@ export class Broker extends EventEmitter {
     const extracted = extractCollaborationNotes(textAfterMissionReceipts);
     const visibleText = cleanVisibleAgentMessage(agentId, extracted.visibleText);
     const message = visibleText ? this.appendDirect(roomId, agentId, 'agent', visibleText) : null;
+    const handoffs = this.agentHandoffsForMessage(room, agentId, message);
     this.storeCollaborationNotes({
       roomId,
       taskId: missionTask?.id ?? null,
@@ -2970,6 +3308,7 @@ export class Broker extends EventEmitter {
       : visibleMessageCountsAsProgress ||
         hiddenMissionProgressCount > 0 ||
         extracted.notes.length > 0 ||
+        handoffs.length > 0 ||
         reconciliation.progressed > 0 ||
         rosterResult.applied > 0 ||
         finalWorkDispatches.length > 0 ||
@@ -2989,6 +3328,10 @@ export class Broker extends EventEmitter {
       collaborationNotes: extracted.notes.length,
       draftArtifacts: extractedDrafts.drafts.length,
       workDispatches: finalWorkDispatches,
+      nextAgents: uniqueAgentIds([
+        ...handoffs,
+        ...finalWorkDispatches.map((dispatch) => dispatch.agentId),
+      ]),
       summary: message
         ? 'visible message emitted'
         : extracted.notes.length > 0
@@ -2999,6 +3342,7 @@ export class Broker extends EventEmitter {
       message,
       progressed,
       runId: run.id,
+      handoffs,
       workDispatches: finalWorkDispatches,
     };
   }
@@ -3011,6 +3355,9 @@ export class Broker extends EventEmitter {
     spec: AgentSpec;
     sessionId: string;
     providerId: ProviderId;
+    compactPrompt: string;
+    modelSettings?: AgentModelSettings | undefined;
+    drainQueuedAfter?: boolean | undefined;
   }): Promise<void> {
     let lastProviderSignalAt = 0;
     const recordProviderSignal = this.buildProviderSignalRecorder({
@@ -3040,11 +3387,14 @@ export class Broker extends EventEmitter {
     try {
       reply = await this.deps.runAgent(
         input.spec,
-        COMPACT_PROMPT,
+        input.compactPrompt,
         input.sessionId,
         undefined,
         runAbortController.signal,
         recordProviderSignal,
+        undefined,
+        undefined,
+        input.modelSettings,
       );
     } catch (err) {
       this.activeRunAbortControllers.delete(input.runId);
@@ -3052,14 +3402,15 @@ export class Broker extends EventEmitter {
       const errMsg = err instanceof Error ? err.message : String(err);
       const raw = rawOutputFromError(err);
       const canceled = err instanceof Error && err.name === 'SubprocessCanceledError';
+      const cancelInfo = canceled ? this.consumeUserStopReason(input.runId) : null;
       const failedRun = updateAgentRun(this.deps.db, input.runId, {
         status: 'failed',
         completedAt: Date.now(),
         error: errMsg,
         stdout: raw.stdout,
         stderr: raw.stderr,
-        lifecycleState: canceled ? 'canceled_by_reconciliation' : 'failed',
-        lifecycleReason: errMsg,
+        lifecycleState: cancelInfo ? cancelInfo.lifecycleState : 'failed',
+        lifecycleReason: cancelInfo?.reason ?? errMsg,
       });
       if (failedRun) this.emit('agentRunUpdated', failedRun);
       this.recordDiagnosticActions(
@@ -3080,7 +3431,7 @@ export class Broker extends EventEmitter {
         label: canceled ? 'compaction canceled' : 'compaction failed',
         detail: errMsg,
       });
-      void this.drainQueuedHumanMessages(input.roomId);
+      if (input.drainQueuedAfter !== false) void this.drainQueuedHumanMessages(input.roomId);
       return;
     }
 
@@ -3134,7 +3485,7 @@ export class Broker extends EventEmitter {
           ? `session ${reply.sessionId} compacted`
           : 'provider completed compaction without returning a session id',
     });
-    void this.drainQueuedHumanMessages(input.roomId);
+    if (input.drainQueuedAfter !== false) void this.drainQueuedHumanMessages(input.roomId);
   }
 
   private recordRunAction(input: CreateAgentRunActionInput): AgentRunAction {
@@ -3350,6 +3701,23 @@ export class Broker extends EventEmitter {
     });
     if (updated) this.emit('agentRunUpdated', updated);
     return updated;
+  }
+
+  // When a turn ends with a SubprocessCanceledError, the cancel may have come
+  // from `stopRoomRuns` (room-wide), an internal reconciliation event, or
+  // `stopAgentRun` (this run specifically). Consult the user-stop map: if
+  // present, return the user-canceled state and the stored reason, then clear
+  // the entry so a stray reconciliation later isn't misclassified.
+  private consumeUserStopReason(runId: string): {
+    lifecycleState: 'canceled_by_user' | 'canceled_by_reconciliation';
+    reason: string | null;
+  } {
+    const userReason = this.userStoppedRuns.get(runId);
+    if (userReason !== undefined) {
+      this.userStoppedRuns.delete(runId);
+      return { lifecycleState: 'canceled_by_user', reason: userReason };
+    }
+    return { lifecycleState: 'canceled_by_reconciliation', reason: null };
   }
 
   private recordMissionReceipts(input: {
@@ -4693,14 +5061,26 @@ export class Broker extends EventEmitter {
     return decision.responders;
   }
 
+  private agentHandoffsForMessage(
+    room: Room,
+    authorId: AgentId,
+    message: Message | null,
+    allowedAgents?: Set<AgentId>,
+  ): AgentId[] {
+    if (!message) return [];
+    return this.pickAgentHandoffResponders(room, message.text, authorId, allowedAgents);
+  }
+
   private async runAgentHandoffs(
     roomId: string,
     authorId: AgentId,
     message: Message,
+    precomputedResponders?: AgentId[],
   ): Promise<void> {
     const room = getRoom(this.deps.db, roomId);
     if (!room) return;
-    const responders = this.pickAgentHandoffResponders(room, message.text, authorId);
+    const responders =
+      precomputedResponders ?? this.pickAgentHandoffResponders(room, message.text, authorId);
     if (responders.length === 0) return;
     await this.runRoomAwareDiscussionThread(roomId, room, responders, message);
   }
@@ -4916,14 +5296,12 @@ export class Broker extends EventEmitter {
 
         const resultSummaries: DiscussionResultSummary[] = [];
         for (const { agentId, result } of results) {
+          const handoffPool = new Set(scheduler.handoffPool);
           const handoffs = room
             ? result.message
-              ? this.pickAgentHandoffResponders(
-                  room,
-                  result.message.text,
-                  agentId,
-                  new Set(scheduler.handoffPool),
-                )
+              ? result.handoffs !== undefined
+                ? result.handoffs.filter((handoffAgent) => handoffPool.has(handoffAgent))
+                : this.agentHandoffsForMessage(room, agentId, result.message, handoffPool)
               : []
             : [];
           const workDispatches: AgentId[] = [];

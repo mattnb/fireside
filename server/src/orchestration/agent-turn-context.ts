@@ -4,6 +4,7 @@ import { defaultAgentProfile } from '../agents/profiles.js';
 import {
   messageTextForPrompt,
   writeConversationContextFiles,
+  type ConversationContextFiles,
 } from '../context-files.js';
 import type { PermissionGrant } from '../permissions.js';
 import { buildPermissionGrant } from '../permissions.js';
@@ -84,6 +85,19 @@ export interface PreparedAgentTurnContext {
   sessionId: string | null;
   liveMessageChars: number[];
   contextArtifactCount: number;
+}
+
+function latestMessageTextForPrompt(
+  message: Message,
+  contextFiles: ConversationContextFiles | undefined,
+): string {
+  const artifact = contextFiles?.messageArtifacts[message.id];
+  if (!artifact) return message.text;
+  return [
+    message.text,
+    ``,
+    `[Full latest message also stored outside the live prompt: ${artifact.chars} chars at ${artifact.path}]`,
+  ].join('\n');
 }
 
 export function prepareAgentTurnContext(
@@ -199,6 +213,7 @@ export function prepareAgentTurnContext(
     explicitPermission ?? roomYoloPermission ?? taskPermission ?? workflowPermission;
   const workspacePath = input.workflowWorkspacePath(workflowProfile, activeTask ?? null, input.workLane);
   const workflowProfilePromptItem = input.workflowProfilePromptItem(workflowProfile);
+  const latestMessageText = latestMessageTextForPrompt(input.trigger, contextFiles);
   const promptResult = buildTurnPromptResult({
     agentId: input.agentId,
     agentProfile,
@@ -214,7 +229,7 @@ export function prepareAgentTurnContext(
     newMessage: {
       authorId: input.trigger.authorId,
       authorKind: input.trigger.authorKind,
-      text: messageTextForPrompt(input.trigger, contextFiles),
+      text: latestMessageText,
     },
     maxHistory: input.maxHistory,
     maxPromptChars: workflowProfile?.promptBudgetChars ?? input.maxPromptChars,
@@ -232,7 +247,7 @@ export function prepareAgentTurnContext(
   });
   const liveMessageChars = [
     ...promptHistory.map((message) => messageTextForPrompt(message, contextFiles).length),
-    messageTextForPrompt(input.trigger, contextFiles).length,
+    latestMessageText.length,
   ];
   const contextArtifactCount = contextFiles
     ? Object.keys(contextFiles.messageArtifacts).length + contextFiles.fixtureCount

@@ -48,7 +48,10 @@ describe('context usage telemetry', () => {
 
   it('uses known Codex context windows for Codex models', () => {
     expect(codexContextWindowForModel('gpt-5.5')).toBe(400_000);
+    expect(codexContextWindowForModel('gpt-5.4')).toBe(400_000);
+    expect(codexContextWindowForModel('gpt-5.4-mini')).toBe(400_000);
     expect(codexContextWindowForModel('gpt-5.3-codex')).toBe(400_000);
+    expect(codexContextWindowForModel('gpt-5.3-codex-spark')).toBe(400_000);
     expect(codexContextWindowForModel('unknown-model')).toBeUndefined();
   });
 
@@ -377,6 +380,8 @@ describe('context usage telemetry', () => {
       inputTokens: 15,
       outputTokens: 8,
       cachedInputTokens: 2,
+      contextWindow: 1_000_000,
+      remainingTokens: 999_977,
       source: 'gemini:stats.usage_metadata',
     });
   });

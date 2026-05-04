@@ -25,18 +25,23 @@ import type {
 } from './api.types';
 import type { MentionSuggestion } from './chat-types';
 
-export type AgentRailKind =
-  | 'running'
-  | 'yolo'
-  | 'idle'
-  | 'ready'
-  | 'waiting'
-  | 'blocked'
-  | 'stale';
+export type AgentRailKind = 'running' | 'yolo' | 'idle' | 'ready' | 'waiting' | 'blocked' | 'stale';
 
 @Injectable({ providedIn: 'root' })
 export class AgentDisplayService {
   private readonly store = inject(MissionStore);
+  private readonly codexReasoningEfforts = ['', 'low', 'medium', 'high', 'xhigh'];
+  private readonly claudeReasoningEfforts = ['', 'low', 'medium', 'high', 'xhigh', 'max'];
+  readonly modelPresets: Record<string, string[]> = {
+    claude: ['', 'claude-opus-4-7', 'claude-opus-4-6', 'claude-sonnet-4-6', 'claude-haiku-4-5'],
+    codex: ['', 'gpt-5.5', 'gpt-5.4', 'gpt-5.4-mini', 'gpt-5.3-codex'],
+    gemini: [
+      '',
+      'gemini-3.1-pro-preview',
+      'gemini-3-flash-preview',
+      'gemini-3.1-flash-lite-preview',
+    ],
+  };
 
   // ---- Catalog lookups ----------------------------------------------------
 
@@ -105,6 +110,12 @@ export class AgentDisplayService {
     return this.agentProfile(agentId).personaName;
   }
 
+  configuredModelLabel(agentId: AgentId): string {
+    const profile = this.agentProfile(agentId);
+    const parts = [profile.modelId ?? '', profile.reasoningEffort ?? ''].filter(Boolean);
+    return parts.join(' / ');
+  }
+
   isTemporary(agentId: AgentId): boolean {
     return this.agentProfile(agentId).temporary === true;
   }
@@ -138,14 +149,13 @@ export class AgentDisplayService {
 
   canCompactAgent(agentId: AgentId): boolean {
     const providerId = this.agentProviderId(agentId);
-    return providerId === 'claude' || providerId === 'codex';
+    return providerId === 'claude' || providerId === 'codex' || providerId === 'gemini';
   }
 
   workflowState(agentId: AgentId): StatusSnapshotAgentState | null {
     return (
-      this.store.selectedRoomSnapshot()?.agentStates.find(
-        (state) => state.agentId === agentId,
-      ) ?? null
+      this.store.selectedRoomSnapshot()?.agentStates.find((state) => state.agentId === agentId) ??
+      null
     );
   }
 
@@ -270,5 +280,32 @@ export class AgentDisplayService {
 
   draftProviderAvatarClass(row: DraftRoomAgent): string {
     return `avatar avatar--sm avatar--${row.providerId}`;
+  }
+
+  draftModelPlaceholder(row: Pick<DraftRoomAgent, 'providerId'>): string {
+    switch (row.providerId) {
+      case 'claude':
+        return 'provider default or Claude model id';
+      case 'codex':
+        return 'provider default or GPT model id';
+      case 'gemini':
+        return 'provider default or Gemini model id';
+      default:
+        return 'provider default';
+    }
+  }
+
+  draftModelPresets(row: Pick<DraftRoomAgent, 'providerId'>): string[] {
+    return this.modelPresets[row.providerId] ?? [''];
+  }
+
+  draftSupportsReasoningEffort(row: Pick<DraftRoomAgent, 'providerId'>): boolean {
+    return row.providerId === 'claude' || row.providerId === 'codex';
+  }
+
+  draftReasoningEfforts(row: Pick<DraftRoomAgent, 'providerId'>): string[] {
+    if (row.providerId === 'claude') return this.claudeReasoningEfforts;
+    if (row.providerId === 'codex') return this.codexReasoningEfforts;
+    return [''];
   }
 }

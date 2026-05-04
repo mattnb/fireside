@@ -39,6 +39,9 @@ describe('start() / shutdown()', () => {
         maxPromptChars: 16_000,
         largeMessageThresholdChars: 6_000,
         resumeCliSessions: false,
+        autoCompactEnabled: false,
+        autoCompactPercent: 70,
+        autoCompactTokenLimit: 220_000,
       });
 
       // Server is up — REST returns the empty room list.

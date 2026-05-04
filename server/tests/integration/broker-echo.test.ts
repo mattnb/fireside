@@ -23,6 +23,7 @@ import { listTaskPlans } from '../../src/repos/task-plans.js';
 import { listTasks } from '../../src/repos/tasks.js';
 import { getCliSessionId, upsertCliSessionId } from '../../src/repos/sessions.js';
 import { listAgentTurnOutcomesForRoom } from '../../src/repos/turn-outcomes.js';
+import { listRoutingDecisionsForRoom } from '../../src/repos/routing-decisions.js';
 import { Broker } from '../../src/broker.js';
 import type { AgentId, AgentReply, AgentSpec } from '../../src/agents/types.js';
 import type { PermissionGrant } from '../../src/permissions.js';
@@ -626,6 +627,140 @@ describe('Broker', () => {
       'claude:Codex, please verify this before we continue.',
       'codex:Verified and ready for the next step.',
     ]);
+  });
+
+  it('continues explicit multi-agent handoffs from an agent message that also carries hidden state updates', async () => {
+    const handoffBroker = new Broker({
+      db,
+      maxAgentRepliesPerThread: 1,
+      runAgent: async (spec, prompt, sessionId, permission) => {
+        const agentId = (prompt.match(/next message to be sent by "([^"]+)"/)?.[1] ??
+          spec.id) as AgentId;
+        runs.push({
+          agentId,
+          prompt,
+          sessionId,
+          ...(permission !== undefined ? { permission } : {}),
+        });
+        if (agentId === 'claude-ux-architect') {
+          return {
+            text: [
+              '@nat @temur @jimmy — IA-fidelity review pass is ready.',
+              '@nat verify the acceptance criteria before the gate closes.',
+              '@temur pick up the dashboard rebuild after Nat signs off.',
+              '@jimmy coordinate the phase gate once those checks land.',
+              '',
+              '/mission-receipt',
+              'status: continuing',
+              'summary: Review handoff posted to the named owners.',
+              '/end-mission-receipt',
+            ].join('\n'),
+            sessionId: `${spec.id}-sess`,
+            raw: { stdout: '', stderr: '' },
+          };
+        }
+        return {
+          text: '',
+          sessionId: `${spec.id}-sess`,
+          raw: { stdout: '', stderr: '' },
+        };
+      },
+      getSpec: (id) => {
+        const map: Record<string, AgentSpec> = {
+          claude: fakeSpec('claude', 'claude reply'),
+          codex: fakeSpec('codex', 'codex reply'),
+          gemini: fakeSpec('gemini', 'gemini reply'),
+          echo: fakeSpec('echo', 'echo reply'),
+        };
+        return map[id];
+      },
+    });
+    const room = createRoom(db, {
+      name: 'named-handoff',
+      yoloAgents: [
+        'claude-ux-architect',
+        'claude-qa-lead',
+        'codex-principal-software',
+        'claude-project-manager',
+      ],
+      agentProfiles: [
+        {
+          id: 'claude-ux-architect',
+          providerId: 'claude',
+          displayName: 'Rob',
+          personaId: 'ux-architect',
+          personaName: 'UX Architect',
+          personaSummary: '',
+        },
+        {
+          id: 'claude-qa-lead',
+          providerId: 'claude',
+          displayName: 'Nat',
+          personaId: 'qa-lead',
+          personaName: 'QA Lead',
+          personaSummary: '',
+        },
+        {
+          id: 'codex-principal-software',
+          providerId: 'codex',
+          displayName: 'Temur',
+          personaId: 'principal-software-engineer',
+          personaName: 'Principal Software Engineer',
+          personaSummary: '',
+        },
+        {
+          id: 'claude-project-manager',
+          providerId: 'claude',
+          displayName: 'Jimmy',
+          personaId: 'project-manager',
+          personaName: 'Project Manager',
+          personaSummary: '',
+        },
+      ],
+    });
+    const task = handoffBroker.createTask(room.id, {
+      title: 'Named handoff mission',
+      capabilityProfile: 'full-auto',
+    });
+    createTaskChecklistItem(db, {
+      taskId: task!.id,
+      title: 'Document-viewer rebuild',
+      status: 'open',
+      ownerAgentId: 'codex-principal-software',
+      parallelism: 'parallel-safe',
+    });
+
+    await handoffBroker.startYoloDiscussion(
+      room.id,
+      'human',
+      {
+        mode: 'full-auto',
+        filesystemScope: 'unrestricted',
+        web: true,
+      },
+      '@rob begin the review handoff',
+      ['claude-ux-architect'],
+    );
+
+    expect(runs[0]!.agentId).toBe('claude-ux-architect');
+    expect(runs.map((r) => r.agentId)).toEqual(
+      expect.arrayContaining([
+        'claude-qa-lead',
+        'codex-principal-software',
+        'claude-project-manager',
+      ]),
+    );
+    const decisions = listRoutingDecisionsForRoom(db, room.id);
+    expect(decisions).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: 'agent-message',
+          action: 'agent-handoff',
+          reason: 'agent-mentioned-room-participant',
+          responders: ['claude-qa-lead', 'codex-principal-software', 'claude-project-manager'],
+        }),
+      ]),
+    );
   });
 
   it('allows bounded group discussion up to five replies per agent by default', async () => {
@@ -2056,6 +2191,104 @@ describe('Broker', () => {
     expect(listMessages(db, room.id).map((message) => message.text)).toContain(
       'Agent work stopped: human clicked stop. In-flight provider turns are interrupted where possible.',
     );
+  });
+
+  it('stopAgentRun aborts the targeted run and lands canceled_by_user', async () => {
+    let signalSeen: AbortSignal | undefined;
+    const stopBroker = new Broker({
+      db,
+      runAgent: async (_spec, _prompt, _sessionId, _permission, cancelSignal) => {
+        signalSeen = cancelSignal;
+        return await new Promise<AgentReply>((_resolve, reject) => {
+          cancelSignal?.addEventListener(
+            'abort',
+            () => {
+              // Mirror the real runner: a canceled subprocess surfaces as a
+              // SubprocessCanceledError so the broker's cancel branch fires.
+              const err = new Error('subprocess canceled');
+              err.name = 'SubprocessCanceledError';
+              reject(err);
+            },
+            { once: true },
+          );
+        });
+      },
+      getSpec: (id) => {
+        const map: Record<string, AgentSpec> = {
+          claude: fakeSpec('claude', 'claude reply'),
+          codex: fakeSpec('codex', 'codex reply'),
+          gemini: fakeSpec('gemini', 'gemini reply'),
+          echo: fakeSpec('echo', 'echo reply'),
+        };
+        return map[id];
+      },
+    });
+    const room = createRoom(db, { name: 'stop-single-run', agents: ['claude'] });
+
+    const discussion = stopBroker.postHumanMessage(room.id, 'human', '@claude start');
+    while (!signalSeen) {
+      await new Promise((resolve) => setTimeout(resolve, 1));
+    }
+
+    const liveRuns = listAgentRuns(db, room.id, { limit: 10 });
+    const runningRun = liveRuns.find((run) => run.status === 'running');
+    expect(runningRun).toBeDefined();
+
+    const result = stopBroker.stopAgentRun(room.id, runningRun!.id, 'matt');
+    await discussion;
+
+    expect(result.ok).toBe(true);
+    expect(result.statusCode).toBe(200);
+    expect(signalSeen.aborted).toBe(true);
+
+    const finalRun = listAgentRuns(db, room.id, { limit: 10 }).find(
+      (run) => run.id === runningRun!.id,
+    );
+    expect(finalRun?.lifecycleState).toBe('canceled_by_user');
+    expect(finalRun?.lifecycleReason).toBe('matt stopped this run');
+
+    const messages = listMessages(db, room.id).map((message) => message.text);
+    expect(messages).toContain("matt stopped @claude's active run.");
+  });
+
+  it('stopAgentRun on an already-terminal run is a no-op success', () => {
+    const room = createRoom(db, { name: 'stop-terminal', agents: ['claude'] });
+    const trigger = addMessage(db, {
+      roomId: room.id,
+      authorId: 'human',
+      authorKind: 'human',
+      text: 'hi',
+    });
+    const created = createAgentRun(db, {
+      roomId: room.id,
+      agentId: 'claude',
+      triggerMessageId: trigger.id,
+      taskId: null,
+      promptText: 'hi',
+      promptChars: 2,
+      estimatedPromptTokens: 0,
+      permissionMode: 'plan',
+      liveMessages: 0,
+      contextArtifacts: 0,
+    });
+    updateAgentRun(db, created.id, {
+      status: 'completed',
+      completedAt: Date.now(),
+      lifecycleState: 'released',
+      lifecycleReason: 'already done',
+    });
+    const result = broker.stopAgentRun(room.id, created.id, 'matt');
+    expect(result.ok).toBe(true);
+    expect(result.statusCode).toBe(200);
+    expect(result.run?.lifecycleState).toBe('released');
+  });
+
+  it('stopAgentRun returns 404 for an unknown run', () => {
+    const room = createRoom(db, { name: 'stop-unknown', agents: ['claude'] });
+    const result = broker.stopAgentRun(room.id, 'nope', 'matt');
+    expect(result.ok).toBe(false);
+    expect(result.statusCode).toBe(404);
+    expect(result.error).toBe('run not found');
   });
 
   it('does not let one responding agent monologue when peers pass', async () => {
@@ -3773,7 +4006,7 @@ describe('Broker', () => {
     expect(readFileSync(transcriptPath as string, 'utf8')).toContain('third');
   });
 
-  it('stores oversized messages as artifacts and sends excerpts in the live prompt', async () => {
+  it('stores oversized latest messages as artifacts while preserving the handoff inline', async () => {
     const contextDir = mkdtempSync(path.join(os.tmpdir(), 'fireside-artifact-test-'));
     const artifactBroker = new Broker({
       db,
@@ -3806,12 +4039,15 @@ describe('Broker', () => {
     await artifactBroker.postHumanMessage(room.id, 'human', largeText);
 
     const prompt = runs[0]!.prompt;
-    expect(prompt.length).toBeLessThanOrEqual(5_000);
-    expect(prompt).toContain('Large message stored outside the live prompt');
-    expect(prompt).toContain('Artifact file:');
-    expect(prompt).not.toContain(largeText);
+    expect(prompt.length).toBeLessThanOrEqual(13_000);
+    expect(prompt).toContain('latest message was preserved in full');
+    expect(prompt).toContain('Full latest message also stored outside the live prompt');
+    expect(prompt).toContain(largeText);
+    expect(prompt).not.toContain('[Large message stored outside the live prompt');
 
-    const artifactPath = prompt.match(/Artifact file: (.+)/)?.[1];
+    const artifactPath = prompt.match(
+      /Full latest message also stored outside the live prompt: \d+ chars at (.+)]/,
+    )?.[1];
     expect(artifactPath).toBeDefined();
     expect(readFileSync(artifactPath as string, 'utf8')).toContain(largeText);
   });
