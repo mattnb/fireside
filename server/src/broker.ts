@@ -134,6 +134,7 @@ import {
   listAgentRunActionsForRoom,
   listAgentRunActions,
   listRecentAgentRunActions,
+  listRecentContextUsageActions,
   type AgentRunAction,
   type CreateAgentRunActionInput,
 } from './repos/run-actions.js';
@@ -179,7 +180,12 @@ import type {
 import { logger } from './logger.js';
 import { buildRunDiagnostics, type RunDiagnostics } from './run-diagnostics.js';
 import { codexContextUsage, formatContextUsage } from './context-usage.js';
-import { maybeSampleGeminiStatsModelQuota } from './agents/gemini-quota.js';
+import { geminiTerminalQuotaUsage, maybeSampleGeminiStatsModelQuota } from './agents/gemini-quota.js';
+import {
+  formatProviderCapacityBlock,
+  latestProviderCapacityBlock,
+  type ProviderCapacityBlock,
+} from './provider-capacity.js';
 import { mentionAliasSlug, resolveRoomAgentReferences } from './routing/agent-references.js';
 import { routeAgentMessage } from './routing/agent-message-router.js';
 import { routeHumanMessage, type HumanRoutingDecision } from './routing/human-message-router.js';
@@ -229,6 +235,7 @@ import {
 import { applyMissionCreateUpdates as applyMissionCreateUpdatesState } from './mission-state/mission-create-applicator.js';
 import { applyMissionPlanUpdates as applyMissionPlanUpdatesState } from './mission-state/mission-plan-applicator.js';
 import { applyMissionPhaseUpdates as applyMissionPhaseUpdatesState } from './mission-state/mission-phase-applicator.js';
+import { unfinishedChecklistItemsForPhase } from './mission-state/phase-completion.js';
 import {
   autoAdvancePhase as autoAdvanceMissionPhase,
   reconcileMissionState as reconcileMissionStateReceipts,
@@ -970,6 +977,10 @@ export class Broker extends EventEmitter {
       const plan = getTaskPlan(this.deps.db, input.planId);
       if (!plan || plan.taskId !== taskId) return null;
     }
+    if (input.status === 'done') {
+      const unfinished = unfinishedChecklistItemsForPhase(this.deps.db, taskId, phaseId);
+      if (unfinished.length > 0) return null;
+    }
     const updated = updateTaskPhase(this.deps.db, phaseId, input);
     if (updated) this.emit('taskUpdated', task);
     return updated;
@@ -1208,18 +1219,7 @@ export class Broker extends EventEmitter {
       }
       deleteCliSessionId(this.deps.db, roomId, agentId);
     }
-
-    const inferredProviderId = providerIdFromAgentId(agentId);
-    if (currentProviderId && inferredProviderId && currentProviderId !== inferredProviderId) {
-      return null;
-    }
-    const fallback = listAgentRunsRepo(this.deps.db, roomId, { limit: 200 }).find(
-      (run) => run.agentId === agentId && Boolean(run.cliSessionId),
-    )?.cliSessionId;
-    if (!fallback) return null;
-
-    upsertCliSessionId(this.deps.db, roomId, agentId, fallback, currentProviderId ?? '');
-    return fallback;
+    return null;
   }
 
   listCollaborationItems(roomId: string, limit = 50, taskId?: string | null): CollaborationItem[] {
@@ -1466,7 +1466,13 @@ export class Broker extends EventEmitter {
 
   private yoloLaunchRepairLead(room: Room): AgentId | null {
     const busy = this.busyAgentsInRoom(room.id);
-    if (room.leadAgentId && room.agents.includes(room.leadAgentId) && !busy.has(room.leadAgentId)) {
+    const capacityBlocked = this.capacityBlockedAgents(room, room.agents);
+    if (
+      room.leadAgentId &&
+      room.agents.includes(room.leadAgentId) &&
+      !busy.has(room.leadAgentId) &&
+      !capacityBlocked.has(room.leadAgentId)
+    ) {
       return room.leadAgentId;
     }
     const priority = new Map<string, number>([
@@ -1484,7 +1490,7 @@ export class Broker extends EventEmitter {
     ];
     const candidates = candidateIds
       .filter((agentId, index) => candidateIds.indexOf(agentId) === index)
-      .filter((agentId) => !busy.has(agentId))
+      .filter((agentId) => !busy.has(agentId) && !capacityBlocked.has(agentId))
       .map((agentId) => {
         const profile = room.agentProfiles.find((item) => item.id === agentId);
         const personaPriority = priority.get(profile?.personaId ?? '') ?? 50;
@@ -1775,6 +1781,12 @@ export class Broker extends EventEmitter {
       (job) => job.taskId === task.id,
     );
     const busyAgents = new Set(activeJobs.map((job) => job.agentId));
+    const room = getRoom(this.deps.db, roomId);
+    if (room) {
+      for (const blockedAgent of this.capacityBlockedAgents(room, uniqueAgents)) {
+        busyAgents.add(blockedAgent);
+      }
+    }
     const activeItemIds = new Set(
       activeJobs.map((job) => job.checklistItemId).filter((id): id is string => Boolean(id)),
     );
@@ -1832,6 +1844,41 @@ export class Broker extends EventEmitter {
     if (!spec) {
       this.appendDirect(roomId, 'system', 'system', `(no adapter for agent "${agentId}")`);
       return { message: null, progressed: false };
+    }
+    const capacityBlock = this.providerCapacityBlock(agentProfile.providerId);
+    if (capacityBlock) {
+      const activeTask = getActiveTask(this.deps.db, roomId);
+      const detail = formatProviderCapacityBlock(capacityBlock);
+      logger.info(
+        { roomId, taskId: activeTask?.id ?? null, agentId, providerId: agentProfile.providerId },
+        'agent turn suppressed by provider capacity block',
+      );
+      createRoutingDecision(this.deps.db, {
+        roomId,
+        taskId: activeTask?.id ?? null,
+        authorId: 'fireside',
+        kind: 'agent-message',
+        action: 'provider-capacity-skip',
+        reason: `${agentId} cannot run: ${detail}`,
+        responders: [agentId],
+        trace: [
+          {
+            id: 'provider-capacity',
+            result: 'blocked',
+            reason: detail,
+            agents: [agentId],
+          },
+        ],
+      });
+      if (trigger.authorKind === 'human') {
+        this.appendDirect(roomId, 'system', 'system', `(${agentId} unavailable: ${detail}.)`);
+      }
+      return {
+        message: null,
+        progressed: false,
+        failed: true,
+        error: detail,
+      };
     }
     const activeReason = this.activeAgentWorkReason(roomId, agentId);
     if (activeReason) {
@@ -2125,6 +2172,10 @@ export class Broker extends EventEmitter {
     if (!providerTurn.ok) {
       const errMsg = providerTurn.error;
       const raw = { stdout: providerTurn.stdout, stderr: providerTurn.stderr };
+      const capacityUsage =
+        agentProfile.providerId === 'gemini'
+          ? geminiTerminalQuotaUsage(`${errMsg}\n${raw.stdout}\n${raw.stderr}`)
+          : null;
       const canceled = providerTurn.canceled;
       const failedRun = updateAgentRun(this.deps.db, run.id, {
         status: 'failed',
@@ -2154,6 +2205,19 @@ export class Broker extends EventEmitter {
         label: canceled ? 'run canceled' : 'run failed',
         detail: errMsg,
       });
+      if (capacityUsage) {
+        this.recordRunAction({
+          roomId,
+          taskId: activeTask?.id ?? null,
+          runId: run.id,
+          agentId,
+          kind: 'adapter',
+          status: 'failed',
+          label: 'gemini quota exhausted',
+          detail: formatContextUsage(capacityUsage),
+          contextUsage: capacityUsage,
+        });
+      }
       if (canceled) {
         cancelAgentJob(this.deps.db, agentJob.id, errMsg);
       } else {
@@ -2188,7 +2252,9 @@ export class Broker extends EventEmitter {
           }
         : promptTooLong
           ? null
-          : providerTurn.retryDecision;
+          : capacityUsage
+            ? null
+            : providerTurn.retryDecision;
       if (retryDecision?.shouldRetry && retryDecision.nextAttempt !== null) {
         const retryAfter = Date.now() + retryDecision.delayMs;
         const retryRun = updateAgentRun(this.deps.db, run.id, {
@@ -2707,7 +2773,7 @@ export class Broker extends EventEmitter {
           });
           const progressed =
             Boolean(message) ||
-            reconciliation.applied > 0 ||
+            reconciliation.progressed > 0 ||
             rosterResult.applied > 0 ||
             finalWorkDispatches.length > 0;
           this.recordTurnOutcome({
@@ -2904,7 +2970,7 @@ export class Broker extends EventEmitter {
       : visibleMessageCountsAsProgress ||
         hiddenMissionProgressCount > 0 ||
         extracted.notes.length > 0 ||
-        reconciliation.applied > 0 ||
+        reconciliation.progressed > 0 ||
         rosterResult.applied > 0 ||
         finalWorkDispatches.length > 0 ||
         repairResult?.progressed === true;
@@ -4093,12 +4159,16 @@ export class Broker extends EventEmitter {
     const activeItemIds = new Set(
       activeJobs.map((job) => job.checklistItemId).filter((id): id is string => Boolean(id)),
     );
+    const busyAgents = this.busyAgentsInRoom(input.roomId);
+    for (const blockedAgent of this.capacityBlockedAgents(room, room.agents)) {
+      busyAgents.add(blockedAgent);
+    }
     const decision = routeMissionWorkUpdates({
       changedItems: input.changedItems,
       allItems,
       roomAgents: room.agents,
       authorId: input.agentId,
-      busyAgents: this.busyAgentsInRoom(input.roomId),
+      busyAgents,
       activeItemIds,
     });
 
@@ -4277,7 +4347,7 @@ export class Broker extends EventEmitter {
       return (
         input.missionStateProgressCount +
         input.productiveMissionReceiptCount +
-        input.reconciliation.applied
+        input.reconciliation.progressed
       );
     }
 
@@ -4288,7 +4358,7 @@ export class Broker extends EventEmitter {
       input.rosterApplied;
     const terminalTaskUpdates = input.missionTaskProgressCount;
     const reconciliationProgress =
-      input.productiveMissionReceiptCount > 0 ? input.reconciliation.applied : 0;
+      input.productiveMissionReceiptCount > 0 ? input.reconciliation.progressed : 0;
 
     return (
       structuralMissionUpdates +
@@ -4400,6 +4470,29 @@ export class Broker extends EventEmitter {
       if (run) busy.add(run.agentId);
     }
     return busy;
+  }
+
+  private providerCapacityBlock(providerId: ProviderId): ProviderCapacityBlock | null {
+    return latestProviderCapacityBlock(
+      listRecentContextUsageActions(this.deps.db),
+      providerId,
+      Date.now(),
+    );
+  }
+
+  private agentCapacityBlock(room: Room, agentId: AgentId): ProviderCapacityBlock | null {
+    const profile =
+      room.agentProfiles.find((candidate) => candidate.id === agentId) ??
+      defaultAgentProfile(agentId);
+    return this.providerCapacityBlock(profile.providerId);
+  }
+
+  private capacityBlockedAgents(room: Room, agents: AgentId[]): Set<AgentId> {
+    const blocked = new Set<AgentId>();
+    for (const agentId of agents) {
+      if (this.agentCapacityBlock(room, agentId)) blocked.add(agentId);
+    }
+    return blocked;
   }
 
   private activeAgentWorkReason(roomId: string, agentId: AgentId): string {

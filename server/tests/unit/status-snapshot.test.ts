@@ -655,4 +655,67 @@ describe('status snapshot', () => {
     });
     expect(snapshot.agentStates).toHaveLength(4);
   });
+
+  it('projects provider quota exhaustion as an incapacitated agent state', () => {
+    const room = createRoom(db, {
+      name: 'ops',
+      agentProfiles: [
+        {
+          id: 'holly',
+          providerId: 'gemini',
+          displayName: 'Holly',
+          personaId: 'generalist',
+          personaName: 'Generalist',
+          personaSummary: '',
+        },
+      ],
+    });
+    const task = createTask(db, {
+      roomId: room.id,
+      title: 'Coordinate mission',
+      agents: ['holly'],
+    });
+    const run = insertRun(db, {
+      roomId: room.id,
+      taskId: task.id,
+      triggerMessageId: 'msg-holly',
+      agentId: 'holly',
+      status: 'failed',
+      completedAt: 1_800_000_001_000,
+    });
+    createAgentRunAction(db, {
+      roomId: room.id,
+      taskId: task.id,
+      runId: run.id,
+      agentId: 'holly',
+      kind: 'adapter',
+      status: 'failed',
+      label: 'gemini quota exhausted',
+      detail: 'quota 1d 100%',
+      contextUsage: {
+        provider: 'gemini',
+        model: 'gemini-2.5-pro',
+        usedTokens: 0,
+        quotaOnly: true,
+        quota: {
+          daily: {
+            percent: 100,
+            resetsAt: 1_800_030_000_000,
+            status: 'limited',
+          },
+          source: 'gemini:terminal-quota',
+        },
+        source: 'gemini:terminal-quota',
+      },
+    });
+
+    const snapshot = buildStatusSnapshot({ db });
+    expect(snapshot.rooms[0]!.agentStates[0]).toMatchObject({
+      agentId: 'holly',
+      state: 'incapacitated',
+      label: 'quota limited',
+      severity: 'danger',
+      runId: run.id,
+    });
+  });
 });

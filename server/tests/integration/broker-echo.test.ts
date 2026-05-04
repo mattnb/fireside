@@ -969,6 +969,68 @@ describe('Broker', () => {
     );
   });
 
+  it('stops YOLO after continuing standby receipts that only update checklist notes', async () => {
+    const yoloBroker = new Broker({
+      db,
+      runAgent: async (spec, prompt, sessionId) => {
+        runs.push({ agentId: spec.id, prompt, sessionId });
+        return {
+          text: [
+            '/mission-receipt',
+            'status: continuing',
+            'summary: Honest standby. No new commits to verify.',
+            'next: Run verification when the implementation commit lands.',
+            '/end-mission-receipt',
+          ].join('\n'),
+          sessionId: `${spec.id}-sess`,
+          raw: { stdout: '', stderr: '' },
+        };
+      },
+      getSpec: (id) => {
+        const map: Record<string, AgentSpec> = {
+          claude: fakeSpec('claude', 'claude reply'),
+          codex: fakeSpec('codex', 'codex reply'),
+          gemini: fakeSpec('gemini', 'gemini reply'),
+          echo: fakeSpec('echo', 'echo reply'),
+        };
+        return map[id];
+      },
+    });
+    const room = createRoom(db, { name: 'standby-status-note-yolo', agents: ['claude'] });
+    const task = yoloBroker.createTask(room.id, { title: 'Standby mission' });
+    if (!task) throw new Error('task not created');
+    createTaskChecklistItem(db, {
+      taskId: task.id,
+      title: 'Regression coverage',
+      ownerAgentId: 'claude',
+    });
+
+    await yoloBroker.startYoloDiscussion(room.id, 'human', {
+      mode: 'edit',
+      filesystemScope: 'task',
+    });
+
+    expect(runs.map((run) => run.agentId)).toEqual(['claude']);
+    const actions = listAgentRuns(db, room.id).flatMap((run) => listAgentRunActions(db, run.id));
+    expect(actions.map((action) => action.label)).toEqual(
+      expect.arrayContaining([
+        'reconciled checklist status note',
+        'mission control update only',
+      ]),
+    );
+    expect(actions.map((action) => action.detail)).toContain(
+      'mission receipt stored without progress',
+    );
+    expect(listAgentTurnOutcomesForRoom(db, room.id)).toMatchObject([
+      {
+        agentId: 'claude',
+        progressed: false,
+        visibleMessageEmitted: false,
+        missionReconciliations: 1,
+      },
+    ]);
+  });
+
   it('dispatches a lead repair turn when YOLO launch has empty open phases', async () => {
     const yoloBroker = new Broker({
       db,

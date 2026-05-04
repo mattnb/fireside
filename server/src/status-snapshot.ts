@@ -20,6 +20,10 @@ import {
 import { getRoom, listRooms, type Room } from './repos/rooms.js';
 import { listTasks, type Task, type TaskStatus } from './repos/tasks.js';
 import { listTaskChecklistItems, type TaskChecklistItem } from './repos/task-checklist.js';
+import {
+  formatProviderCapacityBlock,
+  latestProviderCapacityBlock,
+} from './provider-capacity.js';
 
 const TASK_STATUSES = [
   'active',
@@ -204,6 +208,7 @@ export type StatusSnapshotAgentWorkflowState =
   | 'stale'
   | 'waiting_on_human'
   | 'waiting_on_agent'
+  | 'incapacitated'
   | 'blocked'
   | 'idle_ready'
   | 'idle';
@@ -692,6 +697,7 @@ function buildAgentStates(input: {
   actions: StatusSnapshotRunAction[];
   activeJobs: AgentJob[];
   checklistItems: TaskChecklistItem[];
+  agentProviderById: Map<AgentId, string>;
   now: number;
 }): StatusSnapshotAgentState[] {
   const runsDesc = [...input.runs].sort(compareRunsDesc);
@@ -749,6 +755,24 @@ function buildAgentStates(input: {
         since: latestRun.completedAt ?? latestRun.startedAt,
         runId: latestRun.id,
         taskId: latestRun.taskId,
+        checklistItemId: null,
+      };
+    }
+
+    const providerId = input.agentProviderById.get(agentId);
+    const capacityBlock = providerId
+      ? latestProviderCapacityBlock(actionsDesc, providerId, input.now)
+      : null;
+    if (capacityBlock) {
+      return {
+        agentId,
+        state: 'incapacitated',
+        label: 'quota limited',
+        detail: formatProviderCapacityBlock(capacityBlock, input.now),
+        severity: 'danger',
+        since: capacityBlock.createdAt,
+        runId: latestRun?.id ?? null,
+        taskId: latestRun?.taskId ?? input.activeTasks[0]?.id ?? null,
         checklistItemId: null,
       };
     }
@@ -899,6 +923,7 @@ export function buildStatusSnapshot(input: BuildStatusSnapshotInput): StatusSnap
       actions: roomActionSummaries,
       activeJobs: roomActiveJobs,
       checklistItems: checklistItemsForTasks(input.db, activeTaskRecords),
+      agentProviderById: roomAgentProviderById,
       now,
     });
     allAgentStates.push(...roomAgentStates);

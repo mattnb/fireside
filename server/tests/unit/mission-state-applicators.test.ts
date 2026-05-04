@@ -10,7 +10,7 @@ import {
   listTaskChecklistNotes,
 } from '../../src/repos/task-checklist.js';
 import { listCollaborationItems } from '../../src/repos/collaboration.js';
-import { listTaskPhases } from '../../src/repos/task-phases.js';
+import { createTaskPhase, listTaskPhases } from '../../src/repos/task-phases.js';
 import { listTaskPlans } from '../../src/repos/task-plans.js';
 import type { CreateAgentRunActionInput } from '../../src/repos/run-actions.js';
 import { applyMissionPlanUpdates } from '../../src/mission-state/mission-plan-applicator.js';
@@ -96,6 +96,57 @@ describe('mission state applicators', () => {
     ]);
   });
 
+  it('blocks phase completion while unfinished checklist items remain attached', () => {
+    const room = createRoom(db, { name: 'room' });
+    const task = createTask(db, { roomId: room.id, title: 'Mission' });
+    const phase = createTaskPhase(db, {
+      taskId: task.id,
+      title: 'Build',
+      status: 'active',
+      sortOrder: 1,
+    });
+    createTaskChecklistItem(db, {
+      taskId: task.id,
+      phaseId: phase.id,
+      title: 'Ship the slice',
+      status: 'open',
+    });
+
+    applyMissionPhaseUpdates({
+      db,
+      roomId: room.id,
+      task,
+      runId: 'run',
+      agentId: 'claude',
+      updates: [
+        {
+          action: 'update',
+          id: phase.id,
+          planRef: '',
+          title: '',
+          description: '',
+          status: 'done',
+          gate: '',
+          sortOrder: null,
+        },
+      ],
+      defaultPlanId: null,
+      forcePlanOnUpdates: false,
+      recordRunAction: (action) => actions.push(action),
+    });
+
+    expect(listTaskPhases(db, task.id)).toMatchObject([{ id: phase.id, status: 'active' }]);
+    expect(actions).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          label: 'mission phase completion blocked',
+          status: 'failed',
+          detail: expect.stringContaining('Ship the slice'),
+        }),
+      ]),
+    );
+  });
+
   it('records receipts and reconciles assigned work lane completion', () => {
     const room = createRoom(db, { name: 'room' });
     const task = createTask(db, { roomId: room.id, title: 'Mission' });
@@ -137,11 +188,126 @@ describe('mission state applicators', () => {
       recordRunAction: (action) => actions.push(action),
     });
 
-    expect(result).toMatchObject({ applied: 1, receiptUpdates: 1 });
+    expect(result).toMatchObject({ applied: 1, progressed: 1, receiptUpdates: 1 });
     expect(listTaskChecklistItems(db, task.id)).toMatchObject([{ status: 'done' }]);
     expect(listTaskChecklistNotes(db, task.id)).toMatchObject([
       { kind: 'completion', body: expect.stringContaining('Implementation complete.') },
     ]);
+  });
+
+  it('stores continuing receipt status notes without counting them as mission progress', () => {
+    const room = createRoom(db, { name: 'room' });
+    const task = createTask(db, { roomId: room.id, title: 'Mission' });
+    const item = createTaskChecklistItem(db, {
+      taskId: task.id,
+      title: 'Verify surface',
+      ownerAgentId: 'claude',
+    });
+    const receipts = [
+      {
+        status: 'continuing' as const,
+        itemRef: item.id,
+        phaseRef: '',
+        planRef: '',
+        summary: 'Honest standby. No new commits to verify.',
+        evidence: '',
+        next: 'Run verification when the implementation commit lands.',
+      },
+    ];
+
+    recordMissionReceipts({
+      roomId: room.id,
+      task,
+      runId: 'run',
+      agentId: 'claude',
+      receipts,
+      recordRunAction: (action) => actions.push(action),
+    });
+    const result = reconcileMissionState({
+      db,
+      roomId: room.id,
+      task,
+      runId: 'run',
+      agentId: 'claude',
+      receipts,
+      visibleText: '',
+      workLane: { item },
+      explicitMissionUpdates: 0,
+      recordRunAction: (action) => actions.push(action),
+    });
+
+    expect(result).toMatchObject({ applied: 1, progressed: 0, receiptUpdates: 1 });
+    expect(listTaskChecklistItems(db, task.id)).toMatchObject([
+      {
+        status: 'open',
+        ownerAgentId: 'claude',
+        statusNote: expect.stringContaining('No new commits to verify'),
+      },
+    ]);
+    expect(listTaskChecklistNotes(db, task.id)).toMatchObject([
+      { kind: 'status', body: expect.stringContaining('Honest standby') },
+    ]);
+  });
+
+  it('blocks receipt-based phase completion while unfinished checklist items remain attached', () => {
+    const room = createRoom(db, { name: 'room' });
+    const task = createTask(db, { roomId: room.id, title: 'Mission' });
+    const phase = createTaskPhase(db, {
+      taskId: task.id,
+      title: 'Verify',
+      status: 'active',
+      sortOrder: 1,
+    });
+    createTaskChecklistItem(db, {
+      taskId: task.id,
+      phaseId: phase.id,
+      title: 'Run smoke tests',
+      status: 'blocked',
+    });
+    const receipts = [
+      {
+        status: 'completed' as const,
+        itemRef: '',
+        phaseRef: phase.id,
+        planRef: '',
+        summary: 'Gate complete.',
+        evidence: 'Reviewed output.',
+        next: '',
+      },
+    ];
+
+    recordMissionReceipts({
+      roomId: room.id,
+      task,
+      runId: 'run',
+      agentId: 'codex',
+      receipts,
+      recordRunAction: (action) => actions.push(action),
+    });
+    const result = reconcileMissionState({
+      db,
+      roomId: room.id,
+      task,
+      runId: 'run',
+      agentId: 'codex',
+      receipts,
+      visibleText: '',
+      workLane: undefined,
+      explicitMissionUpdates: 0,
+      recordRunAction: (action) => actions.push(action),
+    });
+
+    expect(result).toMatchObject({ applied: 0, receiptUpdates: 0 });
+    expect(listTaskPhases(db, task.id)).toMatchObject([{ id: phase.id, status: 'active' }]);
+    expect(actions).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          label: 'mission phase completion blocked',
+          status: 'failed',
+          detail: expect.stringContaining('Run smoke tests'),
+        }),
+      ]),
+    );
   });
 
   it('stores collaboration notes with run actions', () => {

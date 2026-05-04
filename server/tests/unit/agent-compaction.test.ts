@@ -121,7 +121,7 @@ describe('manual agent compaction', () => {
     );
   });
 
-  it('recovers a resumable session from recent agent runs when the session table is empty', async () => {
+  it('does not recover a resumable session from historical agent runs', () => {
     const db = openDatabase(':memory:');
     const room = createRoom(db, { name: 'camp', agents: ['claude'] });
     const trigger = addMessage(db, {
@@ -146,30 +146,22 @@ describe('manual agent compaction', () => {
       cliSessionId: 'run-session-1',
     });
 
-    const calls: Array<{ prompt: string; sessionId: string | null }> = [];
     const broker = new Broker({
       db,
       resumeCliSessions: true,
       getSpec: (id) => (id === 'claude' ? fakeSpec('claude') : undefined),
-      runAgent: async (_spec, prompt, sessionId) => {
-        calls.push({ prompt, sessionId });
-        return {
-          text: 'Compacted.',
-          sessionId: 'run-session-2',
-          raw: { stdout: '', stderr: '' },
-        };
+      runAgent: async () => {
+        throw new Error('runAgent should not be called');
       },
     });
 
     const result = broker.startAgentCompaction(room.id, 'claude', 'human');
-    expect(result.ok).toBe(true);
-    if (!result.ok) throw new Error(result.error);
-    expect(calls).toEqual([{ prompt: '/compact', sessionId: 'run-session-1' }]);
-    expect(getCliSessionId(db, room.id, 'claude')).toBe('run-session-1');
-
-    await new Promise<void>((resolve) => setImmediate(resolve));
-
-    expect(getCliSessionId(db, room.id, 'claude')).toBe('run-session-2');
+    expect(result).toMatchObject({
+      ok: false,
+      statusCode: 409,
+      error: 'claude has no stored CLI session yet',
+    });
+    expect(getCliSessionId(db, room.id, 'claude')).toBeNull();
   });
 
   it('rejects compaction without a stored resumable session', () => {

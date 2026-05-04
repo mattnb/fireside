@@ -167,6 +167,7 @@ export class AgentDisplayService {
     const state = this.workflowState(agentId);
     if (state?.state === 'working') return 'running';
     if (state?.state === 'stale') return 'stale';
+    if (state?.state === 'incapacitated') return 'blocked';
     if (state?.state === 'blocked') return state.severity === 'danger' ? 'blocked' : 'waiting';
     if (state?.state === 'waiting_on_human' || state?.state === 'waiting_on_agent')
       return 'waiting';

@@ -7,6 +7,7 @@ export const GEMINI_STATS_SAMPLE_INTERVAL_MS = 30 * 60 * 1000;
 const GEMINI_STATS_TIMEOUT_MS = 20_000;
 const GEMINI_STATS_COMMAND_DELAY_MS = 1_000;
 const GEMINI_STATS_QUIT_DELAY_MS = 4_000;
+const GEMINI_TERMINAL_QUOTA_FALLBACK_RESET_MS = 30 * 60 * 1000;
 
 interface PtyProcess {
   onData(callback: (data: string) => void): void;
@@ -169,4 +170,42 @@ export async function maybeSampleGeminiStatsModelQuota(
     }
   })();
   return inFlight;
+}
+
+export function geminiTerminalQuotaUsage(
+  raw: string,
+  options: { now?: number; fallbackModel?: string } = {},
+): AgentContextUsage | null {
+  if (
+    !/TerminalQuotaError|exhausted your capacity|quota will reset|capacity on this model/i.test(
+      raw,
+    )
+  ) {
+    return null;
+  }
+  const now = options.now ?? Date.now();
+  const parsed = geminiStatsModelQuotaUsage(raw, {
+    now,
+    ...(options.fallbackModel ? { fallbackModel: options.fallbackModel } : {}),
+  });
+  const fallbackModel = options.fallbackModel ?? parsed?.model ?? 'gemini';
+  const fallbackReset = now + GEMINI_TERMINAL_QUOTA_FALLBACK_RESET_MS;
+  const daily = {
+    windowMinutes: 1_440,
+    ...(parsed?.quota?.daily ?? {}),
+    percent: 100,
+    resetsAt: parsed?.quota?.daily?.resetsAt ?? fallbackReset,
+    status: 'limited',
+  };
+  return {
+    provider: 'gemini',
+    model: fallbackModel,
+    usedTokens: 0,
+    quotaOnly: true,
+    quota: {
+      daily,
+      source: 'gemini:terminal-quota',
+    },
+    source: 'gemini:terminal-quota',
+  };
 }

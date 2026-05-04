@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import {
   GEMINI_STATS_SAMPLE_INTERVAL_MS,
+  geminiTerminalQuotaUsage,
   maybeSampleGeminiStatsModelQuota,
   resetGeminiStatsSamplerForTesting,
 } from '../../src/agents/gemini-quota.js';
@@ -43,5 +44,28 @@ describe('Gemini quota sampler', () => {
     });
 
     expect(usage).toBeNull();
+  });
+
+  it('turns terminal quota exhaustion into a quota-only usage update', () => {
+    const now = 1_800_000_000_000;
+    const usage = geminiTerminalQuotaUsage(
+      'TerminalQuotaError: You have exhausted your capacity on this model. Your quota will reset after 8h27m41s.',
+      { now, fallbackModel: 'gemini-2.5-pro' },
+    );
+
+    expect(usage).toMatchObject({
+      provider: 'gemini',
+      model: 'gemini-2.5-pro',
+      quotaOnly: true,
+      quota: {
+        daily: {
+          percent: 100,
+          status: 'limited',
+        },
+        source: 'gemini:terminal-quota',
+      },
+      source: 'gemini:terminal-quota',
+    });
+    expect(usage?.quota?.daily?.resetsAt).toBe(now + ((8 * 60 + 27) * 60 + 41) * 1000);
   });
 });

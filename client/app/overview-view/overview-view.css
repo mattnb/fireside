@@ -253,6 +253,10 @@
   gap: 8px;
   max-width: 60ch;
 }
+.ov-current-item--repair {
+  border-color: color-mix(in srgb, var(--accent-danger) 28%, transparent);
+  background: color-mix(in srgb, var(--accent-danger) 5%, transparent);
+}
 .ov-current-item__head {
   display: flex;
   align-items: center;

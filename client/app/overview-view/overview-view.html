@@ -93,7 +93,24 @@
           </div>
           } @if (phase.gate) {
           <p class="ov-accept">Phase gate: {{ phase.gate }}</p>
-          } } @else if (activeTask(); as task) {
+          } } @else if (phaseRepairState(); as repair) {
+          <h1 class="ov-title">Phase state needs repair</h1>
+          <p class="ov-lede">
+            {{ repair.count }} unfinished checklist item(s) are attached to completed phases.
+            Reopen {{ repair.phaseTitle }} or move, skip, or complete the remaining work before
+            continuing.
+          </p>
+          <div class="ov-current-item ov-current-item--repair">
+            <div class="ov-current-item__head">
+              <span class="ov-current-item__pulse"></span>
+              <span>first unresolved item</span>
+            </div>
+            <h3>{{ repair.itemTitle }}</h3>
+            @if (repair.itemDetail) {
+            <p>{{ oneLine(repair.itemDetail, 200) }}</p>
+            }
+          </div>
+          } @else if (activeTask(); as task) {
           <h1 class="ov-title">{{ task.title }}</h1>
           <p class="ov-lede">No phase set yet for this mission.</p>
           } @else {

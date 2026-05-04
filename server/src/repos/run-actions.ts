@@ -168,6 +168,21 @@ export function listRecentContextUsageActionsForRoom(
   return rows.map(rowToAgentRunAction);
 }
 
+export function listRecentContextUsageActions(
+  db: Database,
+  limit = 500,
+): AgentRunAction[] {
+  const rows = db
+    .prepare(
+      `SELECT * FROM agent_run_actions
+       WHERE context_usage_json <> ''
+       ORDER BY created_at DESC, id DESC
+       LIMIT ?`,
+    )
+    .all(limit) as AgentRunActionRow[];
+  return rows.map(rowToAgentRunAction);
+}
+
 export function listAgentRunActionAggregatesForRoom(
   db: Database,
   roomId: string,

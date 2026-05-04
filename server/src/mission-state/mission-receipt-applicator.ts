@@ -18,9 +18,14 @@ import {
 import { getTask, type Task } from '../repos/tasks.js';
 import type { WorkLaneAssignment } from '../orchestration/work-lane-planner.js';
 import { resolveChecklistItem, resolvePhase } from './mission-state-helpers.js';
+import {
+  phaseCompletionBlockedDetail,
+  unfinishedChecklistItemsForPhase,
+} from './phase-completion.js';
 
 export interface MissionReconciliationResult {
   applied: number;
+  progressed: number;
   receiptUpdates: number;
   laneUpdates: number;
 }
@@ -89,6 +94,7 @@ export function recordMissionReceipts(input: RecordMissionReceiptsInput): void {
 export function reconcileMissionState(input: ReconcileMissionStateInput): MissionReconciliationResult {
   const result: MissionReconciliationResult = {
     applied: 0,
+    progressed: 0,
     receiptUpdates: 0,
     laneUpdates: 0,
   };
@@ -108,6 +114,9 @@ export function reconcileMissionState(input: ReconcileMissionStateInput): Missio
       if (updated > 0) {
         result.applied += updated;
         result.receiptUpdates += updated;
+        if (receiptChecklistUpdateCountsAsProgress(receipt, item)) {
+          result.progressed += updated;
+        }
         receiptTouchedItems.add(item.id);
       }
     }
@@ -124,6 +133,7 @@ export function reconcileMissionState(input: ReconcileMissionStateInput): Missio
       });
       if (updated > 0) {
         result.applied += updated;
+        result.progressed += updated;
         result.receiptUpdates += updated;
       }
     }
@@ -137,6 +147,7 @@ export function reconcileMissionState(input: ReconcileMissionStateInput): Missio
     const updated = reconcileWorkLaneFromVisibleText(input);
     if (updated > 0) {
       result.applied += updated;
+      result.progressed += updated;
       result.laneUpdates += updated;
     }
   }
@@ -144,6 +155,7 @@ export function reconcileMissionState(input: ReconcileMissionStateInput): Missio
   const phaseUpdates = reconcilePhasesFromChecklist(input);
   if (phaseUpdates > 0) {
     result.applied += phaseUpdates;
+    result.progressed += phaseUpdates;
     result.receiptUpdates += phaseUpdates;
   }
 
@@ -163,6 +175,16 @@ export function reconcileMissionState(input: ReconcileMissionStateInput): Missio
   }
 
   return result;
+}
+
+function receiptChecklistUpdateCountsAsProgress(
+  receipt: ParsedMissionReceipt,
+  item: TaskChecklistItem,
+): boolean {
+  if (receipt.status === 'completed' || receipt.status === 'blocked') return true;
+  if (receipt.status === 'needs_review') return true;
+  if (receipt.status !== 'continuing') return false;
+  return !item.ownerAgentId;
 }
 
 function resolveReceiptChecklistItem(
@@ -266,6 +288,22 @@ function reconcilePhaseFromReceipt(input: {
         ? 'blocked'
         : null;
   if (!status || input.phase.status === status) return 0;
+  if (status === 'done') {
+    const unfinished = unfinishedChecklistItemsForPhase(input.db, input.task.id, input.phase.id);
+    if (unfinished.length > 0) {
+      input.recordRunAction({
+        roomId: input.roomId,
+        taskId: input.task.id,
+        runId: input.runId,
+        agentId: input.agentId,
+        kind: 'diagnostic',
+        status: 'failed',
+        label: 'mission phase completion blocked',
+        detail: phaseCompletionBlockedDetail(input.phase, unfinished),
+      });
+      return 0;
+    }
+  }
   const updated = updateTaskPhase(input.db, input.phase.id, { status });
   if (!updated) return 0;
   input.recordRunAction({

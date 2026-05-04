@@ -373,7 +373,7 @@ function renderPrompt(
         `gate: concrete criteria that must be true before leaving this phase`,
         `description: optional one-sentence phase scope`,
         `/end-mission-phase`,
-        `Use action "update" with id: <phase id> or title: <phase title> to change plan, title, status, gate, description, or sort_order. Agents are responsible for workflow progression: when a gate is satisfied, mark that phase status: done. Fireside will auto-activate the next planned phase unless your same reply explicitly activates a different phase.`,
+        `Use action "update" with id: <phase id> or title: <phase title> to change plan, title, status, gate, description, or sort_order. Agents are responsible for workflow progression: when a gate is satisfied and every checklist item in that phase is done or skipped, mark that phase status: done. Do not mark a phase done while open or blocked checklist items remain attached to it; first complete, skip, move, or block those items with evidence. Fireside will auto-activate the next planned phase unless your same reply explicitly activates a different phase.`,
         `Mission checklist protocol: when you create, update, complete, or block a work item, append one hidden block after your visible reply. Fireside will strip it from chat and update Mission Control:`,
         `/mission-task`,
         `action: create`,

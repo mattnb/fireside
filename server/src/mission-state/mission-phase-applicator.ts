@@ -16,6 +16,10 @@ import {
   resolvePhase,
   resolvePlanId,
 } from './mission-state-helpers.js';
+import {
+  phaseCompletionBlockedDetail,
+  unfinishedChecklistItemsForPhase,
+} from './phase-completion.js';
 
 export interface ApplyMissionPhaseUpdatesInput {
   db: Database;
@@ -92,6 +96,23 @@ export function applyMissionPhaseUpdates(input: ApplyMissionPhaseUpdatesInput): 
       ...(update.gate ? { gate: update.gate.slice(0, 2000) } : {}),
       ...(update.sortOrder !== null ? { sortOrder: update.sortOrder } : {}),
     };
+
+    if (existing && patch.status === 'done') {
+      const unfinished = unfinishedChecklistItemsForPhase(input.db, input.task.id, existing.id);
+      if (unfinished.length > 0) {
+        input.recordRunAction({
+          roomId: input.roomId,
+          taskId: input.task.id,
+          runId: input.runId,
+          agentId: input.agentId,
+          kind: 'diagnostic',
+          status: 'failed',
+          label: 'mission phase completion blocked',
+          detail: phaseCompletionBlockedDetail(existing, unfinished),
+        });
+        continue;
+      }
+    }
 
     const phase = shouldCreate
       ? createTaskPhase(input.db, {

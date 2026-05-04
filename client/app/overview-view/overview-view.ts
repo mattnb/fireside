@@ -77,6 +77,13 @@ export type AttentionItem = {
   runId?: string | undefined;
 };
 
+type PhaseRepairState = {
+  count: number;
+  phaseTitle: string;
+  itemTitle: string;
+  itemDetail: string;
+};
+
 const ATTENTION_TONE_PRIORITY: Record<OpsTone, number> = {
   danger: 0,
   warn: 1,
@@ -155,8 +162,36 @@ export class OverviewView implements OnDestroy {
     if (phases.length === 0) return 'none';
     const currentId = control?.currentPhase?.id;
     const idx = phases.findIndex((p) => p.id === currentId);
+    if (idx < 0 && this.phaseRepairState()) return 'needs repair';
+    if (idx < 0) return 'complete';
     const ord = idx >= 0 ? idx + 1 : 0;
     return `${this.pad2(ord)} of ${this.pad2(phases.length)}`;
+  });
+  readonly phaseRepairState = computed<PhaseRepairState | null>(() => {
+    const control = this.taskControl();
+    if (!control) return null;
+    const completedPhaseIds = new Set(
+      control.phases.filter((phase) => phase.status === 'done').map((phase) => phase.id),
+    );
+    if (completedPhaseIds.size === 0) return null;
+    const unfinished = control.checklistItems
+      .filter(
+        (item) =>
+          item.phaseId !== null &&
+          completedPhaseIds.has(item.phaseId) &&
+          item.status !== 'done' &&
+          item.status !== 'skipped',
+      )
+      .sort((a, b) => a.sortOrder - b.sortOrder);
+    const first = unfinished[0];
+    if (!first) return null;
+    const phase = control.phases.find((candidate) => candidate.id === first.phaseId);
+    return {
+      count: unfinished.length,
+      phaseTitle: phase?.title ?? 'completed phase',
+      itemTitle: first.title,
+      itemDetail: first.detail || first.statusNote || first.blockedReason,
+    };
   });
   readonly activeTaskStartedLabel = computed(() => {
     const task = this.activeTask();
@@ -176,6 +211,18 @@ export class OverviewView implements OnDestroy {
   readonly attentionItems = computed<AttentionItem[]>(() => {
     const items: AttentionItem[] = [];
     const now = this.now();
+    const repair = this.phaseRepairState();
+    if (repair) {
+      const task = this.activeTask();
+      items.push({
+        id: 'phase-repair',
+        tone: 'warn',
+        label: 'mission control',
+        title: 'Phase state needs repair',
+        detail: `${repair.count} unfinished item(s) are attached to completed phase(s); start with ${repair.phaseTitle}.`,
+        createdAt: task?.updatedAt ?? task?.createdAt ?? now,
+      });
+    }
 
     for (const request of this.store.permissionRequests().filter(
       (request) => request.status === 'pending',

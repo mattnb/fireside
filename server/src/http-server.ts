@@ -18,6 +18,7 @@ import { pickFile, pickFolder } from './folder-picker.js';
 import { logger } from './logger.js';
 import type { ConversationArtifactFile } from './context-files.js';
 import { buildStatusSnapshot } from './status-snapshot.js';
+import { capacityBlockFromContextUsage } from './provider-capacity.js';
 import { AGENT_PERSONAS, AGENT_PROVIDERS, isProviderId } from './agents/personas.js';
 import {
   defaultAgentProfile,
@@ -228,7 +229,11 @@ function providerHealthFromSnapshot(
       quota?.sevenDay?.status ??
       quota?.daily?.status ??
       quota?.rateLimitReachedType;
-    if (quotaStatus) health.quotaStatus = quotaStatus;
+    const activeCapacityBlock = capacityBlockFromContextUsage(entry.usage, now, entry.createdAt);
+    if (quotaStatus && (activeCapacityBlock || /allowed|ok|available/i.test(quotaStatus))) {
+      health.quotaStatus = quotaStatus;
+      if (activeCapacityBlock) health.available = false;
+    }
   }
 
   const runRows = db

@@ -217,6 +217,7 @@ export type StatusSnapshotAgentWorkflowState =
   | 'stale'
   | 'waiting_on_human'
   | 'waiting_on_agent'
+  | 'incapacitated'
   | 'blocked'
   | 'idle_ready'
   | 'idle';
