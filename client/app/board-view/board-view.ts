@@ -6,6 +6,7 @@
 // run / batch actions for the parent to handle against App-level state.
 
 import {
+  ChangeDetectionStrategy,
   Component,
   computed,
   effect,
@@ -39,6 +40,7 @@ export interface MissionBoardColumnInfo {
 @Component({
   selector: 'fs-board-view',
   standalone: true,
+  changeDetection: ChangeDetectionStrategy.OnPush,
   templateUrl: './board-view.html',
   styleUrl: './board-view.css',
 })

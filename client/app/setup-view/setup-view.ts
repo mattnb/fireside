@@ -4,7 +4,7 @@
 // form. Owns its own draft toggle. Emits (missionsChanged) when a mutation
 // commits so the parent can refresh task data.
 
-import { Component, computed, inject, input, output, signal } from '@angular/core';
+import { ChangeDetectionStrategy, Component, computed, inject, input, output, signal } from '@angular/core';
 import { FiresideApi } from '../api.service';
 import { MissionStore } from '../mission-store';
 import { ACTIVE_TASK_STATUSES } from '../task-constants';
@@ -24,6 +24,7 @@ export interface MissionsChangedEvent {
 @Component({
   selector: 'fs-setup-view',
   standalone: true,
+  changeDetection: ChangeDetectionStrategy.OnPush,
   templateUrl: './setup-view.html',
   styleUrl: './setup-view.css',
 })

@@ -4,7 +4,7 @@
 // this component just renders + emits per-row edit events. Modal pattern:
 // scrim click + cancel button both fire `(closed)`.
 
-import { Component, inject, input, output } from '@angular/core';
+import { ChangeDetectionStrategy, Component, inject, input, output } from '@angular/core';
 
 import { AgentDisplayService } from '../agent-display.service';
 import type {
@@ -19,6 +19,7 @@ import type { DraftRoomAgent } from '../room-agent-types';
 @Component({
   selector: 'fs-create-room-modal',
   standalone: true,
+  changeDetection: ChangeDetectionStrategy.OnPush,
   templateUrl: './create-room-modal.html',
   styleUrl: './create-room-modal.css',
 })

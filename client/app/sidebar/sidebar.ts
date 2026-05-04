@@ -4,7 +4,7 @@
 // owns project/room state, this component renders + emits selection and
 // CRUD actions.
 
-import { Component, inject, input, output, signal } from '@angular/core';
+import { ChangeDetectionStrategy, Component, inject, input, output, signal } from '@angular/core';
 
 import { DraftService } from '../draft.service';
 import { VfxSmokeAndEmbersComponent } from '../vfx-smoke-and-embers/vfx-smoke-and-embers';
@@ -21,6 +21,7 @@ export type ProjectGroup = {
 @Component({
   selector: 'fs-sidebar',
   standalone: true,
+  changeDetection: ChangeDetectionStrategy.OnPush,
   imports: [VfxSmokeAndEmbersComponent],
   templateUrl: './sidebar.html',
   styleUrl: './sidebar.css',

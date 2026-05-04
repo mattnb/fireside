@@ -3,7 +3,7 @@
 // upstream merge (mission receipts + collaboration + artifacts + runs) lives
 // in App; this component takes the merged event list as an input.
 
-import { Component, computed, inject, input, output, signal } from '@angular/core';
+import { ChangeDetectionStrategy, Component, computed, inject, input, output, signal } from '@angular/core';
 import { FiresideApi } from '../api.service';
 import { formatDateTime, formatShortTime } from '../formatters';
 import type {
@@ -15,6 +15,7 @@ import type { Artifact } from '../api.types';
 @Component({
   selector: 'fs-evidence-view',
   standalone: true,
+  changeDetection: ChangeDetectionStrategy.OnPush,
   templateUrl: './evidence-view.html',
   styleUrl: './evidence-view.css',
 })

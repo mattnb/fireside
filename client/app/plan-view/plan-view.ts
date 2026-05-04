@@ -3,7 +3,7 @@
 // markdown and lets the user publish a new plan. Reads the active plan from
 // MissionStore directly; takes the room/task context as inputs from App.
 
-import { Component, computed, inject, input, output } from '@angular/core';
+import { ChangeDetectionStrategy, Component, computed, inject, input, output } from '@angular/core';
 import { FiresideApi } from '../api.service';
 import { MissionStore } from '../mission-store';
 import { markdownToHtml } from '../markdown';
@@ -12,6 +12,7 @@ import type { Task } from '../api.types';
 @Component({
   selector: 'fs-plan-view',
   standalone: true,
+  changeDetection: ChangeDetectionStrategy.OnPush,
   templateUrl: './plan-view.html',
   styleUrl: './plan-view.css',
 })

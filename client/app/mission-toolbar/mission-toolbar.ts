@@ -8,7 +8,7 @@
 // surface), but the methods, prompt builder, dispatch path, and target
 // resolution all live here.
 
-import { Component, HostListener, computed, effect, inject, input, output } from '@angular/core';
+import { ChangeDetectionStrategy, Component, computed, effect, HostListener, inject, input, output } from '@angular/core';
 
 import { AgentDisplayService } from '../agent-display.service';
 import { FiresideApi } from '../api.service';
@@ -70,6 +70,7 @@ export const MISSION_ACTIONS: MissionActionDefinition[] = [
 @Component({
   selector: 'fs-mission-toolbar',
   standalone: true,
+  changeDetection: ChangeDetectionStrategy.OnPush,
   templateUrl: './mission-toolbar.html',
   styleUrl: './mission-toolbar.css',
 })

@@ -9,12 +9,13 @@
 // handles that by opening the run-detail modal.
 
 import {
+  ChangeDetectionStrategy,
   Component,
-  ElementRef,
-  OnDestroy,
   computed,
   effect,
+  ElementRef,
   inject,
+  OnDestroy,
   output,
   signal,
   untracked,
@@ -87,6 +88,7 @@ const ATTENTION_TONE_PRIORITY: Record<OpsTone, number> = {
 @Component({
   selector: 'fs-overview-view',
   standalone: true,
+  changeDetection: ChangeDetectionStrategy.OnPush,
   templateUrl: './overview-view.html',
   styleUrl: './overview-view.css',
 })

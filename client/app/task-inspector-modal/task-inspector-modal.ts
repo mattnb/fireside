@@ -7,7 +7,7 @@
 // out as outputs. Follows the run-detail-modal modal pattern: scrim click
 // + close button both fire `(closed)`.
 
-import { Component, inject, input, output } from '@angular/core';
+import { ChangeDetectionStrategy, Component, inject, input, output } from '@angular/core';
 
 import { AgentDisplayService } from '../agent-display.service';
 import type { MissionGraphCard } from '../mission-graph';
@@ -22,6 +22,7 @@ import type {
 @Component({
   selector: 'fs-task-inspector-modal',
   standalone: true,
+  changeDetection: ChangeDetectionStrategy.OnPush,
   templateUrl: './task-inspector-modal.html',
   styleUrl: './task-inspector-modal.css',
 })

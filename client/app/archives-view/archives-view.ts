@@ -5,7 +5,7 @@
 // while their parent is archived) so the user can decide whether they want
 // to restore or nuke.
 
-import { Component, computed, inject, output } from '@angular/core';
+import { ChangeDetectionStrategy, Component, computed, inject, output } from '@angular/core';
 
 import { MissionStore } from '../mission-store';
 import { formatDateTime } from '../formatters';
@@ -14,6 +14,7 @@ import type { Project, Room } from '../api.types';
 @Component({
   selector: 'fs-archives-view',
   standalone: true,
+  changeDetection: ChangeDetectionStrategy.OnPush,
   templateUrl: './archives-view.html',
   styleUrl: './archives-view.css',
 })

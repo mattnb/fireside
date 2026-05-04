@@ -1,15 +1,16 @@
 import {
+  ChangeDetectionStrategy,
   Component,
-  ElementRef,
-  OnDestroy,
-  ViewChild,
-  ViewEncapsulation,
   computed,
   effect,
+  ElementRef,
   inject,
+  OnDestroy,
   signal,
   untracked,
   viewChild,
+  ViewChild,
+  ViewEncapsulation,
 } from '@angular/core';
 
 import { FiresideApi } from './api.service';
@@ -174,6 +175,7 @@ const FRIENDLY_AGENT_NAMES = [
 @Component({
   selector: 'fs-root',
   standalone: true,
+  changeDetection: ChangeDetectionStrategy.OnPush,
   imports: [
     PlanView,
     SetupView,

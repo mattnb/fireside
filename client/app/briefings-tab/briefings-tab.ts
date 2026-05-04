@@ -4,7 +4,7 @@
 // BriefingService, which both this tab and mission-toolbar inject — App
 // stays out of the briefing flow entirely.
 
-import { Component, inject } from '@angular/core';
+import { ChangeDetectionStrategy, Component, inject } from '@angular/core';
 import { AgentDisplayService } from '../agent-display.service';
 import { BriefingService } from '../briefing.service';
 import { MissionStore } from '../mission-store';
@@ -15,6 +15,7 @@ import type { Message, MissionBriefing } from '../api.types';
 @Component({
   selector: 'fs-briefings-tab',
   standalone: true,
+  changeDetection: ChangeDetectionStrategy.OnPush,
   templateUrl: './briefings-tab.html',
   styleUrl: './briefings-tab.css',
 })

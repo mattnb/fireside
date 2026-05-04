@@ -6,7 +6,7 @@
 // runs-rail on the right of the chat tab — App stops piping run data
 // into this component.
 
-import { Component, inject, input, output } from '@angular/core';
+import { ChangeDetectionStrategy, Component, inject, input, output } from '@angular/core';
 
 import { AgentDisplayService } from '../agent-display.service';
 import { RailAgent } from '../rail-agent/rail-agent';
@@ -15,6 +15,7 @@ import type { AgentId } from '../api.types';
 @Component({
   selector: 'fs-agents-panel',
   standalone: true,
+  changeDetection: ChangeDetectionStrategy.OnPush,
   imports: [RailAgent],
   templateUrl: './agents-panel.html',
   styleUrl: './agents-panel.css',

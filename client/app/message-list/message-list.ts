@@ -8,9 +8,10 @@
 
 import { DatePipe } from '@angular/common';
 import {
+  ChangeDetectionStrategy,
   Component,
-  ElementRef,
   effect,
+  ElementRef,
   inject,
   input,
   output,
@@ -27,6 +28,7 @@ import type { AgentRun, Message, PermissionRequest } from '../api.types';
 @Component({
   selector: 'fs-message-list',
   standalone: true,
+  changeDetection: ChangeDetectionStrategy.OnPush,
   imports: [DatePipe],
   templateUrl: './message-list.html',
   styleUrl: './message-list.css',

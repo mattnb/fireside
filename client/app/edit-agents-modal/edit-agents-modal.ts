@@ -3,7 +3,7 @@
 // but bound to the App's `editRoomAgentRows` rather than the new-room
 // rows. Pure shell; saving funnels through `(saved)`.
 
-import { Component, inject, input, output } from '@angular/core';
+import { ChangeDetectionStrategy, Component, inject, input, output } from '@angular/core';
 
 import { AgentDisplayService } from '../agent-display.service';
 import type {
@@ -18,6 +18,7 @@ import type { DraftRoomAgent } from '../room-agent-types';
 @Component({
   selector: 'fs-edit-agents-modal',
   standalone: true,
+  changeDetection: ChangeDetectionStrategy.OnPush,
   templateUrl: './edit-agents-modal.html',
   styleUrl: './edit-agents-modal.css',
 })

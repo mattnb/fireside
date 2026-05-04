@@ -20,6 +20,7 @@
             "outputPath": "dist/client",
             "index": "client/index.html",
             "browser": "client/main.ts",
+            "polyfills": [],
             "tsConfig": "tsconfig.app.json",
             "assets": [
               {

@@ -27,13 +27,11 @@
     autocomplete="off"
     spellcheck="true"
     [placeholder]="placeholder()"
-    [value]="text()"
     aria-label="Message"
     [attr.aria-expanded]="suggestions().length > 0"
     aria-controls="mention-autocomplete"
     (input)="onInput(messageInput)"
     (click)="refreshAutocomplete(messageInput)"
-    (keyup)="onKeyup($event, messageInput)"
     (keydown)="onKeydown($event, messageInput)"
     (blur)="closeAutocompleteSoon()"
   ></textarea>

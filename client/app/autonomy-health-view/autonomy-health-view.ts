@@ -1,4 +1,4 @@
-import { Component, computed, inject, input } from '@angular/core';
+import { ChangeDetectionStrategy, Component, computed, inject, input } from '@angular/core';
 
 import { AgentDisplayService } from '../agent-display.service';
 import { formatShortTime, oneLine } from '../formatters';
@@ -38,6 +38,7 @@ type WorkDispatchRow = {
 @Component({
   selector: 'fs-autonomy-health-view',
   standalone: true,
+  changeDetection: ChangeDetectionStrategy.OnPush,
   templateUrl: './autonomy-health-view.html',
   styleUrl: './autonomy-health-view.css',
 })

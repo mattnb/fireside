@@ -4,7 +4,7 @@
 // Add-phase form sits at the bottom of the nav and emits (phaseAdded) so the
 // parent can refresh task control.
 
-import { Component, computed, inject, input, output, signal } from '@angular/core';
+import { ChangeDetectionStrategy, Component, computed, inject, input, output, signal } from '@angular/core';
 
 import { AgentDisplayService } from '../agent-display.service';
 import { pad2 } from '../formatters';
@@ -16,6 +16,7 @@ export type RoadmapStatusFilter = 'ready' | 'in-progress' | 'blocked' | 'done';
 @Component({
   selector: 'fs-roadmap-view',
   standalone: true,
+  changeDetection: ChangeDetectionStrategy.OnPush,
   templateUrl: './roadmap-view.html',
   styleUrl: './roadmap-view.css',
 })

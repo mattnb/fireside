@@ -5,7 +5,7 @@
 // — children inject the services directly so this component only carries
 // its agent id + the optional compact-request output.
 
-import { Component, inject, input, output } from '@angular/core';
+import { ChangeDetectionStrategy, Component, inject, input, output } from '@angular/core';
 
 import { AgentDisplayService } from '../agent-display.service';
 import { AgentRingService } from '../agent-ring.service';
@@ -18,6 +18,7 @@ export type { RingTone } from '../agent-ring.service';
 @Component({
   selector: 'fs-rail-agent',
   standalone: true,
+  changeDetection: ChangeDetectionStrategy.OnPush,
   templateUrl: './rail-agent.html',
   styleUrl: './rail-agent.css',
 })

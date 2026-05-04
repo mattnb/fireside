@@ -7,7 +7,7 @@
 // keep the conversation pinned to the latest message when streamed events
 // arrive.
 
-import { Component, computed, inject, input, output, viewChild } from '@angular/core';
+import { ChangeDetectionStrategy, Component, computed, inject, input, output, viewChild } from '@angular/core';
 
 import { AgentDisplayService } from '../agent-display.service';
 import { DraftService } from '../draft.service';
@@ -21,6 +21,7 @@ import type { AgentRun, PermissionRequest } from '../api.types';
 @Component({
   selector: 'fs-chat-pane',
   standalone: true,
+  changeDetection: ChangeDetectionStrategy.OnPush,
   imports: [MessageList, Composer],
   templateUrl: './chat-pane.html',
   styleUrl: './chat-pane.css',

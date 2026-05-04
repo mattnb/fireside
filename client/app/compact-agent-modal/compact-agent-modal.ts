@@ -3,7 +3,7 @@
 // context usage bar, any error from a prior attempt, and a "compact now"
 // button. Pulls all agent metadata + ring math from injected services.
 
-import { Component, inject, input, output } from '@angular/core';
+import { ChangeDetectionStrategy, Component, inject, input, output } from '@angular/core';
 
 import { AgentDisplayService } from '../agent-display.service';
 import { AgentRingService } from '../agent-ring.service';
@@ -13,6 +13,7 @@ import type { AgentId } from '../api.types';
 @Component({
   selector: 'fs-compact-agent-modal',
   standalone: true,
+  changeDetection: ChangeDetectionStrategy.OnPush,
   templateUrl: './compact-agent-modal.html',
   styleUrl: './compact-agent-modal.css',
 })

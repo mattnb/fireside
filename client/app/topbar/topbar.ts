@@ -4,7 +4,7 @@
 // tab strip (when a room is selected). Pure presentational — App owns
 // `selectedTab` and tab-switching action.
 
-import { Component, input, output } from '@angular/core';
+import { ChangeDetectionStrategy, Component, input, output } from '@angular/core';
 
 export type TopbarTab<TId extends string = string> = {
   id: TId;
@@ -14,6 +14,7 @@ export type TopbarTab<TId extends string = string> = {
 @Component({
   selector: 'fs-topbar',
   standalone: true,
+  changeDetection: ChangeDetectionStrategy.OnPush,
   templateUrl: './topbar.html',
   styleUrl: './topbar.css',
 })

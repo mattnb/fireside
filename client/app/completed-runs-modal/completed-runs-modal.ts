@@ -3,7 +3,7 @@
 // completed runs (any status other than 'running') as clickable cards that
 // open the run-detail modal.
 
-import { Component, computed, inject, output } from '@angular/core';
+import { ChangeDetectionStrategy, Component, computed, inject, output } from '@angular/core';
 
 import { AgentDisplayService } from '../agent-display.service';
 import { MissionStore } from '../mission-store';
@@ -16,6 +16,7 @@ import type { AgentRun, AgentRunAction } from '../api.types';
 @Component({
   selector: 'fs-completed-runs-modal',
   standalone: true,
+  changeDetection: ChangeDetectionStrategy.OnPush,
   templateUrl: './completed-runs-modal.html',
   styleUrl: './completed-runs-modal.css',
 })

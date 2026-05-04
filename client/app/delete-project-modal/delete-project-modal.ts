@@ -3,7 +3,7 @@
 // project name and the cascade summary (number of rooms that will go with
 // it) so the user understands the blast radius before confirming.
 
-import { Component, inject, input, output } from '@angular/core';
+import { ChangeDetectionStrategy, Component, inject, input, output } from '@angular/core';
 
 import { MissionStore } from '../mission-store';
 import type { Project } from '../api.types';
@@ -11,6 +11,7 @@ import type { Project } from '../api.types';
 @Component({
   selector: 'fs-delete-project-modal',
   standalone: true,
+  changeDetection: ChangeDetectionStrategy.OnPush,
   templateUrl: './delete-project-modal.html',
   styleUrl: './delete-project-modal.css',
 })

@@ -5,7 +5,7 @@
 // for done phases. Reads the active checklist from MissionStore directly;
 // emits (taskControlChanged) when a mutation lands so the parent can refresh.
 
-import { Component, computed, effect, inject, input, output, signal, untracked } from '@angular/core';
+import { ChangeDetectionStrategy, Component, computed, effect, inject, input, output, signal, untracked } from '@angular/core';
 import { AgentDisplayService } from '../agent-display.service';
 import { FiresideApi } from '../api.service';
 import { MissionStore } from '../mission-store';
@@ -14,6 +14,7 @@ import type { AgentId, Task, TaskChecklistItem, TaskPhaseStatus } from '../api.t
 @Component({
   selector: 'fs-checklist-view',
   standalone: true,
+  changeDetection: ChangeDetectionStrategy.OnPush,
   templateUrl: './checklist-view.html',
   styleUrl: './checklist-view.css',
 })

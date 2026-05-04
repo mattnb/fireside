@@ -11,14 +11,15 @@
 // recall happens at the parent's layer.
 
 import {
+  ChangeDetectionStrategy,
   Component,
-  ElementRef,
-  OnDestroy,
   computed,
   effect,
+  ElementRef,
   inject,
   input,
   model,
+  OnDestroy,
   output,
   signal,
   viewChild,
@@ -32,6 +33,7 @@ const COMPOSER_MAX_HEIGHT_PX = 200;
 @Component({
   selector: 'fs-composer',
   standalone: true,
+  changeDetection: ChangeDetectionStrategy.OnPush,
   templateUrl: './composer.html',
   styleUrl: './composer.css',
 })
@@ -50,15 +52,26 @@ export class Composer implements OnDestroy {
   private readonly textareaRef = viewChild<ElementRef<HTMLTextAreaElement>>('messageInput');
 
   constructor() {
-    // Re-fit the textarea to its content whenever text changes — covers
-    // typing, mention insertion, and external mutations like room-switch
-    // draft swaps. queueMicrotask waits for the [value] binding to flush
-    // before we measure scrollHeight.
+    // Sync the textarea's DOM value to the text() signal when they diverge —
+    // covers initial mount and external mutations like room-switch draft
+    // swaps. During typing, input.value is already current and this no-ops,
+    // so we never overwrite what the user just typed.
+    //
+    // Height-fit is scheduled into rAF (after layout) every time text
+    // changes, AND a ResizeObserver re-fits whenever the textarea's
+    // available width changes — chat data resolving, window resize,
+    // sidebar collapse, anything that shifts the surrounding layout.
+    // Without the width observer, a long stored draft renders against
+    // the chat-pane's pre-load minimum width and ends up much taller
+    // than the final layout requires.
     effect(() => {
-      this.text();
+      const value = this.text();
       const ref = this.textareaRef();
       if (!ref) return;
-      queueMicrotask(() => this.adjustHeight(ref.nativeElement));
+      const el = ref.nativeElement;
+      if (el.value !== value) el.value = value;
+      this.scheduleHeightFit(el);
+      this.ensureWidthObserver(el);
     });
   }
 
@@ -71,18 +84,51 @@ export class Composer implements OnDestroy {
   });
 
   private closeTimer: number | null = null;
+  private heightFitFrame: number | null = null;
+  private widthObserver: ResizeObserver | null = null;
+  private lastObservedWidth = 0;
 
   ngOnDestroy(): void {
     if (this.closeTimer !== null) {
       window.clearTimeout(this.closeTimer);
       this.closeTimer = null;
     }
+    if (this.heightFitFrame !== null) {
+      cancelAnimationFrame(this.heightFitFrame);
+      this.heightFitFrame = null;
+    }
+    if (this.widthObserver) {
+      this.widthObserver.disconnect();
+      this.widthObserver = null;
+    }
+  }
+
+  private scheduleHeightFit(el: HTMLTextAreaElement): void {
+    if (this.heightFitFrame !== null) return;
+    this.heightFitFrame = requestAnimationFrame(() => {
+      this.heightFitFrame = null;
+      this.adjustHeight(el);
+    });
+  }
+
+  private ensureWidthObserver(el: HTMLTextAreaElement): void {
+    if (this.widthObserver) return;
+    this.widthObserver = new ResizeObserver((entries) => {
+      const entry = entries[0];
+      if (!entry) return;
+      const width = entry.contentRect.width;
+      // Filter out height-only changes — adjustHeight itself mutates the
+      // textarea's height and would otherwise feed straight back into us.
+      if (width === this.lastObservedWidth) return;
+      this.lastObservedWidth = width;
+      this.scheduleHeightFit(el);
+    });
+    this.widthObserver.observe(el);
   }
 
   onInput(input: HTMLTextAreaElement): void {
     this.text.set(input.value);
     this.refreshAutocomplete(input);
-    this.adjustHeight(input);
   }
 
   submit(input: HTMLTextAreaElement): void {
@@ -98,13 +144,11 @@ export class Composer implements OnDestroy {
     }
     const token = this.detectMentionToken(input);
     this.token.set(token);
-    const count = token ? this.findSuggestions()(token.query).length : 0;
+    // Reuse the memoized `suggestions` computed instead of calling
+    // findSuggestions a second time — token.set above already invalidated
+    // its cache, so this read drives a single recompute.
+    const count = this.suggestions().length;
     if (this.selectedIndex() >= count) this.selectedIndex.set(0);
-  }
-
-  onKeyup(event: KeyboardEvent, input: HTMLTextAreaElement): void {
-    if (['ArrowUp', 'ArrowDown', 'Enter', 'Tab', 'Escape'].includes(event.key)) return;
-    this.refreshAutocomplete(input);
   }
 
   onKeydown(event: KeyboardEvent, input: HTMLTextAreaElement): void {
@@ -158,7 +202,6 @@ export class Composer implements OnDestroy {
     this.closeAutocomplete();
     input.focus();
     input.setSelectionRange(cursor, cursor);
-    this.adjustHeight(input);
   }
 
   private adjustHeight(textarea: HTMLTextAreaElement): void {

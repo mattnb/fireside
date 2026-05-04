@@ -1,5 +1,6 @@
 import {
   AfterViewInit,
+  ChangeDetectionStrategy,
   Component,
   ElementRef,
   NgZone,
@@ -10,6 +11,7 @@ import {
 @Component({
   selector: 'vfx-smoke-and-embers',
   standalone: true,
+  changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
     <div class="vfx-wrapper">
       <div class="glow-overlay"></div>

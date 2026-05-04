@@ -4,7 +4,7 @@
 // subheader and a list of work-cards (one per active run). Reads runs
 // straight from MissionStore so App doesn't have to plumb them through.
 
-import { Component, computed, inject, output } from '@angular/core';
+import { ChangeDetectionStrategy, Component, computed, inject, output } from '@angular/core';
 
 import { AgentDisplayService } from '../agent-display.service';
 import { MissionStore } from '../mission-store';
@@ -17,6 +17,7 @@ import type { AgentRun, AgentRunAction } from '../api.types';
 @Component({
   selector: 'fs-runs-rail',
   standalone: true,
+  changeDetection: ChangeDetectionStrategy.OnPush,
   templateUrl: './runs-rail.html',
   styleUrl: './runs-rail.css',
 })

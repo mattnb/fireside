@@ -7,7 +7,7 @@
 // Pure presentational shell — all helpers (run formatters, signal/action
 // filters) come in as input fns; lifecycle events bubble out.
 
-import { Component, inject, input, output } from '@angular/core';
+import { ChangeDetectionStrategy, Component, inject, input, output } from '@angular/core';
 
 import { AgentDisplayService } from '../agent-display.service';
 import type {
@@ -20,6 +20,7 @@ import type {
 @Component({
   selector: 'fs-run-detail-modal',
   standalone: true,
+  changeDetection: ChangeDetectionStrategy.OnPush,
   templateUrl: './run-detail-modal.html',
   styleUrl: './run-detail-modal.css',
 })
