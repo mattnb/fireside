@@ -119,6 +119,22 @@ interface AgentRunRow {
   retry_after: number;
 }
 
+type AgentRunSummaryRow = Omit<
+  AgentRunRow,
+  'prompt_text' | 'stdout' | 'stderr' | 'reply_text' | 'permission_reason'
+>;
+
+const AGENT_RUN_SUMMARY_COLUMNS = `
+  id, agent_job_id, room_id, task_id, trigger_message_id, reply_message_id, agent_id, status,
+  permission_mode, prompt_chars, estimated_prompt_tokens, live_messages, context_artifacts,
+  started_at, completed_at, error, cli_session_id, permission_source, permission_target,
+  permission_filesystem_scope, permission_web, permission_capabilities_json,
+  permission_target_exists, permission_target_kind, permission_target_resolved_path,
+  permission_target_checked_at, permission_provider_profile, lifecycle_state, lifecycle_reason,
+  lifecycle_updated_at, last_signal_at, attempt, continuation_turn, max_turns, workspace_path,
+  retry_of_run_id, retry_after
+`;
+
 export interface CreateAgentRunInput {
   agentJobId?: string;
   roomId: string;
@@ -283,6 +299,49 @@ function toAgentRunSummary(run: AgentRun): AgentRunSummary {
   };
 }
 
+function rowToAgentRunSummary(row: AgentRunSummaryRow): AgentRunSummary {
+  return {
+    id: row.id,
+    agentJobId: row.agent_job_id ?? '',
+    roomId: row.room_id,
+    taskId: row.task_id,
+    triggerMessageId: row.trigger_message_id,
+    replyMessageId: row.reply_message_id,
+    agentId: row.agent_id,
+    status: row.status,
+    permissionMode: row.permission_mode,
+    promptChars: row.prompt_chars,
+    estimatedPromptTokens: row.estimated_prompt_tokens,
+    liveMessages: row.live_messages,
+    contextArtifacts: row.context_artifacts,
+    startedAt: row.started_at,
+    completedAt: row.completed_at,
+    error: row.error,
+    cliSessionId: row.cli_session_id,
+    permissionSource: row.permission_source,
+    permissionTarget: row.permission_target,
+    permissionFilesystemScope: row.permission_filesystem_scope,
+    permissionWeb: row.permission_web === 1,
+    permissionCapabilities: parseCapabilities(row.permission_capabilities_json),
+    permissionTargetExists:
+      row.permission_target_exists === null ? null : row.permission_target_exists === 1,
+    permissionTargetKind: row.permission_target_kind || 'unknown',
+    permissionTargetResolvedPath: row.permission_target_resolved_path || '',
+    permissionTargetCheckedAt: row.permission_target_checked_at || 0,
+    permissionProviderProfile: row.permission_provider_profile || '',
+    lifecycleState: row.lifecycle_state || 'launching_agent_process',
+    lifecycleReason: row.lifecycle_reason || '',
+    lifecycleUpdatedAt: row.lifecycle_updated_at || 0,
+    lastSignalAt: row.last_signal_at || 0,
+    attempt: row.attempt || 1,
+    continuationTurn: row.continuation_turn || 1,
+    maxTurns: row.max_turns || 1,
+    workspacePath: row.workspace_path || '',
+    retryOfRunId: row.retry_of_run_id || '',
+    retryAfter: row.retry_after || 0,
+  };
+}
+
 export function createAgentRun(db: Database, input: CreateAgentRunInput): AgentRunSummary {
   const id = nanoid(16);
   const now = Date.now();
@@ -355,10 +414,14 @@ export function listAgentRuns(
   const limit = opts.limit ?? 30;
   const rows = db
     .prepare(
-      `SELECT * FROM agent_runs WHERE room_id = ? ORDER BY started_at DESC, id DESC LIMIT ?`,
+      `SELECT ${AGENT_RUN_SUMMARY_COLUMNS}
+       FROM agent_runs
+       WHERE room_id = ?
+       ORDER BY started_at DESC, id DESC
+       LIMIT ?`,
     )
-    .all(roomId, limit) as AgentRunRow[];
-  return rows.map(rowToAgentRun).map(toAgentRunSummary);
+    .all(roomId, limit) as AgentRunSummaryRow[];
+  return rows.map(rowToAgentRunSummary);
 }
 
 export function listAllAgentRunsForRoom(db: Database, roomId: string): AgentRun[] {
@@ -370,6 +433,21 @@ export function listAllAgentRunsForRoom(db: Database, roomId: string): AgentRun[
   return rows.map(rowToAgentRun);
 }
 
+export function listAllAgentRunSummariesForRoom(
+  db: Database,
+  roomId: string,
+): AgentRunSummary[] {
+  const rows = db
+    .prepare(
+      `SELECT ${AGENT_RUN_SUMMARY_COLUMNS}
+       FROM agent_runs
+       WHERE room_id = ?
+       ORDER BY started_at ASC, id ASC`,
+    )
+    .all(roomId) as AgentRunSummaryRow[];
+  return rows.map(rowToAgentRunSummary);
+}
+
 export function listRecentAgentRunsForTask(
   db: Database,
   roomId: string,
@@ -379,20 +457,35 @@ export function listRecentAgentRunsForTask(
   const rows = taskId
     ? (db
         .prepare(
-          `SELECT * FROM agent_runs WHERE room_id = ? AND task_id = ? ORDER BY started_at DESC, id DESC LIMIT ?`,
+          `SELECT ${AGENT_RUN_SUMMARY_COLUMNS}
+           FROM agent_runs
+           WHERE room_id = ? AND task_id = ?
+           ORDER BY started_at DESC, id DESC
+           LIMIT ?`,
         )
-        .all(roomId, taskId, limit) as AgentRunRow[])
+        .all(roomId, taskId, limit) as AgentRunSummaryRow[])
     : (db
-        .prepare(`SELECT * FROM agent_runs WHERE room_id = ? ORDER BY started_at DESC, id DESC LIMIT ?`)
-        .all(roomId, limit) as AgentRunRow[]);
-  return rows.map(rowToAgentRun).map(toAgentRunSummary);
+        .prepare(
+          `SELECT ${AGENT_RUN_SUMMARY_COLUMNS}
+           FROM agent_runs
+           WHERE room_id = ?
+           ORDER BY started_at DESC, id DESC
+           LIMIT ?`,
+        )
+        .all(roomId, limit) as AgentRunSummaryRow[]);
+  return rows.map(rowToAgentRunSummary);
 }
 
 export function listRunningAgentRuns(db: Database): AgentRunSummary[] {
   const rows = db
-    .prepare(`SELECT * FROM agent_runs WHERE status = 'running' ORDER BY started_at ASC, id ASC`)
-    .all() as AgentRunRow[];
-  return rows.map(rowToAgentRun).map(toAgentRunSummary);
+    .prepare(
+      `SELECT ${AGENT_RUN_SUMMARY_COLUMNS}
+       FROM agent_runs
+       WHERE status = 'running'
+       ORDER BY started_at ASC, id ASC`,
+    )
+    .all() as AgentRunSummaryRow[];
+  return rows.map(rowToAgentRunSummary);
 }
 
 export function listRunningAgentRunsForRoom(
@@ -401,10 +494,13 @@ export function listRunningAgentRunsForRoom(
 ): AgentRunSummary[] {
   const rows = db
     .prepare(
-      `SELECT * FROM agent_runs WHERE room_id = ? AND status = 'running' ORDER BY started_at ASC, id ASC`,
+      `SELECT ${AGENT_RUN_SUMMARY_COLUMNS}
+       FROM agent_runs
+       WHERE room_id = ? AND status = 'running'
+       ORDER BY started_at ASC, id ASC`,
     )
-    .all(roomId) as AgentRunRow[];
-  return rows.map(rowToAgentRun).map(toAgentRunSummary);
+    .all(roomId) as AgentRunSummaryRow[];
+  return rows.map(rowToAgentRunSummary);
 }
 
 export function recoverInterruptedAgentRuns(db: Database, now = Date.now()): AgentRunSummary[] {

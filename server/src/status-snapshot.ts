@@ -1,11 +1,19 @@
 import type { Database } from 'better-sqlite3';
 import type { AgentId, RoomAgentProfile } from './agents/types.js';
 import type { AgentContextUsage } from './context-usage.js';
-import { listAllAgentRunsForRoom, type AgentRun, type AgentRunStatus } from './repos/agent-runs.js';
-import { listActiveAgentJobsForRoom, type AgentJob } from './repos/agent-jobs.js';
 import {
-  listAgentRunActionsForRoom,
+  listAllAgentRunSummariesForRoom,
+  type AgentRun,
+  type AgentRunStatus,
+  type AgentRunSummary,
+} from './repos/agent-runs.js';
+import { listActiveAgentJobSummariesForRoom, type AgentJob } from './repos/agent-jobs.js';
+import {
+  listAgentRunActionAggregatesForRoom,
+  listRecentAgentRunActions,
+  listRecentContextUsageActionsForRoom,
   type AgentRunAction,
+  type AgentRunActionAggregate,
   type AgentRunActionKind,
   type AgentRunActionStatus,
 } from './repos/run-actions.js';
@@ -316,7 +324,7 @@ function addTaskCount(counts: StatusSnapshotTaskCounts, task: Task): void {
   if (ACTIVE_TASK_STATUSES.has(task.status)) counts.activeLike += 1;
 }
 
-function addRunCount(counts: StatusSnapshotRunCounts, run: AgentRun): void {
+function addRunCount(counts: StatusSnapshotRunCounts, run: AgentRunSummary): void {
   counts.total += 1;
   counts.byStatus[run.status] += 1;
   if (run.lifecycleState === 'retry_queued') {
@@ -347,6 +355,17 @@ function addRunActionCount(counts: StatusSnapshotRunActionCounts, action: AgentR
   counts.byStatus[action.status] += 1;
   counts.byKind[action.kind] += 1;
   if (action.contextUsage) counts.withContextUsage += 1;
+}
+
+function addRunActionAggregate(
+  counts: StatusSnapshotRunActionCounts,
+  aggregate: AgentRunActionAggregate,
+): void {
+  counts.total += aggregate.count;
+  counts[aggregate.status] += aggregate.count;
+  counts.byStatus[aggregate.status] += aggregate.count;
+  counts.byKind[aggregate.kind] += aggregate.count;
+  counts.withContextUsage += aggregate.withContextUsage;
 }
 
 function mergeTaskCounts(target: StatusSnapshotTaskCounts, source: StatusSnapshotTaskCounts): void {
@@ -410,7 +429,7 @@ function toTaskSummary(task: Task): StatusSnapshotTask {
   };
 }
 
-function toRunSummary(run: AgentRun): StatusSnapshotRun {
+function toRunSummary(run: AgentRunSummary): StatusSnapshotRun {
   return {
     id: run.id,
     agentJobId: run.agentJobId,
@@ -470,6 +489,14 @@ function compareRunsDesc(a: StatusSnapshotRun, b: StatusSnapshotRun): number {
 function compareActionsDesc(a: StatusSnapshotRunAction, b: StatusSnapshotRunAction): number {
   const timeDiff = b.createdAt - a.createdAt;
   return timeDiff !== 0 ? timeDiff : b.id.localeCompare(a.id);
+}
+
+function mergedActionSummaries(actions: AgentRunAction[]): StatusSnapshotRunAction[] {
+  const byId = new Map<string, StatusSnapshotRunAction>();
+  for (const action of actions) {
+    byId.set(action.id, toRunActionSummary(action));
+  }
+  return Array.from(byId.values()).sort(compareActionsDesc);
 }
 
 function latestForAgent<T extends { agentId: AgentId }>(values: T[], agentId: AgentId): T | null {
@@ -835,9 +862,11 @@ export function buildStatusSnapshot(input: BuildStatusSnapshotInput): StatusSnap
     const roomRunCounts = zeroRunCounts();
     const roomActionCounts = zeroRunActionCounts();
     const roomTasks = listTasks(input.db, room.id);
-    const roomRuns = listAllAgentRunsForRoom(input.db, room.id);
-    const roomActions = listAgentRunActionsForRoom(input.db, room.id);
-    const roomActiveJobs = listActiveAgentJobsForRoom(input.db, room.id);
+    const roomRuns = listAllAgentRunSummariesForRoom(input.db, room.id);
+    const roomRecentActions = listRecentAgentRunActions(input.db, room.id, Math.max(100, recentLimit));
+    const roomContextActions = listRecentContextUsageActionsForRoom(input.db, room.id);
+    const roomActionAggregates = listAgentRunActionAggregatesForRoom(input.db, room.id);
+    const roomActiveJobs = listActiveAgentJobSummariesForRoom(input.db, room.id);
 
     const roomActiveTasks = roomTasks
       .filter((task) => ACTIVE_TASK_STATUSES.has(task.status))
@@ -846,10 +875,11 @@ export function buildStatusSnapshot(input: BuildStatusSnapshotInput): StatusSnap
       addRunCount(roomRunCounts, run);
       return toRunSummary(run);
     });
-    const roomActionSummaries = roomActions.map((action) => {
-      addRunActionCount(roomActionCounts, action);
-      return toRunActionSummary(action);
-    });
+    const roomActionSummaries = mergedActionSummaries([
+      ...roomRecentActions,
+      ...roomContextActions,
+    ]);
+    for (const aggregate of roomActionAggregates) addRunActionAggregate(roomActionCounts, aggregate);
 
     for (const task of roomTasks) addTaskCount(roomTaskCounts, task);
     mergeTaskCounts(taskCounts, roomTaskCounts);

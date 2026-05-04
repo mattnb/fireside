@@ -42,6 +42,20 @@ interface AgentRunActionRow {
   created_at: number;
 }
 
+export interface AgentRunActionAggregate {
+  kind: AgentRunActionKind;
+  status: AgentRunActionStatus;
+  count: number;
+  withContextUsage: number;
+}
+
+interface AgentRunActionAggregateRow {
+  kind: AgentRunActionKind;
+  status: AgentRunActionStatus;
+  count: number;
+  with_context_usage: number;
+}
+
 export interface CreateAgentRunActionInput {
   roomId: string;
   taskId?: string | null;
@@ -136,6 +150,46 @@ export function listRecentAgentRunActions(
     )
     .all(roomId, limit) as AgentRunActionRow[];
   return rows.map(rowToAgentRunAction);
+}
+
+export function listRecentContextUsageActionsForRoom(
+  db: Database,
+  roomId: string,
+  limit = 200,
+): AgentRunAction[] {
+  const rows = db
+    .prepare(
+      `SELECT * FROM agent_run_actions
+       WHERE room_id = ? AND context_usage_json <> ''
+       ORDER BY created_at DESC, id DESC
+       LIMIT ?`,
+    )
+    .all(roomId, limit) as AgentRunActionRow[];
+  return rows.map(rowToAgentRunAction);
+}
+
+export function listAgentRunActionAggregatesForRoom(
+  db: Database,
+  roomId: string,
+): AgentRunActionAggregate[] {
+  const rows = db
+    .prepare(
+      `SELECT
+         kind,
+         status,
+         COUNT(*) AS count,
+         SUM(CASE WHEN context_usage_json <> '' THEN 1 ELSE 0 END) AS with_context_usage
+       FROM agent_run_actions
+       WHERE room_id = ?
+       GROUP BY kind, status`,
+    )
+    .all(roomId) as AgentRunActionAggregateRow[];
+  return rows.map((row) => ({
+    kind: row.kind,
+    status: row.status,
+    count: row.count,
+    withContextUsage: row.with_context_usage,
+  }));
 }
 
 export function listAgentRunActionsForRoom(db: Database, roomId: string): AgentRunAction[] {

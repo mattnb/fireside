@@ -53,6 +53,17 @@ interface AgentJobRow {
   completed_at: number | null;
 }
 
+type AgentJobLightRow = Omit<AgentJobRow, 'work_packet_json' | 'permission_json'> & {
+  work_packet_json?: string;
+  permission_json?: string;
+};
+
+const AGENT_JOB_LIGHT_COLUMNS = `
+  id, room_id, task_id, checklist_item_id, agent_id, trigger_message_id, run_id, status,
+  '' AS work_packet_json, '' AS permission_json, lease_owner, lease_expires_at, attempt,
+  max_attempts, error, created_at, updated_at, completed_at
+`;
+
 export interface CreateAgentJobInput {
   roomId: string;
   taskId?: string | null;
@@ -71,7 +82,7 @@ export interface LeaseAgentJobInput {
   now?: number;
 }
 
-function rowToAgentJob(row: AgentJobRow): AgentJob {
+function rowToAgentJob(row: AgentJobRow | AgentJobLightRow): AgentJob {
   return {
     id: row.id,
     roomId: row.room_id,
@@ -81,8 +92,8 @@ function rowToAgentJob(row: AgentJobRow): AgentJob {
     triggerMessageId: row.trigger_message_id,
     runId: row.run_id,
     status: row.status,
-    workPacketJson: row.work_packet_json,
-    permissionJson: row.permission_json,
+    workPacketJson: row.work_packet_json ?? '',
+    permissionJson: row.permission_json ?? '',
     leaseOwner: row.lease_owner,
     leaseExpiresAt: row.lease_expires_at,
     attempt: row.attempt,
@@ -92,6 +103,30 @@ function rowToAgentJob(row: AgentJobRow): AgentJob {
     updatedAt: row.updated_at,
     completedAt: row.completed_at,
   };
+}
+
+function compactTerminalWorkPacketJson(json: string): string {
+  try {
+    const parsed = JSON.parse(json) as unknown;
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return '{}';
+    const packet = parsed as Record<string, unknown>;
+    return JSON.stringify({
+      mission: packet.mission ?? null,
+      assignedItem: packet.assignedItem ?? null,
+      permission: packet.permission ?? null,
+      promptStats: packet.promptStats ?? null,
+      retained: 'terminal-summary',
+    });
+  } catch {
+    return '{}';
+  }
+}
+
+function terminalWorkPacketJson(db: Database, id: string): string {
+  const row = db
+    .prepare(`SELECT work_packet_json FROM agent_jobs WHERE id = ?`)
+    .get(id) as { work_packet_json: string } | undefined;
+  return compactTerminalWorkPacketJson(row?.work_packet_json ?? '{}');
 }
 
 function normalizeAttempt(value: number | undefined, fallback: number): number {
@@ -195,11 +230,13 @@ export function renewAgentJobLease(
 }
 
 export function completeAgentJob(db: Database, id: string, now = Date.now()): AgentJob | null {
+  const workPacketJson = terminalWorkPacketJson(db, id);
   db.prepare(
     `UPDATE agent_jobs
-     SET status = 'completed', lease_expires_at = 0, error = '', updated_at = ?, completed_at = ?
+     SET status = 'completed', work_packet_json = ?, permission_json = '{}',
+         lease_expires_at = 0, error = '', updated_at = ?, completed_at = ?
      WHERE id = ?`,
-  ).run(now, now, id);
+  ).run(workPacketJson, now, now, id);
   return getAgentJob(db, id);
 }
 
@@ -209,11 +246,13 @@ export function failAgentJob(
   error: string,
   now = Date.now(),
 ): AgentJob | null {
+  const workPacketJson = terminalWorkPacketJson(db, id);
   db.prepare(
     `UPDATE agent_jobs
-     SET status = 'failed', lease_expires_at = 0, error = ?, updated_at = ?, completed_at = ?
+     SET status = 'failed', work_packet_json = ?, permission_json = '{}',
+         lease_expires_at = 0, error = ?, updated_at = ?, completed_at = ?
      WHERE id = ?`,
-  ).run(error, now, now, id);
+  ).run(workPacketJson, error, now, now, id);
   return getAgentJob(db, id);
 }
 
@@ -223,11 +262,13 @@ export function cancelAgentJob(
   reason: string,
   now = Date.now(),
 ): AgentJob | null {
+  const workPacketJson = terminalWorkPacketJson(db, id);
   db.prepare(
     `UPDATE agent_jobs
-     SET status = 'canceled', lease_expires_at = 0, error = ?, updated_at = ?, completed_at = ?
+     SET status = 'canceled', work_packet_json = ?, permission_json = '{}',
+         lease_expires_at = 0, error = ?, updated_at = ?, completed_at = ?
      WHERE id = ?`,
-  ).run(reason, now, now, id);
+  ).run(workPacketJson, reason, now, now, id);
   return getAgentJob(db, id);
 }
 
@@ -256,6 +297,41 @@ export function listActiveAgentJobsForRoom(db: Database, roomId: string): AgentJ
     )
     .all(roomId) as AgentJobRow[];
   return rows.map(rowToAgentJob);
+}
+
+export function listActiveAgentJobSummariesForRoom(db: Database, roomId: string): AgentJob[] {
+  const rows = db
+    .prepare(
+      `SELECT ${AGENT_JOB_LIGHT_COLUMNS}
+       FROM agent_jobs
+       WHERE room_id = ? AND status IN ('queued', 'leased', 'running')
+       ORDER BY created_at ASC, id ASC`,
+    )
+    .all(roomId) as AgentJobLightRow[];
+  return rows.map(rowToAgentJob);
+}
+
+export function trimTerminalAgentJobPayloads(db: Database): number {
+  const rows = db
+    .prepare(
+      `SELECT id, work_packet_json
+       FROM agent_jobs
+       WHERE status NOT IN ('queued', 'leased', 'running')
+         AND (permission_json <> '{}' OR instr(work_packet_json, '"retained":"terminal-summary"') = 0)`,
+    )
+    .all() as Pick<AgentJobRow, 'id' | 'work_packet_json'>[];
+  const update = db.prepare(
+    `UPDATE agent_jobs
+     SET work_packet_json = ?, permission_json = '{}'
+     WHERE id = ?`,
+  );
+  const apply = db.transaction((jobs: Pick<AgentJobRow, 'id' | 'work_packet_json'>[]) => {
+    for (const job of jobs) {
+      update.run(compactTerminalWorkPacketJson(job.work_packet_json), job.id);
+    }
+  });
+  apply(rows);
+  return rows.length;
 }
 
 export function recoverInterruptedAgentJobs(

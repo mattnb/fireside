@@ -9,6 +9,7 @@ import { buildHttpServer } from './http-server.js';
 import { attachWebSocketServer } from './ws-server.js';
 import { runAgentTurn } from './agents/runner.js';
 import { getAgentSpec } from './agents/registry.js';
+import { trimTerminalAgentJobPayloads } from './repos/agent-jobs.js';
 import type { AgentId } from './agents/types.js';
 
 export interface FiresideServer {
@@ -29,6 +30,10 @@ export interface FiresideServer {
 export async function start(config: Config = loadConfig()): Promise<FiresideServer> {
   mkdirSync(config.dataDir, { recursive: true });
   const db = openDatabase(config.dbFile);
+  const trimmedAgentJobs = trimTerminalAgentJobPayloads(db);
+  if (trimmedAgentJobs > 0) {
+    logger.info({ count: trimmedAgentJobs }, 'trimmed terminal agent job payloads');
+  }
 
   const broker = new Broker({
     db,
