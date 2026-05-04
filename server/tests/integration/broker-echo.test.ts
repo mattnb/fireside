@@ -16,12 +16,12 @@ import { addMessage, listMessages } from '../../src/repos/messages.js';
 import { listAgentJobsForRoom } from '../../src/repos/agent-jobs.js';
 import { listPermissionRequests } from '../../src/repos/permission-requests.js';
 import { createAgentRun, listAgentRuns, updateAgentRun } from '../../src/repos/agent-runs.js';
-import { listAgentRunActions } from '../../src/repos/run-actions.js';
+import { listAgentRunActions, listAgentRunActionsForRoom } from '../../src/repos/run-actions.js';
 import { listTaskPhases } from '../../src/repos/task-phases.js';
 import { createTaskChecklistItem, listTaskChecklistItems } from '../../src/repos/task-checklist.js';
 import { listTaskPlans } from '../../src/repos/task-plans.js';
 import { listTasks } from '../../src/repos/tasks.js';
-import { getCliSessionId } from '../../src/repos/sessions.js';
+import { getCliSessionId, upsertCliSessionId } from '../../src/repos/sessions.js';
 import { listAgentTurnOutcomesForRoom } from '../../src/repos/turn-outcomes.js';
 import { Broker } from '../../src/broker.js';
 import type { AgentId, AgentReply, AgentSpec } from '../../src/agents/types.js';
@@ -2066,6 +2066,93 @@ describe('Broker', () => {
 
     expect(runs[0]!.sessionId).toBeNull();
     expect(runs[1]!.sessionId).toBe('claude-sess');
+  });
+
+  it('clears a stale resumed CLI session and retries fresh when the provider reports prompt_too_long', async () => {
+    const resumeBroker = new Broker({
+      db,
+      maxAgentRepliesPerThread: 1,
+      resumeCliSessions: true,
+      runAgent: async (spec, prompt, sessionId) => {
+        runs.push({ agentId: spec.id, prompt, sessionId });
+        if (sessionId) {
+          throw new Error('[claude] prompt too long (prompt_too_long)');
+        }
+        return {
+          text: 'fresh session recovered',
+          sessionId: 'claude-fresh-session',
+          raw: { stdout: '', stderr: '' },
+        };
+      },
+      getSpec: (id) => {
+        const map: Record<string, AgentSpec> = {
+          claude: fakeSpec('claude', 'claude reply'),
+          codex: fakeSpec('codex', 'codex reply'),
+          gemini: fakeSpec('gemini', 'gemini reply'),
+          echo: fakeSpec('echo', 'echo reply'),
+        };
+        return map[id];
+      },
+    });
+    const room = createRoom(db, { name: 'stale-session', agents: ['claude'] });
+    upsertCliSessionId(db, room.id, 'claude', 'stale-session', 'claude');
+
+    await resumeBroker.postHumanMessage(room.id, 'human', '@claude recover');
+
+    expect(runs.map((run) => run.sessionId)).toEqual(['stale-session', null]);
+    expect(getCliSessionId(db, room.id, 'claude')).toBe('claude-fresh-session');
+    expect(listMessages(db, room.id).map((m) => `${m.authorId}:${m.text}`)).toEqual([
+      'human:@claude recover',
+      'claude:fresh session recovered',
+    ]);
+    expect(
+      listAgentRunActionsForRoom(db, room.id).some(
+        (action) => action.label === 'stale CLI session cleared',
+      ),
+    ).toBe(true);
+  });
+
+  it('clears a stale Codex session when a successful turn reports missing rollout thread storage', async () => {
+    const resumeBroker = new Broker({
+      db,
+      maxAgentRepliesPerThread: 1,
+      resumeCliSessions: true,
+      runAgent: async (spec, prompt, sessionId) => {
+        runs.push({ agentId: spec.id, prompt, sessionId });
+        return {
+          text: 'codex answered',
+          sessionId: sessionId ?? 'codex-fresh-session',
+          raw: {
+            stdout: '',
+            stderr: sessionId
+              ? '2026-05-04T14:03:11.116283Z ERROR codex_core::session: failed to record rollout items: thread stale-codex-session not found'
+              : '',
+          },
+        };
+      },
+      getSpec: (id) => {
+        const map: Record<string, AgentSpec> = {
+          claude: fakeSpec('claude', 'claude reply'),
+          codex: fakeSpec('codex', 'codex reply'),
+          gemini: fakeSpec('gemini', 'gemini reply'),
+          echo: fakeSpec('echo', 'echo reply'),
+        };
+        return map[id];
+      },
+    });
+    const room = createRoom(db, { name: 'stale-codex-session', agents: ['codex'] });
+    upsertCliSessionId(db, room.id, 'codex', 'stale-codex-session', 'codex');
+
+    await resumeBroker.postHumanMessage(room.id, 'human', '@codex first');
+    await resumeBroker.postHumanMessage(room.id, 'human', '@codex second');
+
+    expect(runs.map((run) => run.sessionId)).toEqual(['stale-codex-session', null]);
+    expect(getCliSessionId(db, room.id, 'codex')).toBe('codex-fresh-session');
+    expect(
+      listAgentRunActionsForRoom(db, room.id).some(
+        (action) => action.label === 'stale CLI session cleared',
+      ),
+    ).toBe(true);
   });
 
   it('emits "messageAppended" events for both human and agent messages', async () => {

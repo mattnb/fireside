@@ -461,11 +461,24 @@ function isWorkflowRepairTrigger(message: Message): boolean {
 function providerCompactionWarning(agentId: AgentId, stderr: string): string | null {
   if (
     providerIdFromAgentId(agentId) === 'codex' &&
-    /codex_core::session: failed to record rollout items: thread .* not found/i.test(stderr)
+    isCodexRolloutThreadMissing(stderr)
   ) {
     return 'Codex CLI returned success, but stderr reported that it failed to record rollout items for the resumed thread. The local rollout may not fully reflect the compaction turn.';
   }
   return null;
+}
+
+function isCodexRolloutThreadMissing(stderr: string): boolean {
+  return /codex_core::session: failed to record rollout items: thread .* not found/i.test(stderr);
+}
+
+function isProviderPromptTooLong(error: string, stdout = ''): boolean {
+  return (
+    /prompt[_\s-]*too[_\s-]*long/i.test(error) ||
+    /prompt_too_long/i.test(error) ||
+    /"terminal_reason"\s*:\s*"prompt_too_long"/i.test(stdout) ||
+    /"result"\s*:\s*"Prompt is too long"/i.test(stdout)
+  );
 }
 
 function oneLine(text: string, maxChars = 280): string {
@@ -2136,7 +2149,36 @@ export class Broker extends EventEmitter {
       } else {
         failAgentJob(this.deps.db, agentJob.id, errMsg);
       }
-      const retryDecision = providerTurn.retryDecision;
+      const promptTooLong = isProviderPromptTooLong(errMsg, raw.stdout);
+      const canRetryWithoutStaleSession =
+        promptTooLong && Boolean(sessionId) && this.deps.resumeCliSessions === true && attempt < 2;
+      if (promptTooLong && sessionId && this.deps.resumeCliSessions === true) {
+        deleteCliSessionId(this.deps.db, roomId, agentId);
+        this.recordRunAction({
+          roomId,
+          taskId: activeTask?.id ?? null,
+          runId: run.id,
+          agentId,
+          kind: 'diagnostic',
+          status: canRetryWithoutStaleSession ? 'completed' : 'info',
+          label: 'stale CLI session cleared',
+          detail: canRetryWithoutStaleSession
+            ? `Provider reported prompt_too_long while resuming session ${sessionId}; cleared the stored session and will retry once with a fresh provider context.`
+            : `Provider reported prompt_too_long while resuming session ${sessionId}; cleared the stored session.`,
+        });
+      }
+      const retryDecision = canRetryWithoutStaleSession
+        ? {
+            shouldRetry: true,
+            nextState: 'retry_queued' as const,
+            reason: 'retry_scheduled' as const,
+            delayMs: 0,
+            nextAttempt: attempt + 1,
+            attemptsRemaining: 1,
+          }
+        : promptTooLong
+          ? null
+          : providerTurn.retryDecision;
       if (retryDecision?.shouldRetry && retryDecision.nextAttempt !== null) {
         const retryAfter = Date.now() + retryDecision.delayMs;
         const retryRun = updateAgentRun(this.deps.db, run.id, {
@@ -2207,8 +2249,24 @@ export class Broker extends EventEmitter {
       reason: 'provider process completed; parsing response',
     });
 
-    if (this.deps.resumeCliSessions && reply.sessionId) {
+    const staleCodexSession =
+      agentProfile.providerId === 'codex' && isCodexRolloutThreadMissing(reply.raw.stderr);
+    const replySessionIdForStorage = staleCodexSession ? null : reply.sessionId;
+    if (this.deps.resumeCliSessions && reply.sessionId && !staleCodexSession) {
       upsertCliSessionId(this.deps.db, roomId, agentId, reply.sessionId, agentProfile.providerId);
+    } else if (this.deps.resumeCliSessions && staleCodexSession) {
+      deleteCliSessionId(this.deps.db, roomId, agentId);
+      this.recordRunAction({
+        roomId,
+        taskId: activeTask?.id ?? null,
+        runId: run.id,
+        agentId,
+        kind: 'diagnostic',
+        status: 'info',
+        label: 'stale CLI session cleared',
+        detail:
+          'Codex reported that the resumed thread was not found while recording rollout items; cleared the stored session so the next turn starts fresh.',
+      });
     }
     const rawText = reply.text.trim();
     this.recordRunAction({
@@ -2471,7 +2529,7 @@ export class Broker extends EventEmitter {
         stdout: reply.raw.stdout,
         stderr: reply.raw.stderr,
         replyText: rawText,
-        cliSessionId: reply.sessionId,
+        cliSessionId: replySessionIdForStorage,
         lifecycleState: 'succeeded',
         lifecycleReason:
           hiddenMissionProgressCount > 0
@@ -2601,7 +2659,7 @@ export class Broker extends EventEmitter {
           stdout: reply.raw.stdout,
           stderr: reply.raw.stderr,
           replyText: rawText,
-          cliSessionId: reply.sessionId,
+          cliSessionId: replySessionIdForStorage,
           lifecycleState: 'succeeded',
           lifecycleReason: 'YOLO permission request auto-approved',
         });
@@ -2713,7 +2771,7 @@ export class Broker extends EventEmitter {
         stdout: reply.raw.stdout,
         stderr: reply.raw.stderr,
         replyText: rawText,
-        cliSessionId: reply.sessionId,
+        cliSessionId: replySessionIdForStorage,
         lifecycleState: 'released',
         lifecycleReason: `${permissionRequest.mode} permission requested; waiting on human approval`,
       });
@@ -2783,7 +2841,7 @@ export class Broker extends EventEmitter {
       stdout: reply.raw.stdout,
       stderr: reply.raw.stderr,
       replyText: rawText,
-      cliSessionId: reply.sessionId,
+      cliSessionId: replySessionIdForStorage,
       lifecycleState: 'succeeded',
       lifecycleReason: message
         ? 'message emitted'
@@ -2829,9 +2887,12 @@ export class Broker extends EventEmitter {
       existingDispatches: missionWorkDispatches,
       allowLiveness: workLane === undefined,
     });
+    const visibleMessageCountsAsProgress =
+      Boolean(message) && !workLane && !effectiveWorkflowRepair;
     const progressed = effectiveWorkflowRepair
       ? hiddenMissionProgressCount > 0 || finalWorkDispatches.length > 0
-      : Boolean(message) ||
+      : visibleMessageCountsAsProgress ||
+        hiddenMissionProgressCount > 0 ||
         extracted.notes.length > 0 ||
         reconciliation.applied > 0 ||
         rosterResult.applied > 0 ||
@@ -4095,6 +4156,7 @@ export class Broker extends EventEmitter {
       items: listTaskChecklistItems(this.deps.db, input.task.id),
       roomAgents: room.agents,
       activeJobs: listActiveAgentJobsForRoom(this.deps.db, input.roomId),
+      suppressAgents: new Set([input.agentId]),
       recentOutcomes: listAgentTurnOutcomesForRoom(this.deps.db, input.roomId, 8),
     });
     this.recordRunAction({

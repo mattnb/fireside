@@ -238,6 +238,37 @@ describe('discussion scheduler', () => {
     expect(outcome.stopReason).toBe('idle:no-progress-round');
   });
 
+  it('does not keep YOLO alive for visible status chatter without progress or handoff', () => {
+    const state = scheduler({
+      mode: 'yolo',
+      responders: ['codex'],
+      roomAgents: ['codex'],
+      handoffPool: ['codex'],
+      maxRepliesPerAgent: 100,
+      maxTotalReplies: 100,
+    });
+
+    const outcome = applyDiscussionRoundResults(state, {
+      roomYoloAgents: ['codex'],
+      results: [
+        {
+          agentId: 'codex',
+          progressed: false,
+          hasMessage: true,
+          failed: false,
+          handoffs: [],
+          workDispatches: [],
+          runId: 'run-1',
+          error: '',
+        },
+      ],
+    });
+
+    expect(outcome.shouldStop).toBe(true);
+    expect(outcome.nextCandidates).toEqual([]);
+    expect(state.totalReplies).toBe(0);
+  });
+
   it('accepts a larger live YOLO budget between rounds', () => {
     const state = scheduler({
       mode: 'yolo',

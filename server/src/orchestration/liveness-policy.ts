@@ -30,6 +30,7 @@ export interface EvaluateMissionLivenessInput {
   items: TaskChecklistItem[];
   roomAgents: AgentId[];
   activeJobs: AgentJob[];
+  suppressAgents?: Set<AgentId>;
   recentOutcomes?: AgentTurnOutcome[];
 }
 
@@ -107,11 +108,12 @@ export function evaluateMissionLiveness(
     activeItemIds,
   });
   trace.push(...routed.trace);
-  if (routed.dispatches.length > 0) {
+  const dispatches = dedupeLivenessDispatches(routed.dispatches, input.suppressAgents, trace);
+  if (dispatches.length > 0) {
     return decision(
       'dispatch-ready-work',
-      `${routed.dispatches.length} ready owned checklist item(s) can be nudged`,
-      routed.dispatches,
+      `${dispatches.length} ready owned agent(s) can be nudged`,
+      dispatches,
       trace,
       latestOutcome,
     );
@@ -137,6 +139,38 @@ export function evaluateMissionLiveness(
     trace,
     latestOutcome,
   );
+}
+
+function dedupeLivenessDispatches(
+  dispatches: MissionWorkDispatch[],
+  suppressAgents: Set<AgentId> | undefined,
+  trace: RoutingRuleTrace[],
+): MissionWorkDispatch[] {
+  const selected: MissionWorkDispatch[] = [];
+  const seenAgents = new Set<AgentId>();
+  for (const dispatch of dispatches) {
+    if (suppressAgents?.has(dispatch.agentId)) {
+      trace.push({
+        id: 'liveness-suppress-current-agent',
+        result: 'skipped',
+        reason: `${dispatch.agentId} just completed a turn; not immediately re-dispatching the same agent`,
+        agents: [dispatch.agentId],
+      });
+      continue;
+    }
+    if (seenAgents.has(dispatch.agentId)) {
+      trace.push({
+        id: 'liveness-dedupe-agent',
+        result: 'skipped',
+        reason: `${dispatch.agentId} already has a ready liveness dispatch`,
+        agents: [dispatch.agentId],
+      });
+      continue;
+    }
+    seenAgents.add(dispatch.agentId);
+    selected.push(dispatch);
+  }
+  return selected;
 }
 
 function decision(

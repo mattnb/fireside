@@ -205,11 +205,16 @@ export function applyDiscussionRoundResults(
       });
       continue;
     }
-    if (!result.progressed && !result.hasMessage) {
+    const directed = [...result.handoffs, ...result.workDispatches].filter((agentId) =>
+      handoffPool.has(agentId),
+    );
+    if (!result.progressed && directed.length === 0) {
       trace.push({
         id: 'discussion-no-progress',
         result: 'skipped',
-        reason: `${result.agentId} produced no progress`,
+        reason: result.hasMessage
+          ? `${result.agentId} produced a message but no mission progress or handoff`
+          : `${result.agentId} produced no progress`,
         agents: [result.agentId],
       });
       continue;
@@ -218,9 +223,6 @@ export function applyDiscussionRoundResults(
     state.replyCounts.set(result.agentId, (state.replyCounts.get(result.agentId) ?? 0) + 1);
     state.totalReplies += 1;
 
-    const directed = [...result.handoffs, ...result.workDispatches].filter((agentId) =>
-      handoffPool.has(agentId),
-    );
     for (const agentId of directed) {
       state.allowedAgents.add(agentId);
       if (!directedAgents.includes(agentId)) directedAgents.push(agentId);

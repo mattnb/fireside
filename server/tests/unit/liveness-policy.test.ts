@@ -80,9 +80,48 @@ describe('mission liveness policy', () => {
     });
     expect(decision).toMatchObject({
       action: 'dispatch-ready-work',
-      reason: '1 ready owned checklist item(s) can be nudged',
+      reason: '1 ready owned agent(s) can be nudged',
     });
     expect(decision.dispatches.map((dispatch) => dispatch.agentId)).toEqual(['codex']);
+  });
+
+  it('deduplicates ready liveness dispatches by agent', () => {
+    const decision = evaluateMissionLiveness({
+      task,
+      items: [
+        item({ id: 'item-1', title: 'Dashboard', ownerAgentId: 'codex' }),
+        item({ id: 'item-2', title: 'Viewer', ownerAgentId: 'codex' }),
+        item({ id: 'item-3', title: 'QA', ownerAgentId: 'claude' }),
+      ],
+      roomAgents: ['claude', 'codex'],
+      activeJobs: [],
+    });
+
+    expect(decision).toMatchObject({
+      action: 'dispatch-ready-work',
+      reason: '2 ready owned agent(s) can be nudged',
+    });
+    expect(decision.dispatches.map((dispatch) => dispatch.agentId)).toEqual([
+      'codex',
+      'claude',
+    ]);
+    expect(decision.trace.map((entry) => entry.id)).toContain('liveness-dedupe-agent');
+  });
+
+  it('does not immediately re-dispatch the agent that just completed a turn', () => {
+    const decision = evaluateMissionLiveness({
+      task,
+      items: [item({ ownerAgentId: 'codex' })],
+      roomAgents: ['claude', 'codex'],
+      activeJobs: [],
+      suppressAgents: new Set(['codex']),
+    });
+
+    expect(decision.action).toBe('wait-for-agent');
+    expect(decision.dispatches).toEqual([]);
+    expect(decision.trace.map((entry) => entry.id)).toContain(
+      'liveness-suppress-current-agent',
+    );
   });
 
   it('waits when owned work is already attached to active jobs', () => {
