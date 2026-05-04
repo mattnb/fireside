@@ -172,6 +172,7 @@ import type {
   AgentReply,
   AgentSpec,
   AgentStreamEvent,
+  AgentTurnKind,
   ProviderId,
   RoomAgentProfile,
 } from './agents/types.js';
@@ -263,6 +264,7 @@ export interface BrokerDeps {
     cancelSignal?: AbortSignal,
     onStreamEvent?: (event: AgentStreamEvent) => void,
     timeoutMs?: number | null,
+    turnKind?: AgentTurnKind,
   ) => Promise<AgentReply>;
   getSpec: (id: AgentId) => AgentSpec | undefined;
   maxHistory?: number;
@@ -2092,6 +2094,13 @@ export class Broker extends EventEmitter {
       startedAt: run.startedAt,
       latestProviderSignalAt: () => lastProviderSignalAt,
     });
+    const turnKind: AgentTurnKind = workLane
+      ? 'work-lane'
+      : effectiveWorkflowRepair
+        ? 'workflow-repair'
+        : effectivePermission
+          ? 'permission-operation'
+          : 'chat';
 
     const providerTurn = await executeProviderTurn({
       runAgent: this.deps.runAgent,
@@ -2111,6 +2120,7 @@ export class Broker extends EventEmitter {
       yoloMode: discussion?.mode === 'yolo',
       attempt,
       maxRetryAttempts: 3,
+      turnKind,
     });
     if (!providerTurn.ok) {
       const errMsg = providerTurn.error;

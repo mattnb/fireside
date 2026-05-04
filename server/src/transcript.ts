@@ -588,16 +588,25 @@ function renderPrompt(
             : `There are ${opts.discussion.maxRounds - opts.discussion.round} discussion round(s) after this one.`,
         ]
     : [];
+  const openingLine = opts.workLane
+    ? `Execute the assigned work lane as "${opts.agentId}" using available tools, then produce only the next message to be sent by "${opts.agentId}".`
+    : `Given the chat transcript below, produce only the next message to be sent by "${opts.agentId}".`;
+  const latestMessageLine = opts.workLane
+    ? `The latest message and assigned work lane are authoritative for this turn. Do the concrete repo/tool work before sending your final status.`
+    : `The latest message in the transcript is the one to respond to. It is authoritative for this turn — answer it directly.`;
+  const returnLine = opts.workLane
+    ? `After completing, blocking, or safely deferring the assigned lane, return only the literal text of the message ${selfDisplayName} should send next.`
+    : opts.permission
+      ? `After completing or attempting the approved operation, return only the literal text of the message ${selfDisplayName} should send next.`
+      : `Return only the literal text of the message ${selfDisplayName} should send next. If there is nothing useful to add, return an empty string.`;
 
   return [
-    `Given the chat transcript below, produce only the next message to be sent by "${opts.agentId}".`,
+    openingLine,
     ``,
     `The quoted recipient above is the stable dispatch id. Your visible chat name is "${selfDisplayName}".`,
-    `The latest message in the transcript is the one to respond to. It is authoritative for this turn — answer it directly.`,
+    latestMessageLine,
     `Do not acknowledge these instructions. Do not describe your role or the room. Do not preface your reply with phrases like "Understood" or "Got it". Do not include role labels (no "${selfDisplayName}:") or markdown headers.`,
-    opts.permission
-      ? `After completing or attempting the approved operation, return only the literal text of the message ${selfDisplayName} should send next.`
-      : `Return only the literal text of the message ${selfDisplayName} should send next. If there is nothing useful to add, return an empty string.`,
+    returnLine,
     ...formatAgentProfile(opts.agentProfile, opts.agentId),
     ...formatRoomProfiles(opts.roomAgentProfiles),
     ...formatTeamLeadLine(opts.roomLeadAgentId, opts.roomAgentProfiles),

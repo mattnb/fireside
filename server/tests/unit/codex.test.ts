@@ -42,6 +42,25 @@ describe('codex adapter', () => {
     expect(schema['required']).toEqual(['message']);
   });
 
+  it('does not constrain fresh execution turns with the chat reply schema', () => {
+    const argv = codexSpec.buildArgs('work this lane', null, {
+      turnKind: 'work-lane',
+      permission: {
+        source: 'yolo',
+        mode: 'full-auto',
+        target: 'unrestricted filesystem',
+        reason: 'YOLO work lane',
+        capabilities: ['read', 'edit-existing', 'create-file', 'run-command'],
+      },
+    });
+
+    expect(argv[0]).toBe('exec');
+    expect(argv).toContain('--json');
+    expect(argv).toContain('--dangerously-bypass-approvals-and-sandbox');
+    expect(argv).not.toContain('--output-schema');
+    expect(argv[argv.length - 1]).toBe('-');
+  });
+
   it('builds argv for resumed session (prompt via stdin)', () => {
     const argv = codexSpec.buildArgs('again', 'abc-123');
     expect(argv).toEqual([
@@ -73,6 +92,7 @@ describe('codex adapter', () => {
       'sandbox_workspace_write.writable_roots=["C:\\\\workspaces\\\\project"]',
     );
     expect(argv).toContain('approval_policy="never"');
+    expect(argv).not.toContain('--output-schema');
   });
 
   it('uses workspace-write instead of full bypass for scoped command grants', () => {

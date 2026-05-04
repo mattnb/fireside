@@ -228,6 +228,42 @@ describe('buildTurnPrompt', () => {
     expect(prompt).toContain('You have already sent 6');
   });
 
+  it('frames assigned work lanes as execution turns before final chat status', () => {
+    const prompt = buildTurnPrompt({
+      agentId: 'codex-principal-software',
+      roomName: 'general',
+      history: [],
+      newMessage: {
+        authorId: 'system',
+        authorKind: 'system',
+        text: 'parallel checklist lane assigned',
+      },
+      permission: {
+        source: 'yolo',
+        mode: 'full-auto',
+        target: 'unrestricted filesystem',
+        reason: 'YOLO',
+      },
+      workLane: {
+        id: 'item-1',
+        title: 'Rebuild dashboard',
+        detail: 'Apply the scoped dashboard UX pass.',
+        status: 'open',
+        planId: 'plan-1',
+        phaseId: 'phase-1',
+        expectedTouches: ['ui/src/app/pages/dashboard/**'],
+        parallelism: 'parallel-safe',
+        conflictGroup: 'dashboard',
+        workRole: 'implement',
+      },
+    });
+
+    expect(prompt).toContain('Execute the assigned work lane');
+    expect(prompt).toContain('Do the concrete repo/tool work before sending your final status');
+    expect(prompt).toContain('YOLO work lane');
+    expect(prompt).not.toContain('Given the chat transcript below');
+  });
+
   it('names valid handoff recipients without suggesting self-labels', () => {
     const prompt = buildTurnPrompt({
       agentId: 'claude',

@@ -2,6 +2,7 @@ import type {
   AgentReply,
   AgentSpec,
   AgentStreamEvent,
+  AgentTurnKind,
 } from '../agents/types.js';
 import type { PermissionGrant } from '../permissions.js';
 import { decideRunRetry, type RunRetryDecision } from '../run-lifecycle.js';
@@ -15,6 +16,7 @@ export interface ProviderTurnRunAgent {
     cancelSignal?: AbortSignal,
     onStreamEvent?: (event: AgentStreamEvent) => void,
     timeoutMs?: number | null,
+    turnKind?: AgentTurnKind,
   ): Promise<AgentReply>;
 }
 
@@ -45,6 +47,7 @@ export interface ExecuteProviderTurnInput {
   yoloMode: boolean;
   attempt: number;
   maxRetryAttempts?: number;
+  turnKind?: AgentTurnKind;
 }
 
 export async function executeProviderTurn(
@@ -69,6 +72,7 @@ export async function executeProviderTurn(
       runAbortController.signal,
       input.onStreamEvent,
       input.permission?.source === 'yolo' ? null : undefined,
+      input.turnKind,
     );
     return { ok: true, reply };
   } catch (err) {

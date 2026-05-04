@@ -83,6 +83,37 @@ describe('agent turn executor', () => {
     expect(timeout).toBeNull();
   });
 
+  it('forwards turn kind to the provider runner', async () => {
+    let seenTurnKind: unknown;
+
+    await executeProviderTurn({
+      runAgent: async (
+        _spec,
+        _prompt,
+        _sessionId,
+        _permission,
+        _signal,
+        _onStream,
+        _timeoutMs,
+        turnKind,
+      ) => {
+        seenTurnKind = turnKind;
+        return { text: '', sessionId: null, raw: { stdout: '', stderr: '' } };
+      },
+      spec,
+      prompt: '',
+      sessionId: null,
+      registerAbortController: () => {},
+      unregisterAbortController: () => {},
+      startHeartbeat: () => () => {},
+      yoloMode: true,
+      attempt: 1,
+      turnKind: 'work-lane',
+    });
+
+    expect(seenTurnKind).toBe('work-lane');
+  });
+
   it('classifies YOLO provider failures and computes retry decisions', async () => {
     const error = new Error('provider exited');
     Object.assign(error, { stdout: 'raw out', stderr: 'raw err' });

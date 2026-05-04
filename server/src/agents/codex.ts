@@ -232,6 +232,15 @@ function codexPermissionArgs(context?: AgentRunContext): string[] {
   }
 }
 
+function codexShouldUseReplySchema(context?: AgentRunContext): boolean {
+  // The reply schema is valuable for pure chat turns because it keeps Codex
+  // from answering the room instructions instead of the user. It is harmful
+  // for execution turns: the CLI sees a schema that only asks for a message and
+  // can complete without ever using repo tools. Work/permission turns must be
+  // free to stream tool events before the final assistant message.
+  return !context?.permission && (context?.turnKind ?? 'chat') === 'chat';
+}
+
 export const codexSpec: AgentSpec = {
   id: 'codex',
   displayName: 'Codex',
@@ -247,8 +256,12 @@ export const codexSpec: AgentSpec = {
       // not cross-resume each other.
       return ['exec', 'resume', ...codexPermissionArgs(context), '--json', sessionId, '-'];
     }
-    const schema = ensureSchemaFile();
-    return ['exec', ...codexPermissionArgs(context), '--json', '--output-schema', schema, '-'];
+    const args = ['exec', ...codexPermissionArgs(context), '--json'];
+    if (codexShouldUseReplySchema(context)) {
+      args.push('--output-schema', ensureSchemaFile());
+    }
+    args.push('-');
+    return args;
   },
   buildStdin(prompt) {
     return prompt;

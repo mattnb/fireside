@@ -30,8 +30,11 @@ export interface RoomAgentProfile {
   maxTurns?: number;
 }
 
+export type AgentTurnKind = 'chat' | 'permission-operation' | 'work-lane' | 'workflow-repair';
+
 export interface AgentRunContext {
   permission?: PermissionGrant;
+  turnKind?: AgentTurnKind;
 }
 
 export type AgentStreamName = 'stdout' | 'stderr';
