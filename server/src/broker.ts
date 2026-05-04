@@ -475,6 +475,10 @@ function compactInline(text: string, maxChars = 220): string {
   return cleaned.length <= maxChars ? cleaned : `${cleaned.slice(0, maxChars - 1)}...`;
 }
 
+function workflowRepairTaskUpdateIsProgress(update: ParsedMissionTaskUpdate): boolean {
+  return update.status !== null && update.status !== 'open';
+}
+
 function missionCommandField(update: unknown, keys: string[]): string {
   if (!update || typeof update !== 'object') return '';
   const record = update as Record<string, unknown>;
@@ -2437,11 +2441,20 @@ export class Broker extends EventEmitter {
       workLane,
       explicitMissionUpdates: missionStateUpdateCount,
     });
+    const hiddenMissionProgressCount = this.hiddenMissionProgressCount({
+      workflowRepair,
+      missionStateUpdateCount,
+      missionCreateCount: extractedMissionCreates.updates.length,
+      missionPlanCount: extractedMissionPlans.updates.length,
+      missionPhaseCount: extractedMissionPhases.updates.length,
+      missionTaskUpdates: extractedMissionTasks.updates,
+      rosterApplied: rosterResult.applied,
+      productiveMissionReceiptCount,
+      reconciliation,
+    });
     if (textAfterMissionReceipts.length === 0) {
       const hiddenMissionRecordCount =
         missionStateUpdateCount + missionReceiptCount + reconciliation.applied;
-      const hiddenMissionProgressCount =
-        missionStateUpdateCount + productiveMissionReceiptCount + reconciliation.applied;
       const status = hiddenMissionRecordCount > 0 ? 'completed' : 'empty';
       const emptyRun = updateAgentRun(this.deps.db, run.id, {
         status,
@@ -2807,13 +2820,14 @@ export class Broker extends EventEmitter {
       existingDispatches: missionWorkDispatches,
       allowLiveness: workLane === undefined,
     });
-    const progressed =
-      Boolean(message) ||
-      extracted.notes.length > 0 ||
-      reconciliation.applied > 0 ||
-      rosterResult.applied > 0 ||
-      finalWorkDispatches.length > 0 ||
-      repairResult?.progressed === true;
+    const progressed = workflowRepair
+      ? hiddenMissionProgressCount > 0 || finalWorkDispatches.length > 0
+      : Boolean(message) ||
+        extracted.notes.length > 0 ||
+        reconciliation.applied > 0 ||
+        rosterResult.applied > 0 ||
+        finalWorkDispatches.length > 0 ||
+        repairResult?.progressed === true;
     this.recordTurnOutcome({
       roomId,
       taskId: missionTask?.id ?? null,
@@ -4163,6 +4177,44 @@ export class Broker extends EventEmitter {
     return receipts.filter(
       (receipt) => receipt.status !== 'no_update' && receipt.status !== 'continuing',
     ).length;
+  }
+
+  private hiddenMissionProgressCount(input: {
+    workflowRepair: boolean;
+    missionStateUpdateCount: number;
+    missionCreateCount: number;
+    missionPlanCount: number;
+    missionPhaseCount: number;
+    missionTaskUpdates: ParsedMissionTaskUpdate[];
+    rosterApplied: number;
+    productiveMissionReceiptCount: number;
+    reconciliation: MissionReconciliationResult;
+  }): number {
+    if (!input.workflowRepair) {
+      return (
+        input.missionStateUpdateCount +
+        input.productiveMissionReceiptCount +
+        input.reconciliation.applied
+      );
+    }
+
+    const structuralMissionUpdates =
+      input.missionCreateCount +
+      input.missionPlanCount +
+      input.missionPhaseCount +
+      input.rosterApplied;
+    const terminalTaskUpdates = input.missionTaskUpdates.filter(
+      workflowRepairTaskUpdateIsProgress,
+    ).length;
+    const reconciliationProgress =
+      input.productiveMissionReceiptCount > 0 ? input.reconciliation.applied : 0;
+
+    return (
+      structuralMissionUpdates +
+      terminalTaskUpdates +
+      input.productiveMissionReceiptCount +
+      reconciliationProgress
+    );
   }
 
   private cancelYoloState(

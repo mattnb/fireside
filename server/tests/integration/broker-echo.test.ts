@@ -22,6 +22,7 @@ import { createTaskChecklistItem, listTaskChecklistItems } from '../../src/repos
 import { listTaskPlans } from '../../src/repos/task-plans.js';
 import { listTasks } from '../../src/repos/tasks.js';
 import { getCliSessionId } from '../../src/repos/sessions.js';
+import { listAgentTurnOutcomesForRoom } from '../../src/repos/turn-outcomes.js';
 import { Broker } from '../../src/broker.js';
 import type { AgentId, AgentReply, AgentSpec } from '../../src/agents/types.js';
 import type { PermissionGrant } from '../../src/permissions.js';
@@ -3031,6 +3032,87 @@ describe('Broker', () => {
       'workflow contract repair requested',
     );
     expect(runActions.map((action) => action.label)).toContain('mission receipt: no_update');
+  });
+
+  it('does not keep YOLO alive when workflow repair only restates an open work lane', async () => {
+    const agentId = 'codex-principal-software';
+    let itemId = '';
+    const repairBroker = new Broker({
+      db,
+      runAgent: async (spec, prompt, sessionId) => {
+        runs.push({ agentId: spec.id, prompt, sessionId });
+        return {
+          text: prompt.includes('workflow contract repair')
+            ? [
+                '/mission-task',
+                'action: update',
+                `id: ${itemId}`,
+                'status: open',
+                'note: State receipt: dashboard rebuild remains open and active. No completion evidence yet.',
+                '/end-mission-task',
+              ].join('\n')
+            : '',
+          sessionId: `${spec.id}-sess`,
+          raw: { stdout: '', stderr: '' },
+        };
+      },
+      getSpec: (id) => {
+        const map: Record<string, AgentSpec> = {
+          codex: fakeSpec('codex', 'codex reply'),
+        };
+        return map[id];
+      },
+    });
+    const room = createRoom(db, {
+      name: 'workflow-repair-loop',
+      agentProfiles: [
+        {
+          id: agentId,
+          providerId: 'codex',
+          displayName: 'Temur',
+          personaId: 'principal-software-engineer',
+          personaName: 'Principal Software Engineer',
+          personaSummary: '',
+        },
+      ],
+      yoloAgents: [agentId],
+    });
+    const task = repairBroker.createTask(room.id, { title: 'Rebuild dashboard mission' });
+    const item = repairBroker.createTaskChecklistItem(room.id, task!.id, {
+      title: 'Rebuild dashboard',
+      status: 'open',
+      ownerAgentId: agentId,
+    });
+    itemId = item!.id;
+
+    await repairBroker.startYoloDiscussion(room.id, 'human', {
+      mode: 'edit',
+      filesystemScope: 'task',
+    });
+
+    expect(runs).toHaveLength(2);
+    expect(runs[0]!.agentId).toBe('codex');
+    expect(runs[1]!.prompt).toContain('workflow contract repair');
+
+    const agentRuns = listAgentRuns(db, room.id, { limit: 10 });
+    expect(agentRuns).toHaveLength(2);
+    expect(agentRuns.every((run) => run.agentId === agentId)).toBe(true);
+    const runActions = agentRuns.flatMap((run) => listAgentRunActions(db, run.id));
+    expect(
+      runActions.filter((action) => action.label === 'workflow contract repair requested'),
+    ).toHaveLength(1);
+    expect(runActions.map((action) => action.label)).toContain('mission task update');
+
+    const outcomes = listAgentTurnOutcomesForRoom(db, room.id, 10);
+    expect(outcomes).toHaveLength(2);
+    expect(outcomes.every((outcome) => outcome.progressed === false)).toBe(true);
+    expect(listTaskChecklistItems(db, task!.id)).toMatchObject([
+      {
+        title: 'Rebuild dashboard',
+        status: 'open',
+        ownerAgentId: agentId,
+      },
+    ]);
   });
 
   it('retroactively associates existing checklist items with a new plan and phase', async () => {
