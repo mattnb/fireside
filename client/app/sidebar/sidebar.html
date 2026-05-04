@@ -21,7 +21,9 @@
   </nav>
 
   <nav class="rooms" aria-label="Projects">
+    @if (!vfxPaused()) {
     <vfx-smoke-and-embers class="rooms__vfx"></vfx-smoke-and-embers>
+    }
     <div class="rooms__head">
       <div class="rooms__label">projects</div>
       <button
@@ -184,8 +186,44 @@
     }
   </nav>
 
-  <div class="me">
-    <span class="avatar avatar--sm">{{ authorName().slice(0, 1).toUpperCase() }}</span>
+  <div class="me" [class.is-menu-open]="settingsOpen()">
+    <button
+      type="button"
+      class="me__settings"
+      title="Settings"
+      aria-label="Settings"
+      aria-haspopup="menu"
+      [attr.aria-expanded]="settingsOpen()"
+      (click)="toggleSettingsMenu($event)"
+    >
+      <svg viewBox="0 0 24 24" aria-hidden="true">
+        <path
+          d="M12 15.4a3.4 3.4 0 1 0 0-6.8 3.4 3.4 0 0 0 0 6.8Z"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.6"
+        />
+        <path
+          d="M19.3 13.5c.1-.5.1-1 .1-1.5s0-1-.1-1.5l2-1.5-2-3.5-2.4 1a8 8 0 0 0-2.6-1.5L14 2.4h-4l-.4 2.6A8 8 0 0 0 7 6.5l-2.4-1-2 3.5 2 1.5c-.1.5-.1 1-.1 1.5s0 1 .1 1.5l-2 1.5 2 3.5 2.4-1a8 8 0 0 0 2.6 1.5l.4 2.6h4l.4-2.6a8 8 0 0 0 2.6-1.5l2.4 1 2-3.5-2.1-1.5Z"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.6"
+          stroke-linejoin="round"
+        />
+      </svg>
+    </button>
+    @if (settingsOpen()) {
+    <div class="me-menu" role="menu">
+      <label class="me-menu__check">
+        <input
+          type="checkbox"
+          [checked]="!vfxPaused()"
+          (change)="setCampfireGraphicEnabled($any($event.target).checked)"
+        />
+        <span>Campfire graphic</span>
+      </label>
+    </div>
+    }
     <input
       #authorInput
       class="me__name"

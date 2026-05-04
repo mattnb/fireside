@@ -4,13 +4,14 @@
 // owns project/room state, this component renders + emits selection and
 // CRUD actions.
 
-import { Component, inject, input, output } from '@angular/core';
+import { Component, inject, input, output, signal } from '@angular/core';
 
 import { DraftService } from '../draft.service';
 import { VfxSmokeAndEmbersComponent } from '../vfx-smoke-and-embers/vfx-smoke-and-embers';
 import type { Project, Room } from '../api.types';
 
 const PROTECTED_PROJECT_ID = 'general';
+const VFX_PAUSED_STORAGE_KEY = 'fireside.roomsVfxPaused';
 
 export type ProjectGroup = {
   project: Project;
@@ -26,9 +27,26 @@ export type ProjectGroup = {
 })
 export class Sidebar {
   protected readonly drafts = inject(DraftService);
+  protected readonly vfxPaused = signal(readVfxPausedPreference());
+  protected readonly settingsOpen = signal(false);
 
   protected canManageProject(project: Project): boolean {
     return project.id !== PROTECTED_PROJECT_ID;
+  }
+
+  protected toggleSettingsMenu(event: Event): void {
+    event.stopPropagation();
+    this.settingsOpen.update((open) => !open);
+  }
+
+  protected setCampfireGraphicEnabled(enabled: boolean): void {
+    const paused = !enabled;
+    this.vfxPaused.set(paused);
+    try {
+      localStorage.setItem(VFX_PAUSED_STORAGE_KEY, paused ? '1' : '0');
+    } catch {
+      // Local storage can be unavailable in privacy-restricted browser contexts.
+    }
   }
 
   readonly projectGroups = input<ProjectGroup[]>([]);
@@ -55,4 +73,12 @@ export class Sidebar {
   readonly roomSelected = output<string>();
   readonly roomDeleted = output<{ room: Room; event: Event }>();
   readonly authorChanged = output<HTMLInputElement>();
+}
+
+function readVfxPausedPreference(): boolean {
+  try {
+    return localStorage.getItem(VFX_PAUSED_STORAGE_KEY) === '1';
+  } catch {
+    return false;
+  }
 }

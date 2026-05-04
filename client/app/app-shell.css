@@ -246,12 +246,76 @@ fs-root {
 }
 
 .me {
+  position: relative;
   display: grid;
   grid-template-columns: 28px minmax(0, 1fr);
   gap: 8px;
   align-items: center;
   padding: 10px 16px;
   border-top: 1px solid var(--border-soft);
+}
+
+.me__settings {
+  display: inline-grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.035);
+  color: var(--text-muted);
+  cursor: pointer;
+  padding: 0;
+}
+
+.me__settings:hover,
+.me.is-menu-open .me__settings {
+  color: var(--text-primary);
+  border-color: rgba(229, 169, 26, 0.34);
+  background: rgba(229, 169, 26, 0.1);
+}
+
+.me__settings svg {
+  width: 15px;
+  height: 15px;
+}
+
+.me-menu {
+  position: absolute;
+  left: 10px;
+  bottom: calc(100% + 8px);
+  z-index: 30;
+  min-width: 184px;
+  border: 1px solid rgba(229, 169, 26, 0.18);
+  border-radius: 8px;
+  background: rgba(20, 16, 20, 0.96);
+  box-shadow: 0 18px 34px rgba(0, 0, 0, 0.38);
+  padding: 7px;
+}
+
+.me-menu__check {
+  display: grid;
+  grid-template-columns: 15px minmax(0, 1fr);
+  align-items: center;
+  gap: 9px;
+  border-radius: 6px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: 12.5px;
+  font-weight: 750;
+  padding: 8px;
+}
+
+.me-menu__check:hover {
+  background: rgba(229, 169, 26, 0.08);
+  color: var(--text-primary);
+}
+
+.me-menu__check input {
+  width: 14px;
+  height: 14px;
+  margin: 0;
+  accent-color: var(--ember);
 }
 
 .me__name {
