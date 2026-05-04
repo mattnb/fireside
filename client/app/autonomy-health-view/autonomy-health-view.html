@@ -1,0 +1,149 @@
+<section class="panel panel--autonomy-health">
+  <header class="health-head">
+    <div>
+      <div class="section-label">autonomy health</div>
+      <h2>{{ state().label }}</h2>
+      <p>{{ state().detail }}</p>
+    </div>
+    <span class="health-state" [class]="'health-state--' + state().tone">
+      {{ state().tone }}
+    </span>
+  </header>
+
+  <div class="health-metrics">
+    @for (metric of metrics(); track metric.label) {
+    <article class="health-metric" [class]="'health-metric--' + metric.tone">
+      <span>{{ metric.label }}</span>
+      <strong>{{ metric.value }}</strong>
+      <small>{{ metric.detail }}</small>
+    </article>
+    }
+  </div>
+
+  <section class="health-grid">
+    <article class="health-card health-card--wide">
+      <header>
+        <span>latest liveness decision</span>
+        @if (latestLivenessDecision(); as decision) {
+        <time [title]="formatShortTime(decision.createdAt)">
+          {{ formatShortTime(decision.createdAt) }}
+        </time>
+        }
+      </header>
+      @if (latestLivenessDecision(); as decision) {
+      <h3>{{ routingActionLabel(decision) }}</h3>
+      <p>{{ decision.reason || 'No reason recorded.' }}</p>
+      @if (decision.responders.length) {
+      <div class="health-chip-row">
+        @for (agent of decision.responders; track agent) {
+        <span class="health-chip">{{ display.name(agent) }}</span>
+        }
+      </div>
+      }
+      } @else {
+      <p class="empty-copy">no liveness decision recorded for this room yet</p>
+      }
+    </article>
+
+    <article class="health-card">
+      <header>
+        <span>last progress</span>
+        @if (latestProgressOutcome(); as outcome) {
+        <time>{{ formatShortTime(outcome.createdAt) }}</time>
+        }
+      </header>
+      @if (latestProgressOutcome(); as outcome) {
+      <h3>{{ display.name(outcome.agentId) }}</h3>
+      <p>{{ oneLine(outcomeSummary(outcome), 220) }}</p>
+      <div class="health-facts">
+        <span>{{ outcome.missionUpdates }} updates</span>
+        <span>{{ outcome.missionReceipts }} receipts</span>
+        <span>{{ outcome.workDispatches.length }} dispatches</span>
+      </div>
+      } @else {
+      <p class="empty-copy">no progressed turn outcome yet</p>
+      }
+    </article>
+
+    <article class="health-card">
+      <header>
+        <span>last routing decision</span>
+        @if (lastRoutingDecision(); as decision) {
+        <time>{{ formatShortTime(decision.createdAt) }}</time>
+        }
+      </header>
+      @if (lastRoutingDecision(); as decision) {
+      <h3>{{ decision.kind }} / {{ decision.action }}</h3>
+      <p>{{ decision.reason || 'No reason recorded.' }}</p>
+      } @else {
+      <p class="empty-copy">no routing decisions yet</p>
+      }
+    </article>
+  </section>
+
+  <section class="health-grid health-grid--lower">
+    <article class="health-card">
+      <header>
+        <span>ready dispatches</span>
+        <strong>{{ workDispatches().length }}</strong>
+      </header>
+      <div class="health-list">
+        @for (dispatch of workDispatches(); track dispatch.id) {
+        <div class="health-row">
+          <div>
+            <strong>{{ dispatch.title }}</strong>
+            <p>{{ dispatch.reason }}</p>
+          </div>
+          <span>{{ display.name(dispatch.agentId) }}</span>
+        </div>
+        } @empty {
+        <p class="empty-copy">no ready-work dispatches recorded yet</p>
+        }
+      </div>
+    </article>
+
+    <article class="health-card">
+      <header>
+        <span>recent turn outcomes</span>
+        <strong>{{ turnOutcomes().length }}</strong>
+      </header>
+      <div class="health-list">
+        @for (outcome of turnOutcomes().slice(0, 8); track outcome.id) {
+        <div class="health-row">
+          <div>
+            <strong>{{ display.name(outcome.agentId) }} / {{ outcome.status }}</strong>
+            <p>{{ oneLine(outcomeSummary(outcome), 160) }}</p>
+          </div>
+          <span [class]="outcome.progressed ? 'is-good' : outcome.failed ? 'is-bad' : ''">
+            {{ outcome.progressed ? 'progress' : outcome.failed ? 'failed' : 'no update' }}
+          </span>
+        </div>
+        } @empty {
+        <p class="empty-copy">no turn outcomes yet</p>
+        }
+      </div>
+    </article>
+
+    <article class="health-card">
+      <header>
+        <span>hidden command trail</span>
+        <strong>{{ recentCommands().length }}</strong>
+      </header>
+      <div class="health-list">
+        @for (event of recentCommands(); track event.id) {
+        <div class="health-row">
+          <div>
+            <strong>{{ commandLabel(event) }}</strong>
+            <p>{{ oneLine(event.summary || event.targetRef, 160) }}</p>
+          </div>
+          <span [class]="event.status === 'rejected' ? 'is-bad' : 'is-good'">
+            {{ event.status }}
+          </span>
+        </div>
+        } @empty {
+        <p class="empty-copy">no hidden mission commands parsed yet</p>
+        }
+      </div>
+    </article>
+  </section>
+</section>

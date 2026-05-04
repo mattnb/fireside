@@ -1,0 +1,146 @@
+<div class="modal">
+  <div class="modal__scrim" (click)="closed.emit()"></div>
+  <form
+    class="modal__panel modal__panel--mission-create"
+    role="dialog"
+    aria-modal="true"
+    aria-labelledby="create-mission-title"
+    (submit)="$event.preventDefault(); missionSubmitted.emit(missionName)"
+  >
+    <header class="modal__head">
+      <h2 id="create-mission-title">new mission</h2>
+      <p>Create a mission under {{ projectNameDisplay() }} and choose the starting agent team.</p>
+    </header>
+    <div class="mission-create-modal">
+      <label class="mission-create-modal__field">
+        <span>mission name</span>
+        <input
+          #missionName
+          class="room-create__input"
+          type="text"
+          autocomplete="off"
+          placeholder="next mission for this team"
+          aria-label="Mission name"
+        />
+      </label>
+      <div class="room-create__agent-head" aria-hidden="true">
+        <span>name</span>
+        <span>provider</span>
+        <span>persona</span>
+        <span>yolo</span>
+        <span>lead</span>
+      </div>
+      <div class="room-create__agents" aria-label="Agents">
+        @for (row of agentRows(); track row.clientId) {
+        <article class="room-agent-choice">
+          <label class="room-agent-name">
+            <span [class]="display.draftProviderAvatarClass(row)"></span>
+            <input
+              type="text"
+              autocomplete="off"
+              spellcheck="false"
+              [value]="row.displayName"
+              aria-label="Agent name"
+              placeholder="agent name"
+              (input)="agentNameSet.emit({ clientId: row.clientId, event: $event })"
+            />
+          </label>
+          <label class="room-agent-provider">
+            <select
+              [value]="row.providerId"
+              aria-label="Agent provider"
+              (change)="agentProviderSet.emit({ clientId: row.clientId, event: $event })"
+            >
+              @for (provider of providers(); track provider.id) {
+              <option [value]="provider.id" [selected]="provider.id === row.providerId">
+                {{ provider.displayName }}
+              </option>
+              }
+            </select>
+          </label>
+          <label class="room-agent-persona">
+            <select
+              [value]="row.personaId"
+              aria-label="Agent persona"
+              (change)="agentPersonaSet.emit({ clientId: row.clientId, event: $event })"
+            >
+              @for (persona of personas(); track persona.id) {
+              <option [value]="persona.id" [selected]="persona.id === row.personaId">
+                {{ persona.name }}
+              </option>
+              }
+            </select>
+          </label>
+          <label class="room-agent-yolo" title="Participates in YOLO rounds">
+            <input
+              type="checkbox"
+              [checked]="row.yolo"
+              (change)="agentYoloToggled.emit({ clientId: row.clientId, event: $event })"
+            />
+            yolo
+          </label>
+          <button
+            class="room-agent-lead"
+            type="button"
+            [class.is-active]="leadClientId() === row.clientId"
+            [attr.aria-pressed]="leadClientId() === row.clientId"
+            title="Route broker coordination events to this agent first"
+            (click)="agentLeadSet.emit(row.clientId)"
+          >
+            lead
+          </button>
+          <button
+            class="room-agent-remove"
+            type="button"
+            title="Remove agent"
+            (click)="agentRemoved.emit(row.clientId)"
+          >
+            x
+          </button>
+          @if (recommendationFor(row.clientId); as recommendation) {
+          <div
+            class="provider-rec"
+            [class.provider-rec--match]="recommendation.recommendationMatchesCurrent"
+          >
+            <div class="provider-rec__copy">
+              <strong>{{ recommendationLabel(recommendation) }}</strong>
+              @if (recommendationDetail(recommendation)) {
+              <span>{{ recommendationDetail(recommendation) }}</span>
+              }
+              @if (whyNotCurrent(row, recommendation)) {
+              <span class="provider-rec__why">{{ whyNotCurrent(row, recommendation) }}</span>
+              }
+            </div>
+            @if (recommendation.selectedProviderId && !recommendation.recommendationMatchesCurrent) {
+            <button
+              type="button"
+              class="provider-rec__use"
+              (click)="agentProviderRecommended.emit({ clientId: row.clientId, providerId: recommendation.selectedProviderId })"
+            >
+              use {{ display.draftProviderLabel(recommendation.selectedProviderId) }}
+            </button>
+            }
+          </div>
+          }
+        </article>
+        }
+      </div>
+      @if (agentValidationError()) {
+      <p class="agent-validation">{{ agentValidationError() }}</p>
+      }
+    </div>
+    <footer class="modal__foot">
+      <button class="control-btn" type="button" (click)="agentAdded.emit()">add agent</button>
+      <button class="control-btn" type="button" (click)="closed.emit()">
+        cancel
+      </button>
+      <button
+        class="control-btn control-btn--primary"
+        type="submit"
+        [disabled]="!!agentValidationError()"
+      >
+        create mission
+      </button>
+    </footer>
+  </form>
+</div>

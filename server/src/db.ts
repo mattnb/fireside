@@ -3,6 +3,8 @@ import Database from 'better-sqlite3';
 import type { Database as DbType } from 'better-sqlite3';
 import { nanoid } from 'nanoid';
 import { extractCollaborationNotes } from './collaboration-notes.js';
+import { stripEmptyHiddenBlockComments } from './hidden-blocks.js';
+import { extractMissionReceipts, type ParsedMissionReceipt } from './mission-receipts.js';
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS projects (
@@ -10,7 +12,8 @@ CREATE TABLE IF NOT EXISTS projects (
   name TEXT NOT NULL,
   description TEXT NOT NULL DEFAULT '',
   created_at INTEGER NOT NULL,
-  updated_at INTEGER NOT NULL
+  updated_at INTEGER NOT NULL,
+  archived_at INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS rooms (
@@ -20,7 +23,8 @@ CREATE TABLE IF NOT EXISTS rooms (
   created_at INTEGER NOT NULL,
   agents_json TEXT NOT NULL DEFAULT '[]',
   yolo_agents_json TEXT NOT NULL DEFAULT '[]',
-  agent_profiles_json TEXT NOT NULL DEFAULT '[]'
+  agent_profiles_json TEXT NOT NULL DEFAULT '[]',
+  lead_agent_id TEXT
 );
 
 CREATE TABLE IF NOT EXISTS messages (
@@ -295,6 +299,79 @@ CREATE INDEX IF NOT EXISTS idx_agent_run_actions_room_created
 CREATE INDEX IF NOT EXISTS idx_agent_run_actions_run_created
   ON agent_run_actions(run_id, created_at);
 
+CREATE TABLE IF NOT EXISTS routing_decisions (
+  id TEXT PRIMARY KEY,
+  room_id TEXT NOT NULL REFERENCES rooms(id) ON DELETE CASCADE,
+  task_id TEXT REFERENCES tasks(id) ON DELETE SET NULL,
+  run_id TEXT REFERENCES agent_runs(id) ON DELETE SET NULL,
+  message_id TEXT REFERENCES messages(id) ON DELETE SET NULL,
+  author_id TEXT NOT NULL DEFAULT '',
+  kind TEXT NOT NULL CHECK (kind IN ('human-message', 'agent-message', 'mission-work')),
+  action TEXT NOT NULL,
+  reason TEXT NOT NULL DEFAULT '',
+  responders_json TEXT NOT NULL DEFAULT '[]',
+  trace_json TEXT NOT NULL DEFAULT '[]',
+  created_at INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_routing_decisions_room_created
+  ON routing_decisions(room_id, created_at);
+
+CREATE INDEX IF NOT EXISTS idx_routing_decisions_run_created
+  ON routing_decisions(run_id, created_at);
+
+CREATE TABLE IF NOT EXISTS mission_command_events (
+  id TEXT PRIMARY KEY,
+  room_id TEXT NOT NULL REFERENCES rooms(id) ON DELETE CASCADE,
+  task_id TEXT REFERENCES tasks(id) ON DELETE SET NULL,
+  run_id TEXT REFERENCES agent_runs(id) ON DELETE SET NULL,
+  agent_id TEXT NOT NULL,
+  command_kind TEXT NOT NULL CHECK (command_kind IN ('mission-create', 'mission-plan', 'mission-phase', 'mission-task', 'mission-receipt', 'agent-roster')),
+  action TEXT NOT NULL DEFAULT '',
+  target_ref TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL CHECK (status IN ('parsed', 'applied', 'rejected', 'reconciled')),
+  summary TEXT NOT NULL DEFAULT '',
+  payload_json TEXT NOT NULL DEFAULT '{}',
+  created_at INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_mission_command_events_room_created
+  ON mission_command_events(room_id, created_at);
+
+CREATE INDEX IF NOT EXISTS idx_mission_command_events_run_created
+  ON mission_command_events(run_id, created_at);
+
+CREATE TABLE IF NOT EXISTS agent_turn_outcomes (
+  id TEXT PRIMARY KEY,
+  room_id TEXT NOT NULL REFERENCES rooms(id) ON DELETE CASCADE,
+  task_id TEXT REFERENCES tasks(id) ON DELETE SET NULL,
+  run_id TEXT NOT NULL UNIQUE REFERENCES agent_runs(id) ON DELETE CASCADE,
+  agent_id TEXT NOT NULL,
+  visible_message_id TEXT REFERENCES messages(id) ON DELETE SET NULL,
+  visible_message_emitted INTEGER NOT NULL DEFAULT 0,
+  status TEXT NOT NULL CHECK (status IN ('completed', 'failed', 'canceled', 'empty', 'permission-requested', 'retry-scheduled')),
+  progressed INTEGER NOT NULL DEFAULT 0,
+  failed INTEGER NOT NULL DEFAULT 0,
+  error TEXT NOT NULL DEFAULT '',
+  mission_updates INTEGER NOT NULL DEFAULT 0,
+  mission_receipts INTEGER NOT NULL DEFAULT 0,
+  mission_reconciliations INTEGER NOT NULL DEFAULT 0,
+  collaboration_notes INTEGER NOT NULL DEFAULT 0,
+  draft_artifacts INTEGER NOT NULL DEFAULT 0,
+  permission_request_id TEXT REFERENCES permission_requests(id) ON DELETE SET NULL,
+  permission_auto_approved INTEGER NOT NULL DEFAULT 0,
+  work_dispatches_json TEXT NOT NULL DEFAULT '[]',
+  next_agents_json TEXT NOT NULL DEFAULT '[]',
+  summary TEXT NOT NULL DEFAULT '',
+  created_at INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_agent_turn_outcomes_room_created
+  ON agent_turn_outcomes(room_id, created_at);
+
+CREATE INDEX IF NOT EXISTS idx_agent_turn_outcomes_task_created
+  ON agent_turn_outcomes(task_id, created_at);
+
 CREATE TABLE IF NOT EXISTS mission_briefings (
   id TEXT PRIMARY KEY,
   room_id TEXT REFERENCES rooms(id) ON DELETE SET NULL,
@@ -327,7 +404,8 @@ function ensureProjects(db: DbType): void {
       name TEXT NOT NULL,
       description TEXT NOT NULL DEFAULT '',
       created_at INTEGER NOT NULL,
-      updated_at INTEGER NOT NULL
+      updated_at INTEGER NOT NULL,
+      archived_at INTEGER
     );
   `);
   const now = Date.now();
@@ -335,6 +413,10 @@ function ensureProjects(db: DbType): void {
     `INSERT OR IGNORE INTO projects (id, name, description, created_at, updated_at)
      VALUES ('general', 'General', 'Default project for existing missions.', ?, ?)`,
   ).run(now, now);
+  const columns = columnNames(db, 'projects');
+  if (!columns.has('archived_at')) {
+    db.prepare(`ALTER TABLE projects ADD COLUMN archived_at INTEGER`).run();
+  }
 }
 
 function ensureRoomColumns(db: DbType): void {
@@ -348,8 +430,17 @@ function ensureRoomColumns(db: DbType): void {
   if (!columns.has('project_id')) {
     db.prepare(`ALTER TABLE rooms ADD COLUMN project_id TEXT`).run();
   }
+  if (!columns.has('lead_agent_id')) {
+    db.prepare(`ALTER TABLE rooms ADD COLUMN lead_agent_id TEXT`).run();
+  }
   db.prepare(
     `UPDATE rooms SET project_id = 'general' WHERE project_id IS NULL OR project_id = ''`,
+  ).run();
+  db.prepare(
+    `UPDATE rooms
+     SET lead_agent_id = NULL
+     WHERE lead_agent_id IS NOT NULL
+       AND instr(agents_json, '"' || lead_agent_id || '"') = 0`,
   ).run();
 }
 
@@ -476,6 +567,91 @@ function ensureAgentRunActionColumns(db: DbType): void {
       `ALTER TABLE agent_run_actions ADD COLUMN context_usage_json TEXT NOT NULL DEFAULT ''`,
     ).run();
   }
+}
+
+function ensureRoutingDecisionTables(db: DbType): void {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS routing_decisions (
+      id TEXT PRIMARY KEY,
+      room_id TEXT NOT NULL REFERENCES rooms(id) ON DELETE CASCADE,
+      task_id TEXT REFERENCES tasks(id) ON DELETE SET NULL,
+      run_id TEXT REFERENCES agent_runs(id) ON DELETE SET NULL,
+      message_id TEXT REFERENCES messages(id) ON DELETE SET NULL,
+      author_id TEXT NOT NULL DEFAULT '',
+      kind TEXT NOT NULL CHECK (kind IN ('human-message', 'agent-message', 'mission-work')),
+      action TEXT NOT NULL,
+      reason TEXT NOT NULL DEFAULT '',
+      responders_json TEXT NOT NULL DEFAULT '[]',
+      trace_json TEXT NOT NULL DEFAULT '[]',
+      created_at INTEGER NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_routing_decisions_room_created
+      ON routing_decisions(room_id, created_at);
+
+    CREATE INDEX IF NOT EXISTS idx_routing_decisions_run_created
+      ON routing_decisions(run_id, created_at);
+  `);
+}
+
+function ensureMissionCommandEventTables(db: DbType): void {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS mission_command_events (
+      id TEXT PRIMARY KEY,
+      room_id TEXT NOT NULL REFERENCES rooms(id) ON DELETE CASCADE,
+      task_id TEXT REFERENCES tasks(id) ON DELETE SET NULL,
+      run_id TEXT REFERENCES agent_runs(id) ON DELETE SET NULL,
+      agent_id TEXT NOT NULL,
+      command_kind TEXT NOT NULL CHECK (command_kind IN ('mission-create', 'mission-plan', 'mission-phase', 'mission-task', 'mission-receipt', 'agent-roster')),
+      action TEXT NOT NULL DEFAULT '',
+      target_ref TEXT NOT NULL DEFAULT '',
+      status TEXT NOT NULL CHECK (status IN ('parsed', 'applied', 'rejected', 'reconciled')),
+      summary TEXT NOT NULL DEFAULT '',
+      payload_json TEXT NOT NULL DEFAULT '{}',
+      created_at INTEGER NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_mission_command_events_room_created
+      ON mission_command_events(room_id, created_at);
+
+    CREATE INDEX IF NOT EXISTS idx_mission_command_events_run_created
+      ON mission_command_events(run_id, created_at);
+  `);
+}
+
+function ensureAgentTurnOutcomeTables(db: DbType): void {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS agent_turn_outcomes (
+      id TEXT PRIMARY KEY,
+      room_id TEXT NOT NULL REFERENCES rooms(id) ON DELETE CASCADE,
+      task_id TEXT REFERENCES tasks(id) ON DELETE SET NULL,
+      run_id TEXT NOT NULL UNIQUE REFERENCES agent_runs(id) ON DELETE CASCADE,
+      agent_id TEXT NOT NULL,
+      visible_message_id TEXT REFERENCES messages(id) ON DELETE SET NULL,
+      visible_message_emitted INTEGER NOT NULL DEFAULT 0,
+      status TEXT NOT NULL CHECK (status IN ('completed', 'failed', 'canceled', 'empty', 'permission-requested', 'retry-scheduled')),
+      progressed INTEGER NOT NULL DEFAULT 0,
+      failed INTEGER NOT NULL DEFAULT 0,
+      error TEXT NOT NULL DEFAULT '',
+      mission_updates INTEGER NOT NULL DEFAULT 0,
+      mission_receipts INTEGER NOT NULL DEFAULT 0,
+      mission_reconciliations INTEGER NOT NULL DEFAULT 0,
+      collaboration_notes INTEGER NOT NULL DEFAULT 0,
+      draft_artifacts INTEGER NOT NULL DEFAULT 0,
+      permission_request_id TEXT REFERENCES permission_requests(id) ON DELETE SET NULL,
+      permission_auto_approved INTEGER NOT NULL DEFAULT 0,
+      work_dispatches_json TEXT NOT NULL DEFAULT '[]',
+      next_agents_json TEXT NOT NULL DEFAULT '[]',
+      summary TEXT NOT NULL DEFAULT '',
+      created_at INTEGER NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_agent_turn_outcomes_room_created
+      ON agent_turn_outcomes(room_id, created_at);
+
+    CREATE INDEX IF NOT EXISTS idx_agent_turn_outcomes_task_created
+      ON agent_turn_outcomes(task_id, created_at);
+  `);
 }
 
 function ensurePermissionRequestColumns(db: DbType): void {
@@ -743,8 +919,182 @@ interface AgentRunForMessageRow {
   task_id: string | null;
 }
 
+interface MalformedCollaborationRow {
+  id: string;
+  run_id: string;
+  room_id: string;
+  agent_id: string;
+  kind: string;
+  reply_text: string;
+}
+
+interface MalformedReceiptActionRow {
+  id: string;
+  run_id: string;
+  label: string;
+  reply_text: string;
+}
+
+interface EmptyHiddenCommentMessageRow {
+  id: string;
+  text: string;
+}
+
 function bounded(text: string, maxChars: number): string {
   return text.length <= maxChars ? text : text.slice(0, maxChars);
+}
+
+function missionReceiptDetail(receipt: ParsedMissionReceipt, fallback = 'Mission receipt recorded.'): string {
+  const refs = [
+    receipt.planRef ? `plan ${receipt.planRef}` : '',
+    receipt.phaseRef ? `phase ${receipt.phaseRef}` : '',
+    receipt.itemRef ? `item ${receipt.itemRef}` : '',
+  ].filter(Boolean);
+  const message = [
+    refs.length ? refs.join(' / ') : '',
+    receipt.summary || receipt.evidence || receipt.next || fallback,
+  ]
+    .filter(Boolean)
+    .join(': ');
+  return JSON.stringify({
+    message,
+    status: receipt.status,
+    ...(receipt.planRef ? { plan: receipt.planRef } : {}),
+    ...(receipt.phaseRef ? { phase: receipt.phaseRef } : {}),
+    ...(receipt.itemRef ? { item: receipt.itemRef } : {}),
+    ...(receipt.summary ? { summary: receipt.summary } : {}),
+    ...(receipt.evidence ? { evidence: receipt.evidence } : {}),
+    ...(receipt.next ? { next: receipt.next } : {}),
+  });
+}
+
+function cleanupEmptyHiddenCommentMessages(db: DbType): void {
+  const rows = db
+    .prepare(
+      `SELECT id, text
+       FROM messages
+       WHERE author_kind = 'agent'
+         AND text LIKE '%<!--%'`,
+    )
+    .all() as EmptyHiddenCommentMessageRow[];
+  if (rows.length === 0) return;
+
+  const updateMessage = db.prepare(`UPDATE messages SET text = ? WHERE id = ?`);
+  const clearRunReply = db.prepare(
+    `UPDATE agent_runs SET reply_message_id = NULL WHERE reply_message_id = ?`,
+  );
+  const deleteMessage = db.prepare(`DELETE FROM messages WHERE id = ?`);
+
+  const repair = db.transaction((messages: EmptyHiddenCommentMessageRow[]) => {
+    for (const message of messages) {
+      const cleaned = stripEmptyHiddenBlockComments(message.text).trim();
+      if (cleaned === message.text.trim()) continue;
+      if (cleaned) {
+        updateMessage.run(cleaned, message.id);
+      } else {
+        clearRunReply.run(message.id);
+        deleteMessage.run(message.id);
+      }
+    }
+  });
+  repair(rows);
+}
+
+function repairMalformedHiddenLedgerRows(db: DbType): void {
+  const malformedCollaboration = db
+    .prepare(
+      `SELECT c.id, c.run_id, c.room_id, c.agent_id, c.kind, r.reply_text
+       FROM collaboration_items c
+       JOIN agent_runs r ON r.id = c.run_id
+       WHERE c.run_id IS NOT NULL
+         AND r.reply_text LIKE '%/collab-note%'
+         AND (
+           c.title = '|'
+           OR c.target = '|'
+           OR c.body = '|'
+           OR c.evidence_json LIKE '%"|"%'
+         )
+       ORDER BY c.run_id ASC, c.created_at ASC, c.id ASC`,
+    )
+    .all() as MalformedCollaborationRow[];
+  const malformedReceipts = db
+    .prepare(
+      `SELECT a.id, a.run_id, a.label, r.reply_text
+       FROM agent_run_actions a
+       JOIN agent_runs r ON r.id = a.run_id
+       WHERE a.label LIKE 'mission receipt:%'
+         AND r.reply_text LIKE '%/mission-receipt%'
+         AND (
+           a.detail LIKE '%"|"%'
+           OR a.detail LIKE '%: |%'
+         )
+       ORDER BY a.run_id ASC, a.created_at ASC, a.id ASC`,
+    )
+    .all() as MalformedReceiptActionRow[];
+  if (malformedCollaboration.length === 0 && malformedReceipts.length === 0) return;
+
+  const updateCollaboration = db.prepare(
+    `UPDATE collaboration_items
+     SET kind = ?, status = ?, confidence = ?, title = ?, target = ?, body = ?, evidence_json = ?
+     WHERE id = ?`,
+  );
+  const updateAction = db.prepare(`UPDATE agent_run_actions SET detail = ? WHERE id = ?`);
+
+  const repair = db.transaction(() => {
+    const collabRowsByRun = new Map<string, MalformedCollaborationRow[]>();
+    for (const row of malformedCollaboration) {
+      const rows = collabRowsByRun.get(row.run_id) ?? [];
+      rows.push(row);
+      collabRowsByRun.set(row.run_id, rows);
+    }
+    for (const rows of collabRowsByRun.values()) {
+      const notes = extractCollaborationNotes(rows[0]!.reply_text).notes;
+      const used = new Set<number>();
+      for (const row of rows) {
+        const noteIndex = notes.findIndex(
+          (note, index) => !used.has(index) && note.kind === row.kind,
+        );
+        const fallbackIndex = notes.findIndex((_note, index) => !used.has(index));
+        const index = noteIndex >= 0 ? noteIndex : fallbackIndex;
+        if (index < 0) continue;
+        used.add(index);
+        const note = notes[index]!;
+        updateCollaboration.run(
+          note.kind,
+          note.status,
+          note.confidence,
+          bounded(note.title, 240),
+          bounded(note.target, 500),
+          bounded(note.body, 2000),
+          JSON.stringify(note.evidence.map((item) => bounded(item, 500)).slice(0, 12)),
+          row.id,
+        );
+      }
+    }
+
+    const receiptRowsByRun = new Map<string, MalformedReceiptActionRow[]>();
+    for (const row of malformedReceipts) {
+      const rows = receiptRowsByRun.get(row.run_id) ?? [];
+      rows.push(row);
+      receiptRowsByRun.set(row.run_id, rows);
+    }
+    for (const rows of receiptRowsByRun.values()) {
+      const receipts = extractMissionReceipts(rows[0]!.reply_text).receipts;
+      const used = new Set<number>();
+      for (const row of rows) {
+        const status = row.label.replace(/^mission receipt:\s*/i, '').trim();
+        const receiptIndex = receipts.findIndex(
+          (receipt, index) => !used.has(index) && receipt.status === status,
+        );
+        const fallbackIndex = receipts.findIndex((_receipt, index) => !used.has(index));
+        const index = receiptIndex >= 0 ? receiptIndex : fallbackIndex;
+        if (index < 0) continue;
+        used.add(index);
+        updateAction.run(missionReceiptDetail(receipts[index]!), row.id);
+      }
+    }
+  });
+  repair();
 }
 
 function collaborationItemAlreadyStored(
@@ -965,10 +1315,15 @@ export function openDatabase(filename: string): DbType {
   ensureAgentRunColumns(db);
   ensureAgentJobTables(db);
   ensureAgentRunActionColumns(db);
+  ensureRoutingDecisionTables(db);
+  ensureMissionCommandEventTables(db);
+  ensureAgentTurnOutcomeTables(db);
   ensureCollaborationStatusConstraint(db);
   ensureCollaborationSubjectColumns(db);
   ensureCollaborationIndexes(db);
   reconcileLeakedCollaborationNotes(db);
+  cleanupEmptyHiddenCommentMessages(db);
+  repairMalformedHiddenLedgerRows(db);
   ensureMissionBriefingTables(db);
   return db;
 }

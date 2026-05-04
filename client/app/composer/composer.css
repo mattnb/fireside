@@ -1,0 +1,9 @@
+/* client/app/composer/composer.css
+ * Outer host placement only. The composer reuses `.composer*` and
+ * `.mention-menu*` selectors that stay global in app.css alongside other
+ * chat-pane chrome.
+ */
+
+:host {
+  display: contents;
+}

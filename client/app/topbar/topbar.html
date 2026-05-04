@@ -1,0 +1,24 @@
+<header class="topbar">
+  <div class="channel">
+    <span class="channel__hash">{{ hashShown() ? '#' : '' }}</span>
+    <span class="channel__name">{{ channelName() }}</span>
+  </div>
+  @if (showProjectDashboardChip()) {
+  <span class="project-dashboard-chip">project dashboard</span>
+  } @else {
+  <div class="tabs" role="tablist" aria-label="Fireside workspace">
+    @for (tab of tabs(); track tab.id) {
+    <button
+      type="button"
+      role="tab"
+      class="tab"
+      [class.is-active]="tab.id === selectedTab()"
+      [attr.aria-selected]="tab.id === selectedTab()"
+      (click)="tabSelected.emit(tab.id)"
+    >
+      {{ tab.label }}
+    </button>
+    }
+  </div>
+  }
+</header>

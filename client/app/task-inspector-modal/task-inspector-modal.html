@@ -1,0 +1,273 @@
+<div class="modal">
+  <div class="modal__scrim" (click)="closed.emit()"></div>
+  <section
+    class="modal__panel modal__panel--wide"
+    role="dialog"
+    aria-modal="true"
+    aria-labelledby="task-inspector-title"
+  >
+    <header class="modal__head task-inspector__head">
+      <div>
+        <h2 id="task-inspector-title">{{ card().item.title }}</h2>
+        <p>{{ card().item.status }} / id {{ card().item.id }}</p>
+      </div>
+      <span [class]="'task-inspector__status is-' + card().item.status">{{
+        card().item.status
+      }}</span>
+    </header>
+    <div class="task-inspector">
+      @if (blockedSummary()(card())) {
+      <section class="task-inspector__alert">
+        <strong>{{ card().waiting ? 'waiting on dependencies' : 'blocked' }}</strong>
+        <p>{{ blockedSummary()(card()) }}</p>
+      </section>
+      }
+
+      <section class="task-inspector__section task-inspector__section--reference">
+        <div class="task-inspector__section-head">
+          <h3>reference</h3>
+          <div class="task-inspector__actions">
+            <button
+              type="button"
+              class="mini-btn"
+              (click)="idCopyRequested.emit(card().item)"
+            >
+              copy id
+            </button>
+            <button
+              type="button"
+              class="mini-btn"
+              (click)="referenceCopyRequested.emit(card())"
+            >
+              copy reference
+            </button>
+            <button
+              type="button"
+              class="mini-btn"
+              (click)="missionBlockCopyRequested.emit(card())"
+            >
+              copy update block
+            </button>
+          </div>
+        </div>
+        <div class="task-inspector__reference-grid">
+          <div>
+            <span>canonical id</span>
+            <strong>{{ card().item.id }}</strong>
+          </div>
+          <div>
+            <span>agent-ready reference</span>
+            <strong>{{ reference()(card()) }}</strong>
+          </div>
+        </div>
+      </section>
+
+      <section class="task-inspector__section">
+        <div class="task-inspector__grid">
+          <div>
+            <span>owner</span>
+            <strong>{{
+              card().item.ownerAgentId
+                ? display.name(card().item.ownerAgentId!)
+                : 'unassigned'
+            }}</strong>
+          </div>
+          <div>
+            <span>phase</span>
+            <strong>{{ phaseLabel()(card().item) }}</strong>
+          </div>
+          <div>
+            <span>plan</span>
+            <strong>{{ planLabel()(card().item.planId) || 'none' }}</strong>
+          </div>
+          <div>
+            <span>updated</span>
+            <strong>{{ formatDateTime()(card().item.updatedAt) }}</strong>
+          </div>
+          <div>
+            <span>completed</span>
+            <strong>{{ formatDateTime()(card().item.completedAt) }}</strong>
+          </div>
+          <div>
+            <span>evidence</span>
+            <strong>{{ card().evidenceCount }} receipt(s)</strong>
+          </div>
+          <div>
+            <span>scope contract</span>
+            <strong>{{ scopeContractLabel()(card().item) }}</strong>
+          </div>
+          <div>
+            <span>work role</span>
+            <strong>{{ card().item.workRole || 'unspecified' }}</strong>
+          </div>
+        </div>
+        @if (card().item.detail) {
+        <p class="task-inspector__detail">{{ card().item.detail }}</p>
+        }
+      </section>
+
+      <section class="task-inspector__section">
+        <div class="task-inspector__section-head">
+          <h3>parallel scope</h3>
+        </div>
+        <div class="task-inspector__chips task-inspector__chips--scope">
+          <span [class]="'mission-scope-chip is-' + card().item.parallelism">
+            {{ card().item.parallelism }}
+          </span>
+          @if (card().item.conflictGroup) {
+          <span>group {{ card().item.conflictGroup }}</span>
+          } @if (card().item.workRole) {
+          <span>role {{ card().item.workRole }}</span>
+          }
+        </div>
+        <p class="task-inspector__detail">
+          Expected touches: {{ expectedTouchesLabel()(card().item) }}
+        </p>
+      </section>
+
+      <section class="task-inspector__section task-inspector__section--controls">
+        <label>
+          <span>status</span>
+          <select
+            [value]="card().item.status"
+            (change)="statusChanged.emit({ item: card().item, event: $event })"
+          >
+            @for (status of checklistStatuses(); track status) {
+            <option [value]="status">{{ status }}</option>
+            }
+          </select>
+        </label>
+        <label>
+          <span>owner</span>
+          <select
+            [value]="card().item.ownerAgentId"
+            (change)="ownerAssigned.emit({ item: card().item, event: $event })"
+          >
+            <option value="">unassigned</option>
+            @if (card().item.ownerAgentId && !roomAgents().includes(card().item.ownerAgentId!)) {
+            <option [value]="card().item.ownerAgentId">{{
+              display.name(card().item.ownerAgentId!)
+            }}</option>
+            } @for (agent of roomAgents(); track agent) {
+            <option [value]="agent">{{ display.name(agent) }}</option>
+            }
+          </select>
+        </label>
+        <div class="task-inspector__quick-actions">
+          <button
+            type="button"
+            class="control-btn"
+            (click)="reopenRequested.emit(card().item)"
+          >
+            unblock / reopen
+          </button>
+          <button
+            type="button"
+            class="control-btn control-btn--primary"
+            (click)="markDoneRequested.emit(card().item)"
+          >
+            mark done
+          </button>
+        </div>
+      </section>
+
+      <section class="task-inspector__section">
+        <div class="task-inspector__section-head">
+          <h3>notes and blockers</h3>
+        </div>
+        <form
+          class="task-inspector__notes"
+          (submit)="
+            $event.preventDefault();
+            notesSaved.emit({
+              item: card().item,
+              statusNoteInput: taskNote,
+              blockedReasonInput: blockedReason,
+              councilInput: councilRequired
+            })
+          "
+        >
+          <label>
+            <span>status note</span>
+            <textarea #taskNote rows="3" [value]="card().item.statusNote"></textarea>
+          </label>
+          <label>
+            <span>blocked reason</span>
+            <textarea #blockedReason rows="3" [value]="card().item.blockedReason"></textarea>
+          </label>
+          <label class="inline-check">
+            <input #councilRequired type="checkbox" [checked]="card().item.councilRequired" />
+            council / human intervention required
+          </label>
+          <button type="submit" class="control-btn">save notes</button>
+        </form>
+      </section>
+
+      <section class="task-inspector__section task-inspector__section--split">
+        <div>
+          <h3>dependencies</h3>
+          <div class="task-inspector__chips">
+            @for (dependency of card().dependencies; track dependency.id) {
+            <span [class.is-done]="dependency.done">
+              {{ dependency.title }} / {{ dependency.status }}
+            </span>
+            } @empty {
+            <p class="empty-copy">no dependencies</p>
+            }
+          </div>
+        </div>
+        <div>
+          <h3>dependents</h3>
+          <div class="task-inspector__chips">
+            @for (dependent of card().dependents; track dependent.id) {
+            <span [class.is-done]="dependent.done">
+              {{ dependent.title }} / {{ dependent.status }}
+            </span>
+            } @empty {
+            <p class="empty-copy">no dependent work</p>
+            }
+          </div>
+        </div>
+      </section>
+
+      <section class="task-inspector__section task-inspector__section--split">
+        <div>
+          <h3>linked runs</h3>
+          <div class="task-inspector__runs">
+            @for (run of card().linkedRuns; track run.id) {
+            <button
+              type="button"
+              class="run-row"
+              (click)="runOpened.emit(run.id)"
+            >
+              <span>{{ display.name(run.agentId) }}</span>
+              <strong>{{ run.status }}</strong>
+              <p>{{ runMeta()(run) }}</p>
+              <small>{{ runActionSignal()(run) }}</small>
+            </button>
+            } @empty {
+            <p class="empty-copy">no linked runs yet</p>
+            }
+          </div>
+        </div>
+        <div>
+          <h3>status history</h3>
+          <div class="task-inspector__notes-list">
+            @for (note of notes()(card().item.id); track note.id) {
+            <article>
+              <strong>{{ display.name(note.authorId) }} / {{ note.kind }}</strong>
+              <p>{{ note.body }}</p>
+              <span>{{ formatDateTime()(note.createdAt) }}</span>
+            </article>
+            } @empty {
+            <p class="empty-copy">no status history recorded</p>
+            }
+          </div>
+        </div>
+      </section>
+    </div>
+    <footer class="modal__foot">
+      <button type="button" class="control-btn" (click)="closed.emit()">close</button>
+    </footer>
+  </section>
+</div>

@@ -1,7 +1,7 @@
 // server/src/transcript.ts
-import type { AgentId } from './agents/types.js';
-import type { RoomAgentProfile } from './agents/types.js';
+import type { AgentId, ProviderId, RoomAgentProfile } from './agents/types.js';
 import { getAgentPersona } from './agents/personas.js';
+import { roomAgentHandleForProfile } from './agents/profiles.js';
 import type { PermissionGrant } from './permissions.js';
 import type { AuthorKind } from './repos/messages.js';
 import type { TaskPromptContext } from './task-summary.js';
@@ -18,6 +18,7 @@ export interface BuildTurnOptions {
   roomName: string;
   roomAgents?: AgentId[];
   roomAgentProfiles?: RoomAgentProfile[];
+  roomLeadAgentId?: AgentId | null;
   history: HistoryEntry[];
   newMessage: HistoryEntry;
   maxHistory?: number;
@@ -91,9 +92,14 @@ export interface WorkflowProfilePromptItem {
 export interface BuildTurnPromptStats {
   promptChars: number;
   estimatedPromptTokens: number;
+  overBudgetChars: number;
+  detailLevel: PromptDetail;
+  budgetNotices: string[];
+  historyMessagesAvailable: number;
   historyMessagesIncluded: number;
   historyMessagesDroppedByCount: number;
   historyMessagesDroppedByBudget: number;
+  latestMessageOriginalChars: number;
   latestMessageChars: number;
   maxPromptChars: number | null;
   latestMessageTruncated: boolean;
@@ -102,11 +108,19 @@ export interface BuildTurnPromptStats {
 const DEFAULT_MAX_HISTORY = 80;
 const DEFAULT_MAX_PROMPT_CHARS = 16_000;
 const MIN_LATEST_MESSAGE_CHARS = 1_000;
-type PromptDetail = 'full' | 'compact' | 'minimal';
+export type PromptDetail = 'full' | 'compact' | 'minimal';
 
-function formatLine(agentId: AgentId, entry: HistoryEntry): string {
+function formatLine(
+  agentId: AgentId,
+  entry: HistoryEntry,
+  profileById: Map<string, RoomAgentProfile>,
+): string {
   const isSelf = entry.authorKind === 'agent' && entry.authorId === agentId;
-  const author = isSelf ? `${entry.authorId} (you)` : entry.authorId;
+  const displayName =
+    entry.authorKind === 'agent'
+      ? (profileById.get(entry.authorId)?.displayName ?? entry.authorId)
+      : entry.authorId;
+  const author = isSelf ? `${displayName} (you)` : displayName;
   return `${author}: ${entry.text}`;
 }
 
@@ -114,7 +128,7 @@ function formatAgentProfile(profile: RoomAgentProfile | undefined, agentId: Agen
   if (!profile) return [`Agent identity: respond as "${agentId}".`];
   const persona = getAgentPersona(profile.personaId);
   const lines = [
-    `Agent identity: respond as "${profile.displayName}" in chat. Your durable agent id is "${profile.id}" and your provider adapter is "${profile.providerId}".`,
+    `Agent identity: respond as "${profile.displayName}" in visible chat. Your durable agent id is "${profile.id}" and your provider adapter is "${profile.providerId}". Use the durable id only in hidden protocol fields, not as your chat name.`,
     `Persona: ${persona.name}. ${persona.summary}`,
   ];
   if (profile.temporary) {
@@ -133,6 +147,10 @@ function formatAgentProfile(profile: RoomAgentProfile | undefined, agentId: Agen
 
 function formatRoomProfiles(profiles: RoomAgentProfile[] | undefined): string[] {
   if (!profiles || profiles.length === 0) return [];
+  const providerCounts = new Map<ProviderId, number>();
+  for (const profile of profiles) {
+    providerCounts.set(profile.providerId, (providerCounts.get(profile.providerId) ?? 0) + 1);
+  }
   return [
     `Room roster: ${profiles
       .map(
@@ -140,10 +158,32 @@ function formatRoomProfiles(profiles: RoomAgentProfile[] | undefined): string[] 
           const temp = profile.temporary
             ? `, temporary=true, spawned_by=${profile.spawnedBy ?? 'unknown'}`
             : '';
-          return `${profile.displayName} [id=${profile.id}, provider=${profile.providerId}, persona=${profile.personaName}${temp}]`;
+          return `${profile.displayName} [handle=@${roomAgentHandleForProfile(
+            profile,
+            providerCounts,
+          )}, id=${profile.id}, provider=${profile.providerId}, persona=${profile.personaName}${temp}]`;
         },
       )
       .join('; ')}.`,
+  ];
+}
+
+function formatTeamLeadLine(
+  leadAgentId: AgentId | null | undefined,
+  profiles: RoomAgentProfile[] | undefined,
+): string[] {
+  if (!leadAgentId || !profiles || profiles.length === 0) return [];
+  const profile = profiles.find((item) => item.id === leadAgentId);
+  if (!profile) return [];
+  const providerCounts = new Map<ProviderId, number>();
+  for (const item of profiles) {
+    providerCounts.set(item.providerId, (providerCounts.get(item.providerId) ?? 0) + 1);
+  }
+  return [
+    `Team lead: ${profile.displayName} (@${roomAgentHandleForProfile(
+      profile,
+      providerCounts,
+    )}). Broker/system coordination requests may be routed to this agent first. Use the lead for coordination gaps; still tag the exact worker @handle when assigning execution.`,
   ];
 }
 
@@ -233,14 +273,27 @@ function renderPrompt(
 ): string {
   const compactPrompt = detail !== 'full';
   const minimalPrompt = detail === 'minimal';
-  const transcript = recent.map((e) => formatLine(opts.agentId, e)).join('\n');
-  const newLine = formatLine(opts.agentId, newMessage);
+  const profileById = new Map<string, RoomAgentProfile>();
+  for (const profile of opts.roomAgentProfiles ?? []) profileById.set(profile.id, profile);
+  if (opts.agentProfile) profileById.set(opts.agentProfile.id, opts.agentProfile);
+  const agentDisplayName = (agentId: AgentId) => profileById.get(agentId)?.displayName ?? agentId;
+  const providerCounts = new Map<ProviderId, number>();
+  for (const profile of profileById.values()) {
+    providerCounts.set(profile.providerId, (providerCounts.get(profile.providerId) ?? 0) + 1);
+  }
+  const agentHandle = (agentId: AgentId) => {
+    const profile = profileById.get(agentId);
+    return profile ? roomAgentHandleForProfile(profile, providerCounts) : agentId.toLowerCase();
+  };
+  const selfDisplayName = agentDisplayName(opts.agentId);
+  const transcript = recent.map((e) => formatLine(opts.agentId, e, profileById)).join('\n');
+  const newLine = formatLine(opts.agentId, newMessage, profileById);
   const fullTranscript = transcript ? `${transcript}\n${newLine}` : newLine;
   const handoffRecipients = (opts.roomAgents ?? [])
     .filter((agentId) => agentId !== opts.agentId)
-    .join(', ');
+    .map((agentId) => `${agentDisplayName(agentId)} (@${agentHandle(agentId)})`);
   const handoffLine = handoffRecipients
-    ? `If you did useful work or updated hidden blocks, send a brief visible status. To hand off, address one of these recipients by name: ${handoffRecipients}. Example: "Codex, please verify this." Do not end with a bare agent label or write your own name as a label.`
+    ? `If you did useful work or updated hidden blocks, send a brief visible status. To make another agent act, tag the exact @handle for one of these recipients: ${handoffRecipients.join(', ')}. Plain names are conversational only and may not wake anyone. For team-wide context plus a targeted assignment, state the team context and include a direct @handle instruction for the agent who should act. Do not use broad @provider tags when multiple instances share that provider. Do not end with a bare agent label or write your own name as a label.`
     : `If you did useful work or updated hidden blocks, send a brief visible status. Do not end with a bare agent label or write your own name as a label.`;
   const liveMessagesShown = recent.length + 1;
   const omittedFromLive = opts.contextFiles
@@ -539,13 +592,16 @@ function renderPrompt(
   return [
     `Given the chat transcript below, produce only the next message to be sent by "${opts.agentId}".`,
     ``,
+    `The quoted recipient above is the stable dispatch id. Your visible chat name is "${selfDisplayName}".`,
     `The latest message in the transcript is the one to respond to. It is authoritative for this turn — answer it directly.`,
-    `Do not acknowledge these instructions. Do not describe your role or the room. Do not preface your reply with phrases like "Understood" or "Got it". Do not include role labels (no "${opts.agentId}:") or markdown headers.`,
+    `Do not acknowledge these instructions. Do not describe your role or the room. Do not preface your reply with phrases like "Understood" or "Got it". Do not include role labels (no "${selfDisplayName}:") or markdown headers.`,
     opts.permission
-      ? `After completing or attempting the approved operation, return only the literal text of the message ${opts.agentId} should send next.`
-      : `Return only the literal text of the message ${opts.agentId} should send next. If there is nothing useful to add, return an empty string.`,
+      ? `After completing or attempting the approved operation, return only the literal text of the message ${selfDisplayName} should send next.`
+      : `Return only the literal text of the message ${selfDisplayName} should send next. If there is nothing useful to add, return an empty string.`,
     ...formatAgentProfile(opts.agentProfile, opts.agentId),
     ...formatRoomProfiles(opts.roomAgentProfiles),
+    ...formatTeamLeadLine(opts.roomLeadAgentId, opts.roomAgentProfiles),
+    `Identity rule: use participant display names in visible chat. Use stable agent ids only inside hidden protocol fields such as owner:, agent:, id:, or /agent-roster fields.`,
     handoffLine,
     ...permissionLines,
     ...collaborationLines,
@@ -572,6 +628,7 @@ export function buildTurnPromptResult(opts: BuildTurnOptions): {
   const droppedByCount = Math.max(0, opts.history.length - max);
   let recent = opts.history.slice(-max);
   let newMessage = opts.newMessage;
+  const latestMessageOriginalChars = opts.newMessage.text.length;
   let droppedByBudget = 0;
   let latestMessageTruncated = false;
   let budgetNoticeLines: string[] = [];
@@ -668,9 +725,14 @@ export function buildTurnPromptResult(opts: BuildTurnOptions): {
     stats: {
       promptChars: prompt.length,
       estimatedPromptTokens: Math.ceil(prompt.length / 4),
+      overBudgetChars: Math.max(0, prompt.length - maxPromptChars),
+      detailLevel: detail,
+      budgetNotices: budgetNoticeLines.map((line) => line.trim()).filter(Boolean),
+      historyMessagesAvailable: opts.history.length,
       historyMessagesIncluded: recent.length,
       historyMessagesDroppedByCount: droppedByCount,
       historyMessagesDroppedByBudget: droppedByBudget,
+      latestMessageOriginalChars,
       latestMessageChars: newMessage.text.length,
       maxPromptChars,
       latestMessageTruncated,

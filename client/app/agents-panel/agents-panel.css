@@ -1,0 +1,9 @@
+/* client/app/agents-panel/agents-panel.css
+ * Outer host placement only. Rest of the panel reuses `.presence*`,
+ * `.rail-agent*`, `.yolo-turn-bank*`, `.work-card`, and `.work-row*`
+ * selectors that stay global in app.css.
+ */
+
+:host {
+  display: contents;
+}

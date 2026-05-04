@@ -1,5 +1,5 @@
 import type { TaskPlanStatus } from './repos/task-plans.js';
-import { hiddenBlockRegex } from './hidden-blocks.js';
+import { hiddenBlockRegex, stripEmptyHiddenBlockComments } from './hidden-blocks.js';
 
 export type MissionPlanAction = 'create' | 'update';
 
@@ -79,7 +79,7 @@ export function extractMissionPlanUpdates(text: string): ExtractedMissionPlanUpd
     return prefix === '\n' ? '\n' : '';
   });
   return {
-    visibleText: visibleText.trim(),
+    visibleText: stripEmptyHiddenBlockComments(visibleText).trim(),
     updates,
   };
 }

@@ -1,0 +1,8 @@
+/* client/app/topbar/topbar.css
+ * Outer host placement only. Reuses `.topbar`, `.channel*`, `.tabs`, `.tab`,
+ * and `.project-dashboard-chip` selectors that stay global in app.css.
+ */
+
+:host {
+  display: contents;
+}

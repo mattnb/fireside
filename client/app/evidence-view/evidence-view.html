@@ -1,0 +1,97 @@
+<section class="panel panel--evidence-stage">
+  <div class="section-label">evidence</div>
+  <div class="evidence-filters" role="toolbar" aria-label="Filter evidence">
+    <button
+      type="button"
+      [class.is-active]="filter() === 'all'"
+      (click)="setFilter('all')"
+    >
+      <strong>{{ bucketCount('all') }}</strong>all
+    </button>
+    <button
+      type="button"
+      [class.is-active]="filter() === 'receipts'"
+      (click)="setFilter('receipts')"
+    >
+      <strong>{{ bucketCount('receipts') }}</strong>receipts
+    </button>
+    <button
+      type="button"
+      [class.is-active]="filter() === 'notes'"
+      (click)="setFilter('notes')"
+    >
+      <strong>{{ bucketCount('notes') }}</strong>notes
+    </button>
+    <button
+      type="button"
+      [class.is-active]="filter() === 'decisions'"
+      (click)="setFilter('decisions')"
+    >
+      <strong>{{ bucketCount('decisions') }}</strong>decisions
+    </button>
+    <button
+      type="button"
+      [class.is-active]="filter() === 'blockers'"
+      (click)="setFilter('blockers')"
+    >
+      <strong>{{ bucketCount('blockers') }}</strong>blockers
+    </button>
+    <button
+      type="button"
+      [class.is-active]="filter() === 'artifacts'"
+      (click)="setFilter('artifacts')"
+    >
+      <strong>{{ bucketCount('artifacts') }}</strong>artifacts
+    </button>
+    <button
+      type="button"
+      [class.is-active]="filter() === 'runs'"
+      (click)="setFilter('runs')"
+    >
+      <strong>{{ bucketCount('runs') }}</strong>runs
+    </button>
+  </div>
+
+  <div class="evidence-rail">
+    @for (event of filteredEvents(); track event.id) {
+    <article class="ev-event" [class]="'ev-event--' + event.kind">
+      <div class="ev-event__body">
+        <div class="ev-event__head">
+          <span class="ev-event__kind">{{ eventKindLabel(event) }}</span>
+        </div>
+        @if (event.artifact) {
+        <button
+          type="button"
+          class="ev-event__title ev-event__title--button"
+          (click)="openArtifact(event.artifact)"
+          [attr.title]="'Open ' + event.artifact.name + ' in OS'"
+        >
+          {{ event.title }}
+        </button>
+        } @else if (event.runId) {
+        <button
+          type="button"
+          class="ev-event__title ev-event__title--button"
+          (click)="openRun(event.runId)"
+        >
+          {{ event.title }}
+        </button>
+        } @else {
+        <span class="ev-event__title">{{ event.title }}</span>
+        } @if (event.body) {
+        <p class="ev-event__detail">{{ event.body }}</p>
+        } @if (event.meta) {
+        <span class="ev-event__meta">{{ event.meta }}</span>
+        }
+      </div>
+      <span class="ev-event__time" [title]="formatDateTime(event.time)">
+        {{ formatShortTime(event.time) }}
+      </span>
+    </article>
+    } @empty {
+    <p class="empty-copy">
+      @if (filter() === 'all') { no evidence yet } @else { no {{ filter() }} yet }
+    </p>
+    }
+  </div>
+</section>

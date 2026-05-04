@@ -836,6 +836,246 @@ describe('Broker', () => {
     expect(actionLabels).toContain('mission receipt: continuing');
   });
 
+  it('stops YOLO after no-update receipt-only turns instead of burning the full turn bank', async () => {
+    const yoloBroker = new Broker({
+      db,
+      runAgent: async (spec, prompt, sessionId) => {
+        runs.push({ agentId: spec.id, prompt, sessionId });
+        return {
+          text: [
+            '/mission-receipt',
+            'status: no_update',
+            'summary: Standby continues. No checklist state changed.',
+            '/end-mission-receipt',
+          ].join('\n'),
+          sessionId: `${spec.id}-sess`,
+          raw: { stdout: '', stderr: '' },
+        };
+      },
+      getSpec: (id) => {
+        const map: Record<string, AgentSpec> = {
+          claude: fakeSpec('claude', 'claude reply'),
+          codex: fakeSpec('codex', 'codex reply'),
+          gemini: fakeSpec('gemini', 'gemini reply'),
+          echo: fakeSpec('echo', 'echo reply'),
+        };
+        return map[id];
+      },
+    });
+    const room = createRoom(db, { name: 'standby-yolo', agents: ['claude', 'codex'] });
+    yoloBroker.createTask(room.id, { title: 'No-op mission' });
+
+    await yoloBroker.startYoloDiscussion(room.id, 'human', {
+      mode: 'edit',
+      filesystemScope: 'task',
+    });
+
+    expect(runs.map((run) => run.agentId).sort()).toEqual(['claude', 'codex']);
+    const actions = listAgentRuns(db, room.id).flatMap((run) => listAgentRunActions(db, run.id));
+    expect(actions.map((action) => action.label)).toContain('mission receipt: no_update');
+    expect(actions.map((action) => action.detail)).toContain(
+      'mission receipt stored without progress',
+    );
+  });
+
+  it('dispatches a lead repair turn when YOLO launch has empty open phases', async () => {
+    const yoloBroker = new Broker({
+      db,
+      runAgent: async (spec, prompt, sessionId) => {
+        runs.push({ agentId: spec.id, prompt, sessionId });
+        return {
+          text: [
+            `${spec.id}-repairing-empty-phases`,
+            '/mission-receipt',
+            'status: continuing',
+            'summary: Lead repair turn saw the empty phase blocker.',
+            '/end-mission-receipt',
+          ].join('\n'),
+          sessionId: `${spec.id}-sess`,
+          raw: { stdout: '', stderr: '' },
+        };
+      },
+      getSpec: (id) => {
+        const map: Record<string, AgentSpec> = {
+          claude: fakeSpec('claude', 'claude reply'),
+          codex: fakeSpec('codex', 'codex reply'),
+          gemini: fakeSpec('gemini', 'gemini reply'),
+          echo: fakeSpec('echo', 'echo reply'),
+        };
+        return map[id];
+      },
+    });
+    const room = createRoom(db, { name: 'empty-phase-yolo', agents: ['claude'] });
+    const task = yoloBroker.createTask(room.id, { title: 'Mission with an empty phase' });
+    if (!task) throw new Error('task not created');
+    const phase = yoloBroker.createTaskPhase(room.id, task.id, {
+      title: 'Unseeded phase',
+      status: 'active',
+    });
+
+    await yoloBroker.startYoloDiscussion(room.id, 'human', {
+      mode: 'edit',
+      filesystemScope: 'task',
+    });
+
+    expect(runs.map((run) => run.agentId)).toEqual(['claude']);
+    expect(runs[0]!.prompt).toContain('Unseeded phase');
+    expect(listMessages(db, room.id).map((message) => message.text)).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining(`Unseeded phase [active, id=${phase!.id}]`),
+        'claude-repairing-empty-phases',
+      ]),
+    );
+  });
+
+  it('uses an explicit team lead before role fallback for empty-phase YOLO repair', async () => {
+    const yoloBroker = new Broker({
+      db,
+      runAgent: async (spec, prompt, sessionId) => {
+        runs.push({ agentId: spec.id, prompt, sessionId });
+        return {
+          text: [
+            `${spec.id}-lead-repair`,
+            '/mission-receipt',
+            'status: continuing',
+            'summary: Explicit lead took the launch repair.',
+            '/end-mission-receipt',
+          ].join('\n'),
+          sessionId: `${spec.id}-sess`,
+          raw: { stdout: '', stderr: '' },
+        };
+      },
+      getSpec: (id) => fakeSpec(id, `${id} reply`),
+    });
+    const room = createRoom(db, {
+      name: 'explicit-lead-yolo',
+      leadAgentId: 'codex-tech-lead',
+      agentProfiles: [
+        {
+          id: 'claude-project-manager',
+          providerId: 'claude',
+          displayName: 'Jimmy',
+          personaId: 'project-manager',
+          personaName: 'Project Manager',
+          personaSummary: '',
+        },
+        {
+          id: 'codex-tech-lead',
+          providerId: 'codex',
+          displayName: 'Sean',
+          personaId: 'technical-lead',
+          personaName: 'Technical Lead',
+          personaSummary: '',
+        },
+      ],
+    });
+    const task = yoloBroker.createTask(room.id, { title: 'Mission with explicit lead' });
+    if (!task) throw new Error('task not created');
+    yoloBroker.createTaskPhase(room.id, task.id, {
+      title: 'Empty lead-owned phase',
+      status: 'active',
+    });
+
+    await yoloBroker.startYoloDiscussion(room.id, 'human', {
+      mode: 'edit',
+      filesystemScope: 'task',
+    });
+
+    expect(runs.map((run) => run.agentId)).toEqual(['codex']);
+    expect(runs[0]!.prompt).toContain('produce only the next message to be sent by "codex-tech-lead"');
+    expect(runs[0]!.prompt).toContain('Team lead: Sean (@sean)');
+  });
+
+  it('routes explicit human mentions as direct turns even when the target is a YOLO agent', async () => {
+    const yoloBroker = new Broker({
+      db,
+      runAgent: async (spec, prompt, sessionId) => {
+        runs.push({ agentId: spec.id, prompt, sessionId });
+        return {
+          text: [
+            `${spec.id}-saw-direct-mention`,
+            '/mission-receipt',
+            'status: no_update',
+            'summary: Direct human mention answered; no mission state changed.',
+            '/end-mission-receipt',
+          ].join('\n'),
+          sessionId: `${spec.id}-sess`,
+          raw: { stdout: '', stderr: '' },
+        };
+      },
+      getSpec: (id) => {
+        const map: Record<string, AgentSpec> = {
+          claude: fakeSpec('claude', 'claude reply'),
+          codex: fakeSpec('codex', 'codex reply'),
+          gemini: fakeSpec('gemini', 'gemini reply'),
+          echo: fakeSpec('echo', 'echo reply'),
+        };
+        return map[id];
+      },
+    });
+    const room = createRoom(db, {
+      name: 'direct-yolo-mention',
+      agents: ['claude'],
+      yoloAgents: ['claude'],
+    });
+    const task = yoloBroker.createTask(room.id, { title: 'Mission with an empty phase' });
+    if (!task) throw new Error('task not created');
+    yoloBroker.createTaskPhase(room.id, task.id, {
+      title: 'Unseeded phase',
+      status: 'active',
+    });
+
+    await yoloBroker.postHumanMessage(room.id, 'human', '@claude answer directly');
+
+    expect(runs.map((run) => run.agentId)).toEqual(['claude']);
+    expect(runs[0]!.prompt).not.toContain('YOLO collaboration budget');
+    expect(listMessages(db, room.id).map((message) => `${message.authorId}:${message.text}`)).toEqual([
+      'human:@claude answer directly',
+      'claude:claude-saw-direct-mention',
+    ]);
+  });
+
+  it('pauses YOLO when the active mission is waiting on a human council item', async () => {
+    const yoloBroker = new Broker({
+      db,
+      runAgent: async (spec, prompt, sessionId) => {
+        runs.push({ agentId: spec.id, prompt, sessionId });
+        return {
+          text: `${spec.id}-should-not-run`,
+          sessionId: `${spec.id}-sess`,
+          raw: { stdout: '', stderr: '' },
+        };
+      },
+      getSpec: (id) => {
+        const map: Record<string, AgentSpec> = {
+          claude: fakeSpec('claude', 'claude reply'),
+          codex: fakeSpec('codex', 'codex reply'),
+          gemini: fakeSpec('gemini', 'gemini reply'),
+          echo: fakeSpec('echo', 'echo reply'),
+        };
+        return map[id];
+      },
+    });
+    const room = createRoom(db, { name: 'human-wait-yolo', agents: ['claude'] });
+    const task = yoloBroker.createTask(room.id, { title: 'Human decision mission' });
+    if (!task) throw new Error('task not created');
+    createTaskChecklistItem(db, {
+      taskId: task.id,
+      title: 'Choose polish scope',
+      status: 'blocked',
+      blockedReason: 'Waiting on Matt to choose the scope.',
+      councilRequired: true,
+    });
+    yoloBroker.updateTask(room.id, task.id, { status: 'blocked' });
+
+    await yoloBroker.startYoloDiscussion(room.id, 'human', {
+      mode: 'edit',
+      filesystemScope: 'task',
+    });
+
+    expect(runs).toHaveLength(0);
+  });
+
   it('lets a seeded YOLO planner fan assigned work out to the room YOLO pool', async () => {
     let createdPlan = false;
     let completedSeededOwners = 0;
@@ -969,7 +1209,17 @@ describe('Broker', () => {
     });
     roomId = room.id;
 
-    await yoloBroker.postHumanMessage(room.id, 'human', '@codex-project-manager build the plan');
+    await yoloBroker.startYoloDiscussion(
+      room.id,
+      'human',
+      {
+        mode: 'full-auto',
+        filesystemScope: 'unrestricted',
+        web: true,
+      },
+      '@codex-project-manager build the plan',
+      ['codex-project-manager'],
+    );
 
     expect(runs[0]!.agentId).toBe('codex-project-manager');
     expect(runs.map((run) => run.agentId)).toEqual(
@@ -1208,7 +1458,7 @@ describe('Broker', () => {
       yoloAgents: ['claude'],
     });
 
-    await yoloBroker.postHumanMessage(room.id, 'human', '@claude keep going');
+    await yoloBroker.postHumanMessage(room.id, 'human', 'keep going');
 
     expect(runs).toHaveLength(3);
     expect(runs[0]!.permission).toMatchObject({
@@ -1229,7 +1479,7 @@ describe('Broker', () => {
     });
     expect(listPermissionRequests(db, room.id)).toEqual([]);
     expect(listMessages(db, room.id).map((m) => `${m.authorId}:${m.text}`)).toEqual([
-      'human:@claude keep going',
+      'human:keep going',
       'claude:continued under room-level YOLO',
     ]);
   });
@@ -1554,7 +1804,7 @@ describe('Broker', () => {
     ).toEqual(['human:@claude first', 'human:@claude queued context', 'claude:saw queued context']);
   });
 
-  it('uses room-level YOLO budget when draining queued context for a YOLO agent', async () => {
+  it('drains queued context for a YOLO agent', async () => {
     let turn = 0;
     const queuedBroker = new Broker({
       db,
@@ -1599,15 +1849,7 @@ describe('Broker', () => {
 
     await queuedBroker.postHumanMessage(room.id, 'human', '@gemini first');
 
-    expect(runs.map((run) => run.agentId)).toEqual(['gemini', 'claude', 'claude']);
-    expect(runs[1]!.prompt).toContain('YOLO collaboration budget');
-    expect(runs[1]!.prompt).toContain('up to 100 total agent messages');
-    expect(runs[1]!.permission).toMatchObject({
-      source: 'yolo',
-      mode: 'full-auto',
-      filesystemScope: 'unrestricted',
-      web: true,
-    });
+    expect(runs.map((run) => run.agentId)).toEqual(['gemini', 'claude']);
     expect(
       listMessages(db, room.id).map((message) => `${message.authorId}:${message.text}`),
     ).toEqual([
@@ -1931,6 +2173,87 @@ describe('Broker', () => {
     await firstTurn;
   });
 
+  it('routes an explicit mention to a free YOLO agent while another YOLO agent is running', async () => {
+    let releaseRun!: () => void;
+    let firstRunStarted!: () => void;
+    const releaseRunPromise = new Promise<void>((resolve) => {
+      releaseRun = resolve;
+    });
+    const firstRunStartedPromise = new Promise<void>((resolve) => {
+      firstRunStarted = resolve;
+    });
+    const queueBroker = new Broker({
+      db,
+      maxAgentRepliesPerThread: 1,
+      runAgent: async (spec, prompt, sessionId, permission) => {
+        const turn = runs.length + 1;
+        runs.push({
+          agentId: spec.id,
+          prompt,
+          sessionId,
+          ...(permission !== undefined ? { permission } : {}),
+        });
+        if (turn === 1) {
+          firstRunStarted();
+          await releaseRunPromise;
+        }
+        return {
+          text: turn === 2 ? 'jimmy-says-hello' : '',
+          sessionId: `${spec.id}-sess`,
+          raw: { stdout: '', stderr: '' },
+        };
+      },
+      getSpec: (id) => {
+        const map: Record<string, AgentSpec> = {
+          claude: fakeSpec('claude', 'claude reply'),
+          codex: fakeSpec('codex', 'codex reply'),
+        };
+        return map[id];
+      },
+    });
+    const room = createRoom(db, {
+      name: 'yolo-targeting',
+      agentProfiles: [
+        {
+          id: 'claude-technical-lead',
+          providerId: 'claude',
+          displayName: 'Sean',
+          personaId: 'technical-lead',
+          personaName: 'Technical Lead',
+          personaSummary: '',
+        },
+        {
+          id: 'codex-project-manager',
+          providerId: 'codex',
+          displayName: 'Jimmy',
+          personaId: 'project-manager',
+          personaName: 'Project Manager',
+          personaSummary: '',
+        },
+      ],
+      yoloAgents: ['claude-technical-lead', 'codex-project-manager'],
+    });
+
+    const firstTurn = queueBroker.postHumanMessage(room.id, 'human', '@sean start slow');
+    await firstRunStartedPromise;
+
+    const routed = await queueBroker.postHumanMessage(room.id, 'human', '@jimmy take this');
+
+    expect(routed.deliveryStatus).toBe('delivered');
+    const roomRunAgents = listAgentRuns(db, room.id).map((run) => run.agentId);
+    expect(roomRunAgents).toHaveLength(2);
+    expect(roomRunAgents).toEqual(
+      expect.arrayContaining(['claude-technical-lead', 'codex-project-manager']),
+    );
+    expect(runs[1]!.prompt).not.toContain('YOLO collaboration budget');
+    expect(
+      queueBroker.listMessages(room.id).find((message) => message.id === routed.id),
+    ).not.toHaveProperty('deliveryStatus', 'queued');
+
+    releaseRun();
+    await firstTurn;
+  });
+
   it('does not resume historical sessions from a previous provider for a room-local agent', async () => {
     const sessionsSeen: Array<string | null> = [];
     const queueBroker = new Broker({
@@ -2192,6 +2515,98 @@ describe('Broker', () => {
         'mission task create',
       ]),
     );
+  });
+
+  it('dispatches newly assigned checklist work to the owner without a visible handoff', async () => {
+    const dispatchBroker = new Broker({
+      db,
+      maxAgentRepliesPerThread: 1,
+      runAgent: async (spec, prompt, sessionId) => {
+        const agentId =
+          (prompt.match(/next message to be sent by "([^"]+)"/)?.[1] ?? spec.id) as AgentId;
+        runs.push({ agentId, prompt, sessionId });
+        if (agentId === 'codex-project-manager') {
+          return {
+            text: [
+              '/mission-task',
+              'action: create',
+              'title: Build routing proof',
+              'status: open',
+              'owner: claude-technical-lead',
+              'detail: Verify mission work dispatch wakes assigned owners.',
+              '/end-mission-task',
+            ].join('\n'),
+            sessionId: `${spec.id}-sess`,
+            raw: { stdout: '', stderr: '' },
+          };
+        }
+        const assignedItemId = prompt.match(/Assigned item:.*?\[id=([^\]]+)\]/)?.[1] ?? '';
+        return {
+          text: [
+            '/mission-receipt',
+            'status: completed',
+            `item: ${assignedItemId}`,
+            'summary: Assigned owner received the generated work lane.',
+            '/end-mission-receipt',
+          ].join('\n'),
+          sessionId: `${spec.id}-sess`,
+          raw: { stdout: '', stderr: '' },
+        };
+      },
+      getSpec: (id) => {
+        const map: Record<string, AgentSpec> = {
+          claude: fakeSpec('claude', 'claude reply'),
+          codex: fakeSpec('codex', 'codex reply'),
+          gemini: fakeSpec('gemini', 'gemini reply'),
+          echo: fakeSpec('echo', 'echo reply'),
+        };
+        return map[id];
+      },
+    });
+    const room = createRoom(db, {
+      name: 'mission-work-dispatch',
+      yoloAgents: [],
+      agentProfiles: [
+        {
+          id: 'codex-project-manager',
+          providerId: 'codex',
+          displayName: 'Jimmy',
+          personaId: 'project-manager',
+          personaName: 'Project Manager',
+          personaSummary: '',
+        },
+        {
+          id: 'claude-technical-lead',
+          providerId: 'claude',
+          displayName: 'Sean',
+          personaId: 'technical-lead',
+          personaName: 'Technical Lead',
+          personaSummary: '',
+        },
+      ],
+    });
+    const task = dispatchBroker.createTask(room.id, { title: 'Dispatch owner mission' });
+
+    await dispatchBroker.postHumanMessage(room.id, 'human', '@jimmy create assigned work');
+
+    expect(runs.map((run) => run.agentId)).toEqual([
+      'codex-project-manager',
+      'claude-technical-lead',
+    ]);
+    expect(runs[1]!.prompt).toContain('Assigned item: - open: Build routing proof');
+    expect(listTaskChecklistItems(db, task!.id)).toMatchObject([
+      {
+        title: 'Build routing proof',
+        ownerAgentId: 'claude-technical-lead',
+        status: 'done',
+        updatedBy: 'claude-technical-lead',
+      },
+    ]);
+    const labels = listAgentRuns(db, room.id).flatMap((run) =>
+      listAgentRunActions(db, run.id).map((action) => action.label),
+    );
+    expect(labels).toContain('mission work dispatch');
+    expect(labels).toContain('reconciled checklist completion');
   });
 
   it('lets an agent create a mission and populate control state in one reply', async () => {

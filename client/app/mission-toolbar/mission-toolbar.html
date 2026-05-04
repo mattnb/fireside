@@ -1,0 +1,182 @@
+<nav class="mission-view-tabs panel panel--wide" aria-label="Mission Control views">
+  @for (view of missionViews(); track view.id) {
+  <button
+    type="button"
+    class="mission-view-tab"
+    [class.is-active]="selectedMissionView() === view.id"
+    [attr.title]="view.summary"
+    (click)="missionViewSelected.emit(view.id)"
+  >
+    <strong>{{ view.label }}</strong>
+    <span>{{ view.summary }}</span>
+  </button>
+  }
+  <div class="mission-action-anchor">
+    <button
+      type="button"
+      class="control-btn control-btn--briefing mission-action-trigger"
+      [class.is-open]="store.missionActionPopoverOpen()"
+      [disabled]="!hasRoom()"
+      (click)="toggleMissionActionPopover()"
+    >
+      <span>mission action</span>
+      <span class="mission-action-trigger__caret" aria-hidden="true">▾</span>
+    </button>
+    @if (store.missionActionPopoverOpen()) {
+    <div
+      class="mission-action-backdrop"
+      aria-hidden="true"
+      (click)="closeMissionActionPopover()"
+    ></div>
+    <div
+      class="mission-action-pop"
+      role="dialog"
+      aria-label="Mission action"
+      (click)="$event.stopPropagation()"
+    >
+      <div class="mission-action-pop__head">
+        <span class="mission-action-pop__lbl">mission action</span>
+        <h4 class="mission-action-pop__title">What's next?</h4>
+      </div>
+
+      <div class="mission-action-pop__options" role="radiogroup">
+        @for (action of missionActions; track action.id) {
+        <button
+          type="button"
+          class="mission-action-pop__opt"
+          [class.is-active]="store.selectedMissionAction() === action.id"
+          role="radio"
+          [attr.aria-checked]="store.selectedMissionAction() === action.id"
+          (click)="selectMissionAction(action.id)"
+        >
+          <span class="mission-action-pop__radio" aria-hidden="true"></span>
+          <span class="mission-action-pop__opt-body">
+            <span class="mission-action-pop__name">{{ action.label }}</span>
+            <span class="mission-action-pop__summary">{{ action.summary }}</span>
+          </span>
+        </button>
+        }
+      </div>
+
+      <div class="mission-action-pop__row">
+        <span class="mission-action-pop__lbl">target</span>
+        <div class="mission-action-pop__pills" role="group" aria-label="Target scope">
+          <button
+            type="button"
+            class="mission-action-pop__pill"
+            [class.is-active]="store.missionActionScope() === 'team'"
+            (click)="setMissionActionScope('team')"
+          >
+            Team
+          </button>
+          <button
+            type="button"
+            class="mission-action-pop__pill"
+            [class.is-active]="store.missionActionScope() === 'selected'"
+            (click)="setMissionActionScope('selected')"
+          >
+            Selected
+          </button>
+          <button
+            type="button"
+            class="mission-action-pop__pill"
+            [class.is-active]="store.missionActionScope() === 'single'"
+            (click)="setMissionActionScope('single')"
+          >
+            One Agent
+          </button>
+        </div>
+      </div>
+
+      @if (store.missionActionScope() === 'single') {
+      <div class="mission-action-pop__row">
+        <span class="mission-action-pop__lbl">agent</span>
+        <select
+          class="mission-action-pop__select"
+          [value]="store.missionActionAgent() || roomAgents()[0] || ''"
+          (change)="setMissionActionAgent($event)"
+        >
+          @for (agent of roomAgents(); track agent) {
+          <option [value]="agent">{{ display.name(agent) }}</option>
+          }
+        </select>
+      </div>
+      } @if (store.missionActionScope() === 'selected') {
+      <div class="mission-action-pop__row mission-action-pop__row--wrap">
+        <span class="mission-action-pop__lbl">agents</span>
+        <div class="mission-action-pop__agent-grid">
+          @for (agent of roomAgents(); track agent) {
+          <label class="mission-action-pop__agent-check">
+            <input
+              type="checkbox"
+              [checked]="isMissionActionAgentSelected(agent)"
+              (change)="toggleMissionActionAgent(agent, $event)"
+            />
+            <span>{{ display.name(agent) }}</span>
+          </label>
+          }
+        </div>
+      </div>
+      } @if (store.selectedMissionAction() === 'execute') {
+      <div class="mission-action-pop__row">
+        <span class="mission-action-pop__lbl">item</span>
+        <select
+          class="mission-action-pop__select"
+          [value]="store.missionActionChecklistItemId()"
+          (change)="setMissionActionChecklistItem($event)"
+        >
+          <option value="">next unblocked item</option>
+          @for (item of missionActionWorkItems(); track item.id) {
+          <option [value]="item.id">{{ item.title }} / {{ item.status }}</option>
+          }
+        </select>
+      </div>
+      }
+
+      <div class="mission-action-pop__footer">
+        <div class="mission-action-pop__hint">
+          will post to
+          <span class="mission-action-pop__channel"># {{ roomName() }}</span>
+          as
+          <span class="mission-action-pop__target">→ {{ missionActionTargetLabel() }}</span>
+          @if (store.selectedMissionAction() === 'execute') { · {{ missionActionItemLabel() }} }
+        </div>
+        <button
+          type="button"
+          class="control-btn control-btn--briefing mission-action-pop__send"
+          [disabled]="!canPostMissionAction()"
+          (click)="dispatchMissionAction()"
+        >
+          <span>post to chat</span>
+        </button>
+      </div>
+    </div>
+    }
+  </div>
+
+  <button
+    type="button"
+    class="control-btn control-btn--briefing mission-view-tabs__briefing"
+    [disabled]="!hasRoom() || briefings.briefingLoading()"
+    (click)="saveBriefing()"
+  >
+    <svg viewBox="0 0 20 20" aria-hidden="true">
+      <path
+        d="M5 3.5h8.4L16 6.1v10.4H5V3.5Z"
+        fill="none"
+        stroke="currentColor"
+        stroke-width="1.5"
+        stroke-linejoin="round"
+      />
+      <path
+        d="M7.5 3.5v4h5v-4M7.5 13h5"
+        fill="none"
+        stroke="currentColor"
+        stroke-width="1.5"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+      />
+    </svg>
+    <span>save briefing</span>
+  </button>
+</nav>

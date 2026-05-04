@@ -21,36 +21,40 @@ import {
   getRoom,
   deleteRoom as deleteRoomRepo,
   listRooms,
+  setRoomLeadAgent as setRoomLeadAgentRepo,
   setRoomAgents as setRoomAgentsRepo,
   type Room,
 } from './repos/rooms.js';
-import { deleteCliSessionId, getCliSession, upsertCliSessionId } from './repos/sessions.js';
-import { buildTurnPromptResult, type WorkLanePromptItem } from './transcript.js';
 import {
-  parseAgentReferences,
-  parseAgentReferencesForAliases,
-  parseMentionTokens,
-} from './mentions.js';
+  deleteProjectRow,
+  getProject,
+  listRoomIdsByProject,
+  setProjectArchivedAt,
+  type Project,
+} from './repos/projects.js';
+import { deleteCliSessionId, getCliSession, upsertCliSessionId } from './repos/sessions.js';
+import type { WorkLanePromptItem } from './transcript.js';
 import {
   listConversationArtifacts,
-  messageTextForPrompt,
-  writeConversationContextFiles,
   attachConversationFixture,
   removeConversationArtifact,
   type ConversationArtifactListing,
   type ConversationFixture,
 } from './context-files.js';
 import {
-  isPermissionMode,
-  isYoloFilesystemScope,
   buildPermissionGrant,
   extractPermissionRequest,
-  type NormalizedYoloPermissionProfile,
   type PermissionGrant,
   type PermissionRequest,
-  type YoloFilesystemScope,
   type YoloPermissionProfile,
 } from './permissions.js';
+import {
+  buildYoloPermissionGrant,
+  inferYoloPermissionProfileFromText,
+  normalizeYoloPermissionProfile,
+  planPermissionRequestContinuation,
+  yoloScopeLabel,
+} from './orchestration/permission-orchestrator.js';
 import {
   addPermissionRequest,
   getPermissionRequest,
@@ -85,6 +89,7 @@ import {
   completeAgentJob,
   createAgentJob,
   failAgentJob,
+  getAgentJobByRunId,
   leaseAgentJob,
   listActiveAgentJobsForRoom,
   recoverInterruptedAgentJobs,
@@ -92,7 +97,6 @@ import {
   type AgentJob,
 } from './repos/agent-jobs.js';
 import {
-  createCollaborationItem,
   listCollaborationItems as listCollaborationItemsRepo,
   type CollaborationItem,
 } from './repos/collaboration.js';
@@ -106,7 +110,6 @@ import {
   type UpdateTaskPhaseInput,
 } from './repos/task-phases.js';
 import {
-  createTaskChecklistNote,
   createTaskChecklistItem,
   getTaskChecklistItem,
   listTaskChecklistItems,
@@ -135,6 +138,26 @@ import {
   type CreateAgentRunActionInput,
 } from './repos/run-actions.js';
 import {
+  createRoutingDecision,
+  listRoutingDecisionsForRoom,
+  type RoutingDecisionRecord,
+} from './repos/routing-decisions.js';
+import {
+  createMissionCommandEvent,
+  listMissionCommandEventsForRoom,
+  type MissionCommandEvent,
+  type MissionCommandKind,
+  type MissionCommandStatus,
+} from './repos/mission-command-events.js';
+import {
+  getAgentTurnOutcome,
+  listAgentTurnOutcomesForRoom,
+  recordAgentTurnOutcome,
+  type AgentTurnOutcome,
+  type AgentTurnOutcomeStatus,
+  type RecordAgentTurnOutcomeInput,
+} from './repos/turn-outcomes.js';
+import {
   createMissionBriefing as createMissionBriefingRepo,
   getMissionBriefing,
   listMissionBriefings,
@@ -142,8 +165,6 @@ import {
   type MissionBriefingPayload,
   type MissionBriefingSummary,
 } from './repos/briefings.js';
-import { buildTaskPromptContext } from './task-summary.js';
-import { decideRunRetry } from './run-lifecycle.js';
 import { loadWorkflowProfile, type WorkflowProfile } from './workflow-profile.js';
 import { getWorkspacePath } from './workspaces.js';
 import type {
@@ -156,8 +177,64 @@ import type {
 } from './agents/types.js';
 import { logger } from './logger.js';
 import { buildRunDiagnostics, type RunDiagnostics } from './run-diagnostics.js';
-import { isVisibleProviderSignal, readableProviderSignalDetail } from './provider-signals.js';
 import { codexContextUsage, formatContextUsage } from './context-usage.js';
+import { mentionAliasSlug, resolveRoomAgentReferences } from './routing/agent-references.js';
+import { routeAgentMessage } from './routing/agent-message-router.js';
+import { routeHumanMessage, type HumanRoutingDecision } from './routing/human-message-router.js';
+import {
+  routeMissionWorkUpdates,
+  type MissionWorkDispatch,
+} from './routing/mission-work-router.js';
+import {
+  applyDiscussionRoundResults,
+  createDiscussionScheduler,
+  currentMaxRepliesPerAgent,
+  currentMaxTotalReplies,
+  planDiscussionRound,
+  syncDiscussionTotalBudget,
+  type DiscussionResultSummary,
+} from './orchestration/discussion-scheduler.js';
+import {
+  buildTaskParallelismSummary,
+  checklistDependenciesSatisfied,
+  planWorkLanes,
+  workLaneConflictReason,
+  workLaneScopeContract,
+  type TaskParallelismSummary,
+  type WorkLaneAssignment,
+  type WorkLaneScopeContract,
+} from './orchestration/work-lane-planner.js';
+import {
+  createProviderSignalProcessingState,
+  describeRunHeartbeat,
+  processProviderSignalEvent,
+} from './orchestration/run-activity.js';
+import {
+  executeProviderTurn,
+  rawOutputFromError,
+  waitForRetryDelay,
+} from './orchestration/agent-turn-executor.js';
+import { prepareAgentTurnContext } from './orchestration/agent-turn-context.js';
+import {
+  inferRunExecutionSnapshot,
+  type RunExecutionSnapshot,
+} from './orchestration/run-state-machine.js';
+import { evaluateMissionLiveness } from './orchestration/liveness-policy.js';
+import {
+  applyMissionTaskUpdates as applyMissionTaskUpdatesState,
+  type MissionTaskApplyResult,
+} from './mission-state/mission-task-applicator.js';
+import { applyMissionCreateUpdates as applyMissionCreateUpdatesState } from './mission-state/mission-create-applicator.js';
+import { applyMissionPlanUpdates as applyMissionPlanUpdatesState } from './mission-state/mission-plan-applicator.js';
+import { applyMissionPhaseUpdates as applyMissionPhaseUpdatesState } from './mission-state/mission-phase-applicator.js';
+import {
+  autoAdvancePhase as autoAdvanceMissionPhase,
+  reconcileMissionState as reconcileMissionStateReceipts,
+  recordMissionReceipts as recordMissionReceiptsState,
+  workLaneSignal,
+  type MissionReconciliationResult,
+} from './mission-state/mission-receipt-applicator.js';
+import { storeCollaborationNotes as storeCollaborationNotesState } from './mission-state/collaboration-note-applicator.js';
 import { extractCollaborationNotes, type ParsedCollaborationNote } from './collaboration-notes.js';
 import { extractDraftArtifacts, writeDraftArtifact } from './draft-artifacts.js';
 import { extractMissionTaskUpdates, type ParsedMissionTaskUpdate } from './mission-task-updates.js';
@@ -208,7 +285,6 @@ export interface BrokerDeps {
 
 const DEFAULT_MAX_AGENT_REPLIES_PER_THREAD = 5;
 const YOLO_MAX_AGENT_REPLIES = 100;
-const YOLO_PERMISSION_AUTO_APPROVAL_LIMIT = 3;
 const DEFAULT_TEMPORARY_AGENT_LIMIT_PER_LEAD = 3;
 const DEFAULT_TEMPORARY_AGENT_MAX_TURNS = 25;
 const TEMPORARY_AGENT_ORCHESTRATOR_PERSONAS = new Set(['engineering-manager', 'qa-lead']);
@@ -232,31 +308,11 @@ interface DiscussionTurn {
   maxTotalReplies?: number;
 }
 
-interface WorkLaneAssignment {
-  item: TaskChecklistItem;
-}
-
-interface WorkLaneScopeContract {
-  itemId: string;
-  title: string;
-  agentId: AgentId | '';
-  expectedTouches: string[];
-  parallelism: TaskChecklistItem['parallelism'];
-  conflictGroup: string;
-  workRole: string;
-  source: 'checklist' | 'active-job';
-}
-
 interface WorkflowProfilePromptItem {
   sourcePath: string;
   promptTemplate: string;
   maxTurns: number;
   maxConcurrentAgents: number;
-}
-
-interface RoomAgentReferenceResult {
-  agentIds: AgentId[];
-  ambiguousAliases: string[];
 }
 
 interface AgentRosterApplyResult {
@@ -276,6 +332,7 @@ interface DiscussionThreadOptions {
   yoloState?: YoloDiscussionState;
   responders?: AgentId[];
   handoffPool?: AgentId[];
+  bypassRoomYolo?: boolean;
 }
 
 type PermissionDecision = 'approved' | 'denied';
@@ -293,6 +350,8 @@ interface YoloDiscussionState {
   cancelledBy?: string;
   cancelledAt?: number;
   cancelReason?: YoloCancelReason;
+  stoppedAt?: number;
+  stoppedReason?: string;
 }
 
 export interface YoloStatus {
@@ -345,6 +404,8 @@ export class QueuedMessageMutationError extends Error {
 
 export interface AgentRunDetail {
   run: AgentRun;
+  execution: RunExecutionSnapshot;
+  outcome: AgentTurnOutcome | null;
   triggerMessage: Message | null;
   replyMessage: Message | null;
   diagnostics: RunDiagnostics;
@@ -355,12 +416,9 @@ interface AgentTurnResult {
   message: Message | null;
   progressed: boolean;
   runId?: string;
-}
-
-interface MissionReconciliationResult {
-  applied: number;
-  receiptUpdates: number;
-  laneUpdates: number;
+  failed?: boolean;
+  error?: string;
+  workDispatches?: MissionWorkDispatch[];
 }
 
 interface WorkflowContractValidation {
@@ -378,79 +436,7 @@ export interface TaskControl {
   openChecklistItems: TaskChecklistItem[];
   blockedChecklistItems: TaskChecklistItem[];
   activePlan: TaskPlan | null;
-}
-
-function cleanYoloTarget(target: unknown): string | undefined {
-  if (typeof target !== 'string') return undefined;
-  const trimmed = target.trim();
-  return trimmed.length > 0 ? trimmed.slice(0, 500) : undefined;
-}
-
-function normalizeYoloPermissionProfile(
-  profile?: YoloPermissionProfile,
-): NormalizedYoloPermissionProfile {
-  const rawScope = typeof profile?.filesystemScope === 'string' ? profile.filesystemScope : '';
-  const filesystemScope = isYoloFilesystemScope(rawScope) ? rawScope : 'task';
-  const rawMode = typeof profile?.mode === 'string' ? profile.mode : '';
-  const mode =
-    filesystemScope === 'unrestricted' ? 'full-auto' : isPermissionMode(rawMode) ? rawMode : 'edit';
-  const target = cleanYoloTarget(profile?.target);
-  return {
-    mode,
-    filesystemScope,
-    ...(target !== undefined ? { target } : {}),
-    web: profile?.web === true,
-  };
-}
-
-function inferYoloPermissionProfileFromText(text: string): YoloPermissionProfile | null {
-  const normalized = text.toLowerCase();
-  if (!/\byolo\b/.test(normalized)) return null;
-  if (
-    !/\byolo\s+mode\b|\byolo\s+run\b|\byolo\s+collaboration\b|\bunrestricted\s+yolo\b/.test(
-      normalized,
-    )
-  ) {
-    return null;
-  }
-  if (/\b(no|not|never|don't|do not)\b.{0,32}\byolo\b/.test(normalized)) return null;
-
-  const filesystemScope: YoloFilesystemScope = /\bunrestricted\b/.test(normalized)
-    ? 'unrestricted'
-    : /\bfireside\s+cwd\b|\bcwd\b/.test(normalized)
-      ? 'cwd'
-      : 'task';
-  const mode =
-    filesystemScope === 'unrestricted' ||
-    /\bfull[-\s]?auto\b|\bskip permissions\b|\bdangerously\b/.test(normalized)
-      ? 'full-auto'
-      : /\bread[-\s]?only\b|\bplan\b/.test(normalized)
-        ? 'plan'
-        : 'edit';
-  const web = /\b(web|webfetch|web fetch|internet|browse|browser|fetch)\b/.test(normalized);
-  return { mode, filesystemScope, web };
-}
-
-function yoloScopeLabel(scope: YoloFilesystemScope): string {
-  switch (scope) {
-    case 'task':
-      return 'active mission path';
-    case 'cwd':
-      return 'Fireside working directory';
-    case 'custom':
-      return 'custom path';
-    case 'unrestricted':
-      return 'unrestricted filesystem';
-  }
-}
-
-function rawOutputFromError(err: unknown): { stdout: string; stderr: string } {
-  if (!err || typeof err !== 'object') return { stdout: '', stderr: '' };
-  const obj = err as { stdout?: unknown; stderr?: unknown };
-  return {
-    stdout: typeof obj.stdout === 'string' ? obj.stdout : '',
-    stderr: typeof obj.stderr === 'string' ? obj.stderr : '',
-  };
+  parallelism: TaskParallelismSummary;
 }
 
 function cleanVisibleAgentMessage(agentId: AgentId, text: string): string {
@@ -486,35 +472,35 @@ function oneLine(text: string, maxChars = 280): string {
   return `${cleaned.slice(0, maxChars - 1)}...`;
 }
 
-function mentionAliasSlug(text: string): string {
-  return text
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '');
-}
-
 function compactInline(text: string, maxChars = 220): string {
   const cleaned = text.replace(/\s+/g, ' ').trim();
   return cleaned.length <= maxChars ? cleaned : `${cleaned.slice(0, maxChars - 1)}...`;
 }
 
-function waitForRetryDelay(delayMs: number, signal?: AbortSignal): Promise<boolean> {
-  if (delayMs <= 0) return Promise.resolve(signal?.aborted !== true);
-  if (signal?.aborted) return Promise.resolve(false);
-  return new Promise((resolve) => {
-    const timer = setTimeout(() => {
-      signal?.removeEventListener('abort', onAbort);
-      resolve(true);
-    }, delayMs);
-    timer.unref?.();
-    const onAbort = (): void => {
-      clearTimeout(timer);
-      signal?.removeEventListener('abort', onAbort);
-      resolve(false);
-    };
-    signal?.addEventListener('abort', onAbort, { once: true });
-  });
+function missionCommandField(update: unknown, keys: string[]): string {
+  if (!update || typeof update !== 'object') return '';
+  const record = update as Record<string, unknown>;
+  for (const key of keys) {
+    const value = record[key];
+    if (typeof value === 'string' && value.trim()) return value.trim();
+  }
+  return '';
+}
+
+function missionCommandAction(update: unknown): string {
+  return missionCommandField(update, ['action', 'status']) || 'record';
+}
+
+function missionCommandTargetRef(update: unknown): string {
+  return missionCommandField(update, [
+    'id',
+    'title',
+    'name',
+    'itemRef',
+    'phaseRef',
+    'planRef',
+    'target',
+  ]);
 }
 
 export class Broker extends EventEmitter {
@@ -525,6 +511,7 @@ export class Broker extends EventEmitter {
   >();
   private queuedHumanMessageIds = new Map<string, Set<string>>();
   private drainingQueuedRooms = new Set<string>();
+  private yoloLaunchRepairInFlight = new Set<string>();
   private yoloSequence = 0;
 
   constructor(private deps: BrokerDeps) {
@@ -542,36 +529,81 @@ export class Broker extends EventEmitter {
     const room = getRoom(this.deps.db, roomId);
     if (!room) throw new Error(`unknown room: ${roomId}`);
     const activeYolo = this.activeYoloDiscussions.get(roomId);
-    if (this.roomHasActiveWork(roomId) || (activeYolo && !activeYolo.cancelled)) {
-      const targetedResponders = this.pickExplicitResponders(room, text, authorId);
-      if (targetedResponders !== null && targetedResponders.length > 0) {
-        const freeResponders = this.freeResponders(roomId, targetedResponders);
-        if (freeResponders.length > 0) {
-          return this.append(roomId, authorId, 'human', text, { responders: freeResponders });
-        }
-      }
-      return this.appendQueuedHumanMessage(roomId, authorId, text);
-    }
     const inlineYoloProfile = inferYoloPermissionProfileFromText(text);
-    if (inlineYoloProfile) {
-      return this.startYoloDiscussion(roomId, authorId, inlineYoloProfile, text);
+    const decision = routeHumanMessage({
+      room,
+      authorId,
+      text,
+      roomHasActiveWork: this.roomHasActiveWork(roomId),
+      activeYolo: Boolean(activeYolo && !activeYolo.cancelled && !activeYolo.stoppedReason),
+      busyAgents: this.busyAgentsInRoom(roomId),
+      ...(inlineYoloProfile ? { inlineYoloProfile } : {}),
+    });
+    this.logHumanRoutingDecision(roomId, authorId, decision);
+
+    switch (decision.action) {
+      case 'direct-agent-turn':
+        return this.append(roomId, authorId, 'human', text, {
+          responders: decision.responders,
+          bypassRoomYolo: decision.bypassRoomYolo,
+        });
+      case 'group-discussion':
+        return this.append(roomId, authorId, 'human', text, {
+          responders: decision.responders,
+        });
+      case 'start-yolo':
+        return this.startYoloDiscussion(
+          roomId,
+          authorId,
+          inlineYoloProfile ?? {
+            mode: 'full-auto',
+            filesystemScope: 'unrestricted',
+            web: true,
+          },
+          text,
+          inlineYoloProfile ? undefined : decision.yoloResponders,
+        );
+      case 'queue-human-message':
+        return this.appendQueuedHumanMessage(roomId, authorId, text);
+      case 'append-only':
+        return this.append(roomId, authorId, 'human', text, {
+          responders: [],
+          bypassRoomYolo: true,
+        });
     }
-    const responders = this.pickResponders(room, text, authorId);
-    const yoloResponders = room.yoloAgents.filter((agent) => responders.includes(agent));
-    if (yoloResponders.length > 0) {
-      return this.startYoloDiscussion(
+  }
+
+  private logHumanRoutingDecision(
+    roomId: string,
+    authorId: string,
+    decision: HumanRoutingDecision,
+  ): void {
+    logger.info(
+      {
         roomId,
-        authorId,
-        {
-          mode: 'full-auto',
-          filesystemScope: 'unrestricted',
-          web: true,
+        action: decision.action,
+        reason: decision.reason,
+        responders: decision.responders,
+        yoloResponders: decision.yoloResponders,
+        bypassRoomYolo: decision.bypassRoomYolo,
+        references: {
+          agentIds: decision.references.agentIds,
+          ambiguousAliases: decision.references.ambiguousAliases,
+          explicitTokens: decision.references.explicitTokens,
         },
-        text,
-        yoloResponders,
-      );
-    }
-    return this.append(roomId, authorId, 'human', text);
+        trace: decision.trace,
+      },
+      'human message routing decision',
+    );
+    createRoutingDecision(this.deps.db, {
+      roomId,
+      authorId,
+      kind: 'human-message',
+      action: decision.action,
+      reason: decision.reason,
+      responders: decision.responders,
+      trace: decision.trace,
+    });
   }
 
   editQueuedHumanMessage(
@@ -657,6 +689,10 @@ export class Broker extends EventEmitter {
   ): Promise<Message> {
     const room = getRoom(this.deps.db, roomId);
     if (!room) throw new Error(`unknown room: ${roomId}`);
+    const launchBlocker = await this.blockYoloLaunchIfInvalid(roomId);
+    if (launchBlocker) {
+      return launchBlocker;
+    }
     const existing = this.activeYoloDiscussions.get(roomId);
     if (existing && !existing.cancelled) {
       this.cancelYoloState(existing, authorId, 'replacement');
@@ -666,7 +702,7 @@ export class Broker extends EventEmitter {
     this.emit('yoloStatusUpdated', this.yoloStatus(yoloState, true));
     const activeTask = getActiveTask(this.deps.db, roomId);
     const profile = normalizeYoloPermissionProfile(profileInput);
-    const permission = this.buildYoloPermissionGrant(profile, activeTask);
+    const permission = buildYoloPermissionGrant({ profile, activeTask });
     const yoloPool =
       room.yoloAgents.length > 0
         ? room.yoloAgents.filter((agent) => room.agents.includes(agent))
@@ -702,7 +738,7 @@ export class Broker extends EventEmitter {
       if (this.activeYoloDiscussions.get(roomId)?.id === yoloState.id) {
         this.activeYoloDiscussions.delete(roomId);
       }
-      if (!yoloState.cancelled) {
+      if (!yoloState.cancelled && !yoloState.stoppedReason) {
         this.emit('yoloStatusUpdated', this.yoloStatus(yoloState, false, 'completed'));
       }
     }
@@ -752,18 +788,46 @@ export class Broker extends EventEmitter {
     return ok;
   }
 
+  setProjectArchived(projectId: string, archivedAt: number | null): Project | null {
+    const updated = setProjectArchivedAt(this.deps.db, projectId, archivedAt);
+    if (updated) this.emit('projectUpdated', updated);
+    return updated;
+  }
+
+  deleteProject(projectId: string): boolean {
+    if (!getProject(this.deps.db, projectId)) return false;
+    // Cascade: delete each room (their downstream tables CASCADE off rooms.id),
+    // emit roomDeleted per room so attached clients drop them, then delete the
+    // project row and emit projectDeleted.
+    const roomIds = listRoomIdsByProject(this.deps.db, projectId);
+    for (const roomId of roomIds) {
+      const removed = deleteRoomRepo(this.deps.db, roomId);
+      if (removed) this.emit('roomDeleted', { roomId });
+    }
+    const ok = deleteProjectRow(this.deps.db, projectId);
+    if (ok) this.emit('projectDeleted', { projectId });
+    return ok;
+  }
+
   setAgents(
     roomId: string,
     agents: AgentId[],
     yoloAgents?: AgentId[],
     agentProfiles?: RoomAgentProfile[],
+    leadAgentId?: AgentId | null,
   ): Room | null {
-    setRoomAgentsRepo(this.deps.db, roomId, agents, yoloAgents, agentProfiles);
+    setRoomAgentsRepo(this.deps.db, roomId, agents, yoloAgents, agentProfiles, leadAgentId);
     const updated = getRoom(this.deps.db, roomId);
     if (updated) {
       this.reconcileActiveTaskAgents(roomId, updated.agents);
       this.emit('roomUpdated', updated);
     }
+    return updated;
+  }
+
+  setRoomLeadAgent(roomId: string, leadAgentId: AgentId | null): Room | null {
+    const updated = setRoomLeadAgentRepo(this.deps.db, roomId, leadAgentId);
+    if (updated) this.emit('roomUpdated', updated);
     return updated;
   }
 
@@ -980,10 +1044,13 @@ export class Broker extends EventEmitter {
   getAgentRunDetail(roomId: string, runId: string): AgentRunDetail | null {
     const run = getAgentRun(this.deps.db, runId);
     if (!run || run.roomId !== roomId) return null;
+    const job = getAgentJobByRunId(this.deps.db, run.id);
     const triggerMessage = getMessage(this.deps.db, run.triggerMessageId);
     const replyMessage = run.replyMessageId ? getMessage(this.deps.db, run.replyMessageId) : null;
     return {
       run,
+      execution: inferRunExecutionSnapshot({ job, run }),
+      outcome: getAgentTurnOutcome(this.deps.db, run.id),
       triggerMessage,
       replyMessage,
       diagnostics: buildRunDiagnostics(run.agentId, run.stdout, run.stderr),
@@ -1151,6 +1218,18 @@ export class Broker extends EventEmitter {
     );
   }
 
+  listRoutingDecisions(roomId: string, limit = 100): RoutingDecisionRecord[] {
+    return listRoutingDecisionsForRoom(this.deps.db, roomId, limit);
+  }
+
+  listMissionCommandEvents(roomId: string, limit = 100): MissionCommandEvent[] {
+    return listMissionCommandEventsForRoom(this.deps.db, roomId, limit);
+  }
+
+  listTurnOutcomes(roomId: string, limit = 100): AgentTurnOutcome[] {
+    return listAgentTurnOutcomesForRoom(this.deps.db, roomId, limit);
+  }
+
   private normalizeActionContextUsage(action: AgentRunAction): AgentRunAction {
     const usage = action.contextUsage;
     if (!usage || usage.provider !== 'codex') return action;
@@ -1308,81 +1387,6 @@ export class Broker extends EventEmitter {
     await this.drainQueuedHumanMessages(request.roomId);
   }
 
-  private buildYoloPermissionGrant(
-    profile: NormalizedYoloPermissionProfile,
-    activeTask: Task | null,
-    agentId: AgentId = 'echo',
-  ): PermissionGrant {
-    const target = (() => {
-      switch (profile.filesystemScope) {
-        case 'task':
-          return activeTask?.repoPath || process.cwd();
-        case 'cwd':
-          return process.cwd();
-        case 'custom':
-          return profile.target || activeTask?.repoPath || process.cwd();
-        case 'unrestricted':
-          return 'unrestricted filesystem';
-      }
-    })();
-    const reason = [
-      `YOLO collaboration permission profile (${profile.mode}, ${yoloScopeLabel(profile.filesystemScope)}).`,
-      profile.web
-        ? 'The human requested web lookup/fetch access for this YOLO run where supported.'
-        : '',
-    ]
-      .filter(Boolean)
-      .join(' ');
-    return {
-      ...buildPermissionGrant({
-        agentId,
-        source: 'yolo',
-        mode: profile.mode,
-        target,
-        reason,
-        filesystemScope: profile.filesystemScope,
-        ...(profile.web ? { web: true } : {}),
-      }),
-      source: 'yolo',
-      mode: profile.mode,
-      target,
-      reason,
-      filesystemScope: profile.filesystemScope,
-      ...(profile.web ? { web: true } : {}),
-    };
-  }
-
-  private buildYoloAutoApprovedPermissionGrant(
-    agentId: AgentId,
-    request: PermissionRequest | PermissionGrant,
-    currentPermission: PermissionGrant,
-  ): PermissionGrant {
-    return buildPermissionGrant({
-      agentId,
-      source: 'yolo',
-      mode: request.mode,
-      ...(request.requestedMode ? { requestedMode: request.requestedMode } : {}),
-      target: request.target,
-      reason: request.reason,
-      ...(currentPermission.filesystemScope
-        ? { filesystemScope: currentPermission.filesystemScope }
-        : {}),
-      ...(currentPermission.web ? { web: true } : {}),
-    });
-  }
-
-  private buildRoomYoloPermissionGrant(agentId: AgentId, activeTask: Task | null): PermissionGrant {
-    return this.buildYoloPermissionGrant(
-      {
-        mode: 'full-auto',
-        filesystemScope: 'unrestricted',
-        web: true,
-      },
-      activeTask,
-      agentId,
-    );
-  }
-
   private createYoloState(roomId: string, startedBy: string): YoloDiscussionState {
     return {
       id: `${Date.now()}-${++this.yoloSequence}`,
@@ -1396,6 +1400,105 @@ export class Broker extends EventEmitter {
     };
   }
 
+  currentYoloStatus(roomId: string): YoloStatus | null {
+    const activeYolo = this.activeYoloDiscussions.get(roomId);
+    if (!activeYolo) return null;
+    return this.yoloStatus(activeYolo, !activeYolo.cancelled && !activeYolo.stoppedReason);
+  }
+
+  private emptyOpenMissionPhases(task: Task): TaskPhase[] {
+    const phases = listTaskPhases(this.deps.db, task.id);
+    if (phases.length === 0) return [];
+    const checklistItems = listTaskChecklistItems(this.deps.db, task.id);
+    const itemCountsByPhase = new Map<string, number>();
+    for (const item of checklistItems) {
+      if (!item.phaseId) continue;
+      itemCountsByPhase.set(item.phaseId, (itemCountsByPhase.get(item.phaseId) ?? 0) + 1);
+    }
+    return phases.filter(
+      (phase) => phase.status !== 'done' && (itemCountsByPhase.get(phase.id) ?? 0) === 0,
+    );
+  }
+
+  private yoloLaunchBlocker(roomId: string): string {
+    const task = getActiveTask(this.deps.db, roomId);
+    if (!task) return '';
+    const emptyPhases = this.emptyOpenMissionPhases(task);
+    if (emptyPhases.length === 0) return '';
+    const phaseList = emptyPhases
+      .map((phase) => `${phase.title || phase.id} [${phase.status}, id=${phase.id}]`)
+      .join('; ');
+    return `YOLO did not start because the active mission has empty open phase(s). Add checklist items to these phases or mark them done with evidence: ${phaseList}. Lead agent action: repair Mission Control now by adding concrete checklist items to each empty phase or closing genuinely complete phases with evidence, then report what changed.`;
+  }
+
+  private async blockYoloLaunchIfInvalid(roomId: string): Promise<Message | null> {
+    const blocker = this.yoloLaunchBlocker(roomId);
+    if (!blocker) return null;
+    const message = this.appendDirect(roomId, 'system', 'system', blocker);
+    this.emit('yoloStatusUpdated', {
+      roomId,
+      active: false,
+      cancelled: false,
+      stoppedAt: Date.now(),
+      reason: 'blocked-empty-phases',
+    } satisfies YoloStatus);
+    await this.dispatchYoloLaunchRepair(roomId, message);
+    return message;
+  }
+
+  private yoloLaunchRepairLead(room: Room): AgentId | null {
+    const busy = this.busyAgentsInRoom(room.id);
+    if (room.leadAgentId && room.agents.includes(room.leadAgentId) && !busy.has(room.leadAgentId)) {
+      return room.leadAgentId;
+    }
+    const priority = new Map<string, number>([
+      ['project-manager', 0],
+      ['engineering-manager', 1],
+      ['qa-lead', 2],
+      ['technical-lead', 3],
+      ['product-manager', 4],
+      ['principal-software-engineer', 5],
+    ]);
+    const yoloSet = new Set(room.yoloAgents);
+    const candidateIds = [
+      ...room.yoloAgents.filter((agentId) => room.agents.includes(agentId)),
+      ...room.agents,
+    ];
+    const candidates = candidateIds
+      .filter((agentId, index) => candidateIds.indexOf(agentId) === index)
+      .filter((agentId) => !busy.has(agentId))
+      .map((agentId) => {
+        const profile = room.agentProfiles.find((item) => item.id === agentId);
+        const personaPriority = priority.get(profile?.personaId ?? '') ?? 50;
+        return {
+          agentId,
+          priority: personaPriority + (yoloSet.has(agentId) ? 0 : 0.5),
+        };
+      })
+      .sort((a, b) => a.priority - b.priority);
+    return candidates[0]?.agentId ?? null;
+  }
+
+  private async dispatchYoloLaunchRepair(roomId: string, trigger: Message): Promise<void> {
+    const room = getRoom(this.deps.db, roomId);
+    const task = getActiveTask(this.deps.db, roomId);
+    if (!room || !task) return;
+    const key = `${roomId}:${task.id}:blocked-empty-phases`;
+    if (this.yoloLaunchRepairInFlight.has(key)) return;
+    const leadAgentId = this.yoloLaunchRepairLead(room);
+    if (!leadAgentId) return;
+    this.yoloLaunchRepairInFlight.add(key);
+    try {
+      const result = await this.runAgentReply(roomId, leadAgentId, trigger);
+      if (result.message) {
+        await this.runAgentHandoffs(roomId, leadAgentId, result.message);
+      }
+      await this.drainQueuedHumanMessages(roomId);
+    } finally {
+      this.yoloLaunchRepairInFlight.delete(key);
+    }
+  }
+
   private async runRoomAwareDiscussionThread(
     roomId: string,
     room: Room,
@@ -1407,7 +1510,7 @@ export class Broker extends EventEmitter {
       (agentId, index) => responders.indexOf(agentId) === index,
     );
     if (uniqueResponders.length === 0) return;
-    if (options.mode === 'yolo') {
+    if (options.mode === 'yolo' || options.bypassRoomYolo) {
       await this.runDiscussionThread(roomId, uniqueResponders, message, options);
       return;
     }
@@ -1429,6 +1532,7 @@ export class Broker extends EventEmitter {
     responders: AgentId[],
     message: Message,
   ): Promise<void> {
+    if (await this.blockYoloLaunchIfInvalid(roomId)) return;
     const room = getRoom(this.deps.db, roomId);
     const yoloPool =
       room && room.yoloAgents.length > 0
@@ -1456,7 +1560,7 @@ export class Broker extends EventEmitter {
       if (createdState && this.activeYoloDiscussions.get(roomId)?.id === yoloState.id) {
         this.activeYoloDiscussions.delete(roomId);
       }
-      if (createdState && !yoloState.cancelled) {
+      if (createdState && !yoloState.cancelled && !yoloState.stoppedReason) {
         this.emit('yoloStatusUpdated', this.yoloStatus(yoloState, false, 'completed'));
       }
     }
@@ -1483,6 +1587,12 @@ export class Broker extends EventEmitter {
         .filter((item) => item.status === 'blocked')
         .slice(0, 12),
       activePlan: plans.find((plan) => plan.status === 'active') ?? null,
+      parallelism: buildTaskParallelismSummary({
+        phaseId: currentPhase?.id ?? null,
+        phaseTitle: currentPhase?.title ?? 'All open work',
+        agentCount: task.agents.length,
+        checklistItems,
+      }),
     };
   }
 
@@ -1588,38 +1698,11 @@ export class Broker extends EventEmitter {
     };
   }
 
-  private checklistDependenciesSatisfied(
-    item: TaskChecklistItem,
-    byId: Map<string, TaskChecklistItem>,
-  ): boolean {
-    return item.dependencyIds.every((dependencyId) => {
-      const dependency = byId.get(dependencyId);
-      return dependency?.status === 'done' || dependency?.status === 'skipped';
-    });
-  }
-
-  private workLaneScopeContract(
-    item: TaskChecklistItem,
-    agentId: AgentId | '' = '',
-    source: WorkLaneScopeContract['source'] = 'checklist',
-  ): WorkLaneScopeContract {
-    return {
-      itemId: item.id,
-      title: item.title,
-      agentId,
-      expectedTouches: item.expectedTouches,
-      parallelism: item.parallelism,
-      conflictGroup: item.conflictGroup.trim().toLowerCase(),
-      workRole: item.workRole,
-      source,
-    };
-  }
-
   private workLaneScopeContractFromJob(job: AgentJob): WorkLaneScopeContract | null {
     const item = job.checklistItemId
       ? getTaskChecklistItem(this.deps.db, job.checklistItemId)
       : null;
-    if (item) return this.workLaneScopeContract(item, job.agentId, 'active-job');
+    if (item) return workLaneScopeContract(item, job.agentId, 'active-job');
     try {
       const parsed = JSON.parse(job.workPacketJson) as {
         assignedItem?: {
@@ -1664,82 +1747,6 @@ export class Broker extends EventEmitter {
       .filter((contract): contract is WorkLaneScopeContract => Boolean(contract));
   }
 
-  private normalizeTouchScope(value: string): string {
-    return value
-      .trim()
-      .replace(/\\/g, '/')
-      .replace(/^["']|["']$/g, '')
-      .replace(/\/+/g, '/')
-      .replace(/\/$/, '')
-      .toLowerCase();
-  }
-
-  private touchScopeRoot(value: string): string {
-    const normalized = this.normalizeTouchScope(value);
-    const globIndex = normalized.search(/[*{[]/);
-    const base = globIndex >= 0 ? normalized.slice(0, globIndex) : normalized;
-    return base.replace(/\/[^/]*$/, '').replace(/\/$/, '') || normalized;
-  }
-
-  private touchScopeHasGlob(value: string): boolean {
-    return /[*{[]/.test(value);
-  }
-
-  private touchScopesOverlap(a: string, b: string): boolean {
-    const left = this.normalizeTouchScope(a);
-    const right = this.normalizeTouchScope(b);
-    if (!left || !right) return false;
-    if (left === right) return true;
-    if (!this.touchScopeHasGlob(left) && !this.touchScopeHasGlob(right)) {
-      return left.startsWith(`${right}/`) || right.startsWith(`${left}/`);
-    }
-    const leftRoot = this.touchScopeRoot(left);
-    const rightRoot = this.touchScopeRoot(right);
-    if (!leftRoot || !rightRoot) return false;
-    return (
-      leftRoot === rightRoot ||
-      leftRoot.startsWith(`${rightRoot}/`) ||
-      rightRoot.startsWith(`${leftRoot}/`)
-    );
-  }
-
-  private workLaneConflictReason(
-    candidate: TaskChecklistItem,
-    activeContracts: WorkLaneScopeContract[],
-  ): string {
-    const candidateContract = this.workLaneScopeContract(candidate);
-    for (const active of activeContracts) {
-      if (active.itemId === candidate.id) {
-        return `item already assigned to ${active.agentId || 'another active job'}`;
-      }
-      if (
-        candidateContract.conflictGroup &&
-        active.conflictGroup &&
-        candidateContract.conflictGroup === active.conflictGroup
-      ) {
-        return `conflict group ${candidateContract.conflictGroup} is active`;
-      }
-      const touchesOverlap = candidateContract.expectedTouches.some((left) =>
-        active.expectedTouches.some((right) => this.touchScopesOverlap(left, right)),
-      );
-      if (touchesOverlap) {
-        return `expected touch scope overlaps with ${active.title}`;
-      }
-      const exclusiveWithoutScope =
-        candidateContract.parallelism === 'exclusive' &&
-        candidateContract.expectedTouches.length === 0 &&
-        !candidateContract.conflictGroup;
-      const activeExclusiveWithoutScope =
-        active.parallelism === 'exclusive' &&
-        active.expectedTouches.length === 0 &&
-        !active.conflictGroup;
-      if (exclusiveWithoutScope || activeExclusiveWithoutScope) {
-        return `exclusive work is active`;
-      }
-    }
-    return '';
-  }
-
   private assignYoloWorkLanes(roomId: string, agents: AgentId[]): Map<AgentId, WorkLaneAssignment> {
     const uniqueAgents = agents.filter((agent, index) => agents.indexOf(agent) === index);
     if (uniqueAgents.length === 0) return new Map();
@@ -1754,55 +1761,22 @@ export class Broker extends EventEmitter {
       activeJobs.map((job) => job.checklistItemId).filter((id): id is string => Boolean(id)),
     );
     const activeContracts = this.activeWorkLaneContracts(roomId, task.id);
-    const reservedContracts = [...activeContracts];
-    const assignableAgents = uniqueAgents.filter((agentId) => !busyAgents.has(agentId));
-    const agentSet = new Set<AgentId>(assignableAgents);
     const items = listTaskChecklistItems(this.deps.db, task.id);
-    const byId = new Map(items.map((item) => [item.id, item]));
-    const eligibleItems = items.filter(
-      (item) =>
-        item.status === 'open' &&
-        !activeItemIds.has(item.id) &&
-        this.checklistDependenciesSatisfied(item, byId) &&
-        (!item.ownerAgentId || agentSet.has(item.ownerAgentId as AgentId)),
-    );
-    const assignments = new Map<AgentId, WorkLaneAssignment>();
-    const assignedItemIds = new Set<string>();
-
-    for (const agentId of assignableAgents) {
-      const owned = eligibleItems.find(
-        (item) =>
-          item.ownerAgentId === agentId &&
-          !assignedItemIds.has(item.id) &&
-          !this.workLaneConflictReason(item, reservedContracts),
-      );
-      if (owned) {
-        assignments.set(agentId, { item: owned });
-        assignedItemIds.add(owned.id);
-        reservedContracts.push(this.workLaneScopeContract(owned, agentId));
-      }
-    }
-
-    const unownedItems = eligibleItems.filter((item) => !item.ownerAgentId);
-    const availableAgents = assignableAgents.filter((agentId) => !assignments.has(agentId));
+    const plan = planWorkLanes({
+      agents: uniqueAgents,
+      items,
+      activeItemIds,
+      activeContracts,
+      busyAgents,
+    });
     let changedOwner = false;
-    for (const agentId of availableAgents) {
-      const itemIndex = unownedItems.findIndex(
-        (candidate) =>
-          !assignedItemIds.has(candidate.id) &&
-          !this.workLaneConflictReason(candidate, reservedContracts),
-      );
-      const item = itemIndex >= 0 ? unownedItems.splice(itemIndex, 1)[0] : undefined;
-      if (!item) break;
+    for (const ownerUpdate of plan.ownerUpdates) {
       const updated =
-        updateTaskChecklistItem(this.deps.db, item.id, {
-          ownerAgentId: agentId,
+        updateTaskChecklistItem(this.deps.db, ownerUpdate.item.id, {
+          ownerAgentId: ownerUpdate.agentId,
           updatedBy: 'fireside',
-        }) ?? item;
-      assignments.set(agentId, { item: updated });
-      byId.set(updated.id, updated);
-      assignedItemIds.add(updated.id);
-      reservedContracts.push(this.workLaneScopeContract(updated, agentId));
+        }) ?? ownerUpdate.item;
+      plan.assignments.set(ownerUpdate.agentId, { item: updated });
       changedOwner = true;
     }
 
@@ -1811,7 +1785,7 @@ export class Broker extends EventEmitter {
       if (updatedTask) this.emit('taskUpdated', updatedTask);
     }
 
-    return assignments;
+    return plan.assignments;
   }
 
   private async runAgentReply(
@@ -1840,157 +1814,52 @@ export class Broker extends EventEmitter {
       this.appendDirect(roomId, 'system', 'system', `(no adapter for agent "${agentId}")`);
       return { message: null, progressed: false };
     }
-    const allMessages = listMessages(this.deps.db, roomId);
-    const triggerIndex = allMessages.findIndex((m) => m.id === trigger.id);
-    const history =
-      triggerIndex >= 0 ? allMessages.slice(0, triggerIndex) : allMessages.slice(0, -1);
     const maxHistory = this.deps.maxHistory ?? DEFAULT_PROMPT_HISTORY;
-    const promptHistory = history.slice(-maxHistory);
-    this.markQueuedMessagesDelivered(roomId, [...promptHistory, trigger]);
-    const contextFiles = this.deps.contextDir
-      ? writeConversationContextFiles({
-          contextDir: this.deps.contextDir,
-          roomId,
-          roomName: room.name,
-          messages: allMessages,
-          recentMessages: promptHistory.length + 1,
-          ...(this.deps.largeMessageThresholdChars !== undefined
-            ? { largeMessageThresholdChars: this.deps.largeMessageThresholdChars }
-            : {}),
-          ...(this.deps.artifactExcerptChars !== undefined
-            ? { artifactExcerptChars: this.deps.artifactExcerptChars }
-            : {}),
-          ...(this.deps.maxRecapChars !== undefined
-            ? { maxRecapChars: this.deps.maxRecapChars }
-            : {}),
-          ...(this.deps.maxTranscriptChars !== undefined
-            ? { maxTranscriptChars: this.deps.maxTranscriptChars }
-            : {}),
-        })
-      : undefined;
-    const promptContextFiles = contextFiles
-      ? {
-          ...contextFiles,
-          artifactCount: Object.keys(contextFiles.messageArtifacts).length,
-          fixtureCount: contextFiles.fixtureCount,
-          fixtureManifestPath: contextFiles.fixtureManifestPath,
-          fixtureSummary: contextFiles.fixtureSummary,
-        }
-      : undefined;
-    const activeTask = getActiveTask(this.deps.db, roomId);
-    const workflowProfile = this.loadWorkflowProfileForTask(activeTask ?? null);
-    const collaborationItems = listCollaborationItemsRepo(this.deps.db, roomId, {
-      limit: 10,
-      ...(activeTask ? { taskId: activeTask.id } : {}),
-    });
-    const taskContext = activeTask
-      ? buildTaskPromptContext({
-          task: activeTask,
-          recentMessages: allMessages.slice(-8),
-          recentRuns: listRecentAgentRunsForTask(this.deps.db, roomId, activeTask.id, 6),
-          missionControl: this.buildTaskControl(activeTask),
-        })
-      : undefined;
-    const explicitPermission: PermissionGrant | undefined = permission
-      ? buildPermissionGrant({
-          agentId,
-          mode: permission.mode,
-          target: permission.target,
-          reason: permission.reason,
-          ...(permission.requestedMode ? { requestedMode: permission.requestedMode } : {}),
-          ...(permission.source ? { source: permission.source } : {}),
-          ...(permission.requestId ? { requestId: permission.requestId } : {}),
-          ...(permission.filesystemScope ? { filesystemScope: permission.filesystemScope } : {}),
-          ...(permission.web ? { web: true } : {}),
-        })
-      : undefined;
-    const roomYoloPermission: PermissionGrant | undefined =
-      !explicitPermission && room.yoloAgents.includes(agentId)
-        ? this.buildRoomYoloPermissionGrant(agentId, activeTask)
-        : undefined;
-    const taskPermission: PermissionGrant | undefined =
-      !explicitPermission &&
-      !roomYoloPermission &&
-      activeTask &&
-      activeTask.capabilityProfile !== 'plan'
-        ? buildPermissionGrant({
-            agentId,
-            source: 'task',
-            mode: activeTask.capabilityProfile,
-            target: activeTask.repoPath || process.cwd(),
-            reason: `Task capability profile "${activeTask.capabilityProfile}" for mission "${activeTask.title}".`,
-          })
-        : undefined;
-    const workflowPermission: PermissionGrant | undefined =
-      !explicitPermission &&
-      !roomYoloPermission &&
-      !taskPermission &&
-      workflowProfile &&
-      workflowProfile.permissions.mode !== 'plan'
-        ? buildPermissionGrant({
-            agentId,
-            source: 'task',
-            mode: workflowProfile.permissions.mode,
-            target:
-              workflowProfile.permissions.target ||
-              this.workflowWorkspacePath(workflowProfile, activeTask ?? null, workLane) ||
-              activeTask?.repoPath ||
-              process.cwd(),
-            reason: `Workflow profile permission default${workflowProfile.sourcePath ? ` from ${workflowProfile.sourcePath}` : ''}.`,
-            ...(workflowProfile.permissions.filesystemScope
-              ? { filesystemScope: workflowProfile.permissions.filesystemScope }
-              : {}),
-            ...(workflowProfile.permissions.web ? { web: true } : {}),
-          })
-        : undefined;
-    const effectivePermission =
-      explicitPermission ?? roomYoloPermission ?? taskPermission ?? workflowPermission;
-    const workflowWorkspacePath = this.workflowWorkspacePath(
-      workflowProfile,
-      activeTask ?? null,
-      workLane,
-    );
-    const workflowProfilePromptItem = this.workflowProfilePromptItem(workflowProfile);
-    const promptResult = buildTurnPromptResult({
+    const preparedContext = prepareAgentTurnContext({
+      db: this.deps.db,
+      room,
       agentId,
-      agentProfile,
-      roomName: room.name,
-      roomAgents: room.agents,
-      roomAgentProfiles: room.agentProfiles,
-      history: promptHistory.map((m) => ({
-        authorId: m.authorId,
-        authorKind: m.authorKind,
-        text: messageTextForPrompt(m, contextFiles),
-      })),
-      newMessage: {
-        authorId: trigger.authorId,
-        authorKind: trigger.authorKind,
-        text: messageTextForPrompt(trigger, contextFiles),
-      },
+      trigger,
+      ...(discussion ? { discussion } : {}),
+      ...(permission ? { permission } : {}),
+      ...(workLane ? { workLane } : {}),
       maxHistory,
-      maxPromptChars:
-        workflowProfile?.promptBudgetChars ?? this.deps.maxPromptChars ?? DEFAULT_MAX_PROMPT_CHARS,
-      ...(promptContextFiles !== undefined ? { contextFiles: promptContextFiles } : {}),
-      ...(discussion !== undefined ? { discussion } : {}),
-      ...(effectivePermission !== undefined ? { permission: effectivePermission } : {}),
-      ...(taskContext !== undefined ? { task: taskContext } : {}),
-      ...(workLane !== undefined ? { workLane: this.workLanePromptItem(workLane.item) } : {}),
-      ...(workflowProfilePromptItem !== undefined
-        ? { workflowProfile: workflowProfilePromptItem }
+      maxPromptChars: this.deps.maxPromptChars ?? DEFAULT_MAX_PROMPT_CHARS,
+      ...(this.deps.contextDir ? { contextDir: this.deps.contextDir } : {}),
+      ...(this.deps.largeMessageThresholdChars !== undefined
+        ? { largeMessageThresholdChars: this.deps.largeMessageThresholdChars }
         : {}),
-      collaboration: collaborationItems,
+      ...(this.deps.artifactExcerptChars !== undefined
+        ? { artifactExcerptChars: this.deps.artifactExcerptChars }
+        : {}),
+      ...(this.deps.maxRecapChars !== undefined ? { maxRecapChars: this.deps.maxRecapChars } : {}),
+      ...(this.deps.maxTranscriptChars !== undefined
+        ? { maxTranscriptChars: this.deps.maxTranscriptChars }
+        : {}),
+      resumeCliSessions: this.deps.resumeCliSessions === true,
+      getResumableCliSessionId: (targetRoomId, targetAgentId) =>
+        this.getResumableCliSessionId(targetRoomId, targetAgentId),
+      loadWorkflowProfileForTask: (task) => this.loadWorkflowProfileForTask(task),
+      buildTaskControl: (task) => this.buildTaskControl(task),
+      workflowWorkspacePath: (profile, task, lane) =>
+        this.workflowWorkspacePath(profile, task, lane),
+      workflowProfilePromptItem: (profile) => this.workflowProfilePromptItem(profile),
+      workLanePromptItem: (item) => this.workLanePromptItem(item),
     });
-    const prompt = promptResult.prompt;
-    const sessionId = this.deps.resumeCliSessions
-      ? this.getResumableCliSessionId(roomId, agentId)
-      : null;
-    const liveMessageChars = [
-      ...promptHistory.map((m) => messageTextForPrompt(m, contextFiles).length),
-      messageTextForPrompt(trigger, contextFiles).length,
-    ];
-    const contextArtifactCount = contextFiles
-      ? Object.keys(contextFiles.messageArtifacts).length + contextFiles.fixtureCount
-      : 0;
+    const {
+      allMessages,
+      promptHistory,
+      activeTask,
+      taskContext,
+      effectivePermission,
+      workflowWorkspacePath,
+      prompt,
+      sessionId,
+      liveMessageChars,
+      contextArtifactCount,
+    } = preparedContext;
+    const promptResult = { prompt, stats: preparedContext.promptStats };
+    this.markQueuedMessagesDelivered(roomId, [...promptHistory, trigger]);
 
     logger.info(
       {
@@ -2005,6 +1874,9 @@ export class Broker extends EventEmitter {
         messagesDroppedByCount: promptResult.stats.historyMessagesDroppedByCount,
         messagesDroppedByBudget: promptResult.stats.historyMessagesDroppedByBudget,
         latestMessageTruncated: promptResult.stats.latestMessageTruncated,
+        promptDetailLevel: promptResult.stats.detailLevel,
+        overBudgetChars: promptResult.stats.overBudgetChars,
+        budgetNotices: promptResult.stats.budgetNotices,
         largestLiveMessageChars: Math.max(0, ...liveMessageChars),
         contextArtifacts: contextArtifactCount,
         resumeCliSession: Boolean(sessionId),
@@ -2096,7 +1968,22 @@ export class Broker extends EventEmitter {
       kind: 'prompt',
       status: 'completed',
       label: 'prompt prepared',
-      detail: `${promptResult.stats.estimatedPromptTokens} estimated tokens, ${promptResult.stats.historyMessagesIncluded + 1} live messages, ${contextArtifactCount} artifacts`,
+      detail: JSON.stringify({
+        estimatedTokens: promptResult.stats.estimatedPromptTokens,
+        promptChars: promptResult.stats.promptChars,
+        maxPromptChars: promptResult.stats.maxPromptChars,
+        overBudgetChars: promptResult.stats.overBudgetChars,
+        detailLevel: promptResult.stats.detailLevel,
+        liveMessages: promptResult.stats.historyMessagesIncluded + 1,
+        historyMessagesAvailable: promptResult.stats.historyMessagesAvailable,
+        historyMessagesDroppedByCount: promptResult.stats.historyMessagesDroppedByCount,
+        historyMessagesDroppedByBudget: promptResult.stats.historyMessagesDroppedByBudget,
+        latestMessageOriginalChars: promptResult.stats.latestMessageOriginalChars,
+        latestMessageChars: promptResult.stats.latestMessageChars,
+        latestMessageTruncated: promptResult.stats.latestMessageTruncated,
+        contextArtifacts: contextArtifactCount,
+        notices: promptResult.stats.budgetNotices,
+      }),
     });
     this.recordRunAction({
       roomId,
@@ -2163,33 +2050,29 @@ export class Broker extends EventEmitter {
       latestProviderSignalAt: () => lastProviderSignalAt,
     });
 
-    let reply: AgentReply;
-    const runAbortController = new AbortController();
-    const relayCancel = (): void => runAbortController.abort();
-    if (cancelSignal?.aborted) {
-      runAbortController.abort();
-    } else {
-      cancelSignal?.addEventListener('abort', relayCancel, { once: true });
-    }
-    this.activeRunAbortControllers.set(run.id, { roomId, controller: runAbortController });
-    try {
-      reply = await this.deps.runAgent(
-        spec,
-        prompt,
-        sessionId,
-        effectivePermission,
-        runAbortController.signal,
-        recordProviderSignal,
-        effectivePermission?.source === 'yolo' ? null : undefined,
-      );
-    } catch (err) {
-      this.activeRunAbortControllers.delete(run.id);
-      cancelSignal?.removeEventListener('abort', relayCancel);
-      stopHeartbeat();
-      const errMsg = err instanceof Error ? err.message : String(err);
-      const raw = rawOutputFromError(err);
-      const canceled =
-        cancelSignal?.aborted || (err instanceof Error && err.name === 'SubprocessCanceledError');
+    const providerTurn = await executeProviderTurn({
+      runAgent: this.deps.runAgent,
+      spec,
+      prompt,
+      sessionId,
+      ...(effectivePermission ? { permission: effectivePermission } : {}),
+      ...(cancelSignal ? { cancelSignal } : {}),
+      onStreamEvent: recordProviderSignal,
+      registerAbortController: (controller) => {
+        this.activeRunAbortControllers.set(run.id, { roomId, controller });
+      },
+      unregisterAbortController: () => {
+        this.activeRunAbortControllers.delete(run.id);
+      },
+      startHeartbeat: () => stopHeartbeat,
+      yoloMode: discussion?.mode === 'yolo',
+      attempt,
+      maxRetryAttempts: 3,
+    });
+    if (!providerTurn.ok) {
+      const errMsg = providerTurn.error;
+      const raw = { stdout: providerTurn.stdout, stderr: providerTurn.stderr };
+      const canceled = providerTurn.canceled;
       const failedRun = updateAgentRun(this.deps.db, run.id, {
         status: 'failed',
         completedAt: Date.now(),
@@ -2223,10 +2106,7 @@ export class Broker extends EventEmitter {
       } else {
         failAgentJob(this.deps.db, agentJob.id, errMsg);
       }
-      const retryDecision =
-        !canceled && discussion?.mode === 'yolo'
-          ? decideRunRetry({ state: 'failed', attempt }, { maxAttempts: 3 })
-          : null;
+      const retryDecision = providerTurn.retryDecision;
       if (retryDecision?.shouldRetry && retryDecision.nextAttempt !== null) {
         const retryAfter = Date.now() + retryDecision.delayMs;
         const retryRun = updateAgentRun(this.deps.db, run.id, {
@@ -2244,6 +2124,17 @@ export class Broker extends EventEmitter {
           status: 'info',
           label: 'retry scheduled',
           detail: `attempt ${retryDecision.nextAttempt} in ${Math.round(retryDecision.delayMs / 1000)}s`,
+        });
+        this.recordTurnOutcome({
+          roomId,
+          taskId: activeTask?.id ?? null,
+          runId: run.id,
+          agentId,
+          status: 'retry-scheduled',
+          failed: true,
+          error: errMsg,
+          summary: `provider turn failed; retrying attempt ${retryDecision.nextAttempt}`,
+          nextAgents: [agentId],
         });
         const shouldContinue = await waitForRetryDelay(retryDecision.delayMs, cancelSignal);
         if (!shouldContinue) return { message: null, progressed: false, runId: run.id };
@@ -2267,11 +2158,19 @@ export class Broker extends EventEmitter {
         'system',
         canceled ? `(${agentId} canceled: run was interrupted.)` : `(${agentId} failed: ${errMsg})`,
       );
-      return { message: null, progressed: false, runId: run.id };
+      this.recordTurnOutcome({
+        roomId,
+        taskId: activeTask?.id ?? null,
+        runId: run.id,
+        agentId,
+        status: canceled ? 'canceled' : 'failed',
+        failed: !canceled,
+        error: errMsg,
+        summary: canceled ? 'provider turn canceled' : 'provider turn failed',
+      });
+      return { message: null, progressed: false, runId: run.id, failed: !canceled, error: errMsg };
     }
-    this.activeRunAbortControllers.delete(run.id);
-    cancelSignal?.removeEventListener('abort', relayCancel);
-    stopHeartbeat();
+    const reply = providerTurn.reply;
     this.updateRunLifecycle({
       runId: run.id,
       state: 'finishing',
@@ -2344,6 +2243,20 @@ export class Broker extends EventEmitter {
       agentId,
       updates: extractedMissionCreates.updates,
     });
+    this.recordMissionCommandEvents({
+      roomId,
+      taskId: createdMission?.id ?? activeTask?.id ?? null,
+      runId: run.id,
+      agentId,
+      commandKind: 'mission-create',
+      updates: extractedMissionCreates.updates,
+      status: createdMission ? 'applied' : 'rejected',
+      summary: createdMission
+        ? `mission created: ${createdMission.title}`
+        : activeTask
+          ? `mission create rejected because active mission exists: ${activeTask.title}`
+          : 'mission create did not produce a mission',
+    });
     const missionTask = createdMission ?? activeTask ?? null;
     const extractedMissionPlans = extractMissionPlanUpdates(extractedMissionCreates.visibleText);
     const sameTurnPlan = this.applyMissionPlanUpdates({
@@ -2352,6 +2265,16 @@ export class Broker extends EventEmitter {
       runId: run.id,
       agentId,
       updates: extractedMissionPlans.updates,
+    });
+    this.recordMissionCommandEvents({
+      roomId,
+      taskId: missionTask?.id ?? null,
+      runId: run.id,
+      agentId,
+      commandKind: 'mission-plan',
+      updates: extractedMissionPlans.updates,
+      status: missionTask ? 'applied' : 'rejected',
+      summary: missionTask ? 'mission plan command processed' : 'mission plan rejected: no mission',
     });
     const defaultPlan =
       sameTurnPlan ??
@@ -2369,8 +2292,18 @@ export class Broker extends EventEmitter {
       defaultPlanId: defaultPlan?.id ?? null,
       forcePlanOnUpdates: sameTurnPlan !== null,
     });
+    this.recordMissionCommandEvents({
+      roomId,
+      taskId: missionTask?.id ?? null,
+      runId: run.id,
+      agentId,
+      commandKind: 'mission-phase',
+      updates: extractedMissionPhases.updates,
+      status: missionTask ? 'applied' : 'rejected',
+      summary: missionTask ? 'mission phase command processed' : 'mission phase rejected: no mission',
+    });
     const extractedMissionTasks = extractMissionTaskUpdates(extractedMissionPhases.visibleText);
-    this.applyMissionTaskUpdates({
+    const missionTaskResult = this.applyMissionTaskUpdates({
       roomId,
       task: missionTask,
       runId: run.id,
@@ -2378,6 +2311,21 @@ export class Broker extends EventEmitter {
       updates: extractedMissionTasks.updates,
       defaultPlanId: defaultPlan?.id ?? null,
       forcePlanOnUpdates: sameTurnPlan !== null,
+    });
+    this.recordMissionCommandEvents({
+      roomId,
+      taskId: missionTask?.id ?? null,
+      runId: run.id,
+      agentId,
+      commandKind: 'mission-task',
+      updates: extractedMissionTasks.updates,
+      status: missionTaskResult.applied > 0 ? 'applied' : 'rejected',
+      summary:
+        missionTaskResult.applied > 0
+          ? `${missionTaskResult.applied} checklist command(s) applied`
+          : missionTask
+            ? 'checklist command did not apply'
+            : 'checklist command rejected: no mission',
     });
     const extractedAgentRoster = extractAgentRosterUpdates(extractedMissionTasks.visibleText);
     const rosterResult = this.applyAgentRosterUpdates({
@@ -2387,6 +2335,26 @@ export class Broker extends EventEmitter {
       agentId,
       updates: extractedAgentRoster.updates,
     });
+    this.recordMissionCommandEvents({
+      roomId,
+      taskId: missionTask?.id ?? null,
+      runId: run.id,
+      agentId,
+      commandKind: 'agent-roster',
+      updates: extractedAgentRoster.updates,
+      status: rosterResult.applied > 0 ? 'applied' : 'rejected',
+      summary:
+        rosterResult.applied > 0
+          ? `${rosterResult.applied} roster command(s) applied`
+          : 'roster command did not apply',
+    });
+    const missionWorkDispatches = this.routeMissionWorkDispatches({
+      roomId,
+      task: missionTask,
+      runId: run.id,
+      agentId,
+      changedItems: missionTaskResult.dispatchCandidates,
+    });
     const extractedMissionReceipts = extractMissionReceipts(extractedAgentRoster.visibleText);
     this.recordMissionReceipts({
       roomId,
@@ -2395,6 +2363,16 @@ export class Broker extends EventEmitter {
       agentId,
       receipts: extractedMissionReceipts.receipts,
     });
+    this.recordMissionCommandEvents({
+      roomId,
+      taskId: missionTask?.id ?? null,
+      runId: run.id,
+      agentId,
+      commandKind: 'mission-receipt',
+      updates: extractedMissionReceipts.receipts,
+      status: missionTask ? 'reconciled' : 'rejected',
+      summary: missionTask ? 'mission receipt recorded' : 'mission receipt rejected: no mission',
+    });
     const missionStateUpdateCount =
       extractedMissionCreates.updates.length +
       extractedMissionPlans.updates.length +
@@ -2402,6 +2380,9 @@ export class Broker extends EventEmitter {
       extractedMissionTasks.updates.length +
       rosterResult.applied;
     const missionReceiptCount = extractedMissionReceipts.receipts.length;
+    const productiveMissionReceiptCount = this.productiveMissionReceiptCount(
+      extractedMissionReceipts.receipts,
+    );
     const textAfterMissionReceipts = extractedMissionReceipts.visibleText;
     const reconciliation = this.reconcileMissionState({
       roomId,
@@ -2414,9 +2395,11 @@ export class Broker extends EventEmitter {
       explicitMissionUpdates: missionStateUpdateCount,
     });
     if (textAfterMissionReceipts.length === 0) {
-      const hiddenMissionUpdateCount =
+      const hiddenMissionRecordCount =
         missionStateUpdateCount + missionReceiptCount + reconciliation.applied;
-      const status = hiddenMissionUpdateCount > 0 ? 'completed' : 'empty';
+      const hiddenMissionProgressCount =
+        missionStateUpdateCount + productiveMissionReceiptCount + reconciliation.applied;
+      const status = hiddenMissionRecordCount > 0 ? 'completed' : 'empty';
       const emptyRun = updateAgentRun(this.deps.db, run.id, {
         status,
         completedAt: Date.now(),
@@ -2426,8 +2409,10 @@ export class Broker extends EventEmitter {
         cliSessionId: reply.sessionId,
         lifecycleState: 'succeeded',
         lifecycleReason:
-          hiddenMissionUpdateCount > 0
-            ? 'mission control updates stored without visible chat text'
+          hiddenMissionProgressCount > 0
+            ? 'mission control progress stored without visible chat text'
+            : hiddenMissionRecordCount > 0
+              ? 'mission receipt stored without progress'
             : 'agent declined to add a chat message',
       });
       if (emptyRun) this.emit('agentRunUpdated', emptyRun);
@@ -2436,12 +2421,14 @@ export class Broker extends EventEmitter {
         taskId: missionTask?.id ?? null,
         runId: run.id,
         agentId,
-        kind: hiddenMissionUpdateCount > 0 ? 'ledger' : 'message',
+        kind: hiddenMissionRecordCount > 0 ? 'ledger' : 'message',
         status: 'info',
-        label: hiddenMissionUpdateCount > 0 ? 'mission control update only' : 'empty reply',
+        label: hiddenMissionRecordCount > 0 ? 'mission control update only' : 'empty reply',
         detail:
-          hiddenMissionUpdateCount > 0
-            ? 'mission control updates stored without visible chat text'
+          hiddenMissionProgressCount > 0
+            ? 'mission control progress stored without visible chat text'
+            : hiddenMissionRecordCount > 0
+              ? 'mission receipt stored without progress'
             : 'agent declined to add a chat message',
       });
       completeAgentJob(this.deps.db, agentJob.id);
@@ -2465,13 +2452,43 @@ export class Broker extends EventEmitter {
         visibleText: textAfterMissionReceipts,
       });
       await this.runAgentRosterFollowups(roomId, rosterResult.followups);
+      const finalWorkDispatches = this.evaluateMissionLivenessDispatches({
+        roomId,
+        task: missionTask,
+        runId: run.id,
+        agentId,
+        existingDispatches: missionWorkDispatches,
+        allowLiveness: workLane === undefined,
+      });
+      const progressed =
+        hiddenMissionProgressCount > 0 ||
+        extractedDrafts.drafts.length > 0 ||
+        finalWorkDispatches.length > 0 ||
+        repairResult?.progressed === true;
+      this.recordTurnOutcome({
+        roomId,
+        taskId: missionTask?.id ?? null,
+        runId: run.id,
+        agentId,
+        status: hiddenMissionRecordCount > 0 ? 'completed' : 'empty',
+        progressed,
+        missionUpdates: missionStateUpdateCount,
+        missionReceipts: missionReceiptCount,
+        missionReconciliations: reconciliation.applied,
+        draftArtifacts: extractedDrafts.drafts.length,
+        workDispatches: finalWorkDispatches,
+        summary:
+          hiddenMissionProgressCount > 0
+            ? 'mission control progress stored without visible chat text'
+            : hiddenMissionRecordCount > 0
+              ? 'mission receipt stored without progress'
+              : 'agent declined to add a chat message',
+      });
       return {
         message: null,
-        progressed:
-          hiddenMissionUpdateCount > 0 ||
-          extractedDrafts.drafts.length > 0 ||
-          repairResult?.progressed === true,
+        progressed,
         runId: run.id,
+        workDispatches: finalWorkDispatches,
       };
     }
     const extractedPermission = extractPermissionRequest(textAfterMissionReceipts, agentId);
@@ -2505,7 +2522,13 @@ export class Broker extends EventEmitter {
           detail: message.text,
         });
       }
-      if (effectivePermission?.source === 'yolo') {
+      const permissionContinuation = planPermissionRequestContinuation({
+        agentId,
+        request: permissionRequest,
+        effectivePermission,
+        yoloPermissionAutoApprovals,
+      });
+      if (permissionContinuation.kind !== 'manual-approval') {
         const completedRun = updateAgentRun(this.deps.db, run.id, {
           status: 'completed',
           replyMessageId: message?.id ?? null,
@@ -2529,7 +2552,7 @@ export class Broker extends EventEmitter {
           detail: `${permissionRequest.target}: ${permissionRequest.reason}`,
         });
         completeAgentJob(this.deps.db, agentJob.id);
-        if (yoloPermissionAutoApprovals >= YOLO_PERMISSION_AUTO_APPROVAL_LIMIT) {
+        if (permissionContinuation.kind === 'yolo-auto-approval-limit') {
           this.recordRunAction({
             roomId,
             taskId: missionTask?.id ?? null,
@@ -2538,29 +2561,75 @@ export class Broker extends EventEmitter {
             kind: 'permission',
             status: 'failed',
             label: 'YOLO auto-approval limit reached',
-            detail: `Stopped auto-following permission requests after ${YOLO_PERMISSION_AUTO_APPROVAL_LIMIT} consecutive YOLO approvals for this turn.`,
+            detail: `Stopped auto-following permission requests after ${permissionContinuation.limit} consecutive YOLO approvals for this turn.`,
           });
           await this.runAgentRosterFollowups(roomId, rosterResult.followups);
+          const finalWorkDispatches = this.evaluateMissionLivenessDispatches({
+            roomId,
+            task: missionTask,
+            runId: run.id,
+            agentId,
+            existingDispatches: missionWorkDispatches,
+            allowLiveness: workLane === undefined,
+          });
+          const progressed =
+            Boolean(message) ||
+            reconciliation.applied > 0 ||
+            rosterResult.applied > 0 ||
+            finalWorkDispatches.length > 0;
+          this.recordTurnOutcome({
+            roomId,
+            taskId: missionTask?.id ?? null,
+            runId: run.id,
+            agentId,
+            visibleMessageId: message?.id ?? null,
+            visibleMessageEmitted: Boolean(message),
+            status: 'completed',
+            progressed,
+            missionUpdates: missionStateUpdateCount,
+            missionReceipts: missionReceiptCount,
+            missionReconciliations: reconciliation.applied,
+            collaborationNotes: visiblePermissionText.notes.length,
+            draftArtifacts: extractedDrafts.drafts.length,
+            permissionAutoApproved: true,
+            workDispatches: finalWorkDispatches,
+            summary: 'YOLO permission auto-approval limit reached',
+          });
           return {
             message,
-            progressed: Boolean(message) || reconciliation.applied > 0 || rosterResult.applied > 0,
+            progressed,
             runId: run.id,
+            workDispatches: finalWorkDispatches,
           };
         }
-        const autoPermission = this.buildYoloAutoApprovedPermissionGrant(
-          agentId,
-          permissionRequest,
-          effectivePermission,
-        );
         await this.runAgentRosterFollowups(roomId, rosterResult.followups);
+        this.recordTurnOutcome({
+          roomId,
+          taskId: missionTask?.id ?? null,
+          runId: run.id,
+          agentId,
+          visibleMessageId: message?.id ?? null,
+          visibleMessageEmitted: Boolean(message),
+          status: 'completed',
+          progressed: true,
+          missionUpdates: missionStateUpdateCount,
+          missionReceipts: missionReceiptCount,
+          missionReconciliations: reconciliation.applied,
+          collaborationNotes: visiblePermissionText.notes.length,
+          draftArtifacts: extractedDrafts.drafts.length,
+          permissionAutoApproved: true,
+          workDispatches: missionWorkDispatches,
+          nextAgents: [agentId],
+          summary: 'YOLO permission request auto-approved; launching approved follow-up turn',
+        });
         return this.runAgentReply(
           roomId,
           agentId,
           trigger,
           discussion,
-          autoPermission,
+          permissionContinuation.autoPermission,
           cancelSignal,
-          yoloPermissionAutoApprovals + 1,
+          permissionContinuation.nextAutoApprovalCount,
           workLane,
           attempt,
           retryOfRunId,
@@ -2597,7 +2666,39 @@ export class Broker extends EventEmitter {
       this.emit('permissionRequestCreated', request);
       completeAgentJob(this.deps.db, agentJob.id);
       await this.runAgentRosterFollowups(roomId, rosterResult.followups);
-      return { message: null, progressed: rosterResult.applied > 0, runId: run.id };
+      const finalWorkDispatches = this.evaluateMissionLivenessDispatches({
+        roomId,
+        task: missionTask,
+        runId: run.id,
+        agentId,
+        existingDispatches: missionWorkDispatches,
+        allowLiveness: workLane === undefined,
+      });
+      const progressed = rosterResult.applied > 0 || finalWorkDispatches.length > 0;
+      this.recordTurnOutcome({
+        roomId,
+        taskId: missionTask?.id ?? null,
+        runId: run.id,
+        agentId,
+        visibleMessageId: message?.id ?? null,
+        visibleMessageEmitted: Boolean(message),
+        status: 'permission-requested',
+        progressed,
+        missionUpdates: missionStateUpdateCount,
+        missionReceipts: missionReceiptCount,
+        missionReconciliations: reconciliation.applied,
+        collaborationNotes: visiblePermissionText.notes.length,
+        draftArtifacts: extractedDrafts.drafts.length,
+        permissionRequestId: request.id,
+        workDispatches: finalWorkDispatches,
+        summary: `${permissionRequest.mode} permission requested; waiting on human approval`,
+      });
+      return {
+        message: null,
+        progressed,
+        runId: run.id,
+        workDispatches: finalWorkDispatches,
+      };
     }
     const extracted = extractCollaborationNotes(textAfterMissionReceipts);
     const visibleText = cleanVisibleAgentMessage(agentId, extracted.visibleText);
@@ -2655,15 +2756,47 @@ export class Broker extends EventEmitter {
       visibleText,
     });
     await this.runAgentRosterFollowups(roomId, rosterResult.followups);
+    const finalWorkDispatches = this.evaluateMissionLivenessDispatches({
+      roomId,
+      task: missionTask,
+      runId: run.id,
+      agentId,
+      existingDispatches: missionWorkDispatches,
+      allowLiveness: workLane === undefined,
+    });
+    const progressed =
+      Boolean(message) ||
+      extracted.notes.length > 0 ||
+      reconciliation.applied > 0 ||
+      rosterResult.applied > 0 ||
+      finalWorkDispatches.length > 0 ||
+      repairResult?.progressed === true;
+    this.recordTurnOutcome({
+      roomId,
+      taskId: missionTask?.id ?? null,
+      runId: run.id,
+      agentId,
+      visibleMessageId: message?.id ?? null,
+      visibleMessageEmitted: Boolean(message),
+      status: message || extracted.notes.length > 0 ? 'completed' : 'empty',
+      progressed,
+      missionUpdates: missionStateUpdateCount,
+      missionReceipts: missionReceiptCount,
+      missionReconciliations: reconciliation.applied,
+      collaborationNotes: extracted.notes.length,
+      draftArtifacts: extractedDrafts.drafts.length,
+      workDispatches: finalWorkDispatches,
+      summary: message
+        ? 'visible message emitted'
+        : extracted.notes.length > 0
+          ? 'collaboration note stored without visible chat text'
+          : 'no visible message emitted',
+    });
     return {
       message,
-      progressed:
-        Boolean(message) ||
-        extracted.notes.length > 0 ||
-        reconciliation.applied > 0 ||
-        rosterResult.applied > 0 ||
-        repairResult?.progressed === true,
+      progressed,
       runId: run.id,
+      workDispatches: finalWorkDispatches,
     };
   }
 
@@ -2805,6 +2938,60 @@ export class Broker extends EventEmitter {
     const action = createAgentRunAction(this.deps.db, input);
     this.emit('agentRunActionCreated', action);
     return action;
+  }
+
+  private recordTurnOutcome(input: RecordAgentTurnOutcomeInput): AgentTurnOutcome {
+    const outcome = recordAgentTurnOutcome(this.deps.db, input);
+    this.recordRunAction({
+      roomId: input.roomId,
+      taskId: input.taskId ?? null,
+      runId: input.runId,
+      agentId: input.agentId,
+      kind: 'run',
+      status: input.failed ? 'failed' : 'completed',
+      label: 'turn outcome recorded',
+      detail: JSON.stringify({
+        status: outcome.status,
+        progressed: outcome.progressed,
+        visibleMessageEmitted: outcome.visibleMessageEmitted,
+        missionUpdates: outcome.missionUpdates,
+        missionReceipts: outcome.missionReceipts,
+        missionReconciliations: outcome.missionReconciliations,
+        collaborationNotes: outcome.collaborationNotes,
+        draftArtifacts: outcome.draftArtifacts,
+        permissionRequestId: outcome.permissionRequestId,
+        permissionAutoApproved: outcome.permissionAutoApproved,
+        nextAgents: outcome.nextAgents,
+        summary: outcome.summary,
+      }),
+    });
+    return outcome;
+  }
+
+  private recordMissionCommandEvents(input: {
+    roomId: string;
+    taskId: string | null;
+    runId: string;
+    agentId: AgentId;
+    commandKind: MissionCommandKind;
+    updates: unknown[];
+    status: MissionCommandStatus;
+    summary: string;
+  }): void {
+    for (const update of input.updates) {
+      createMissionCommandEvent(this.deps.db, {
+        roomId: input.roomId,
+        taskId: input.taskId,
+        runId: input.runId,
+        agentId: input.agentId,
+        commandKind: input.commandKind,
+        action: missionCommandAction(update),
+        targetRef: missionCommandTargetRef(update),
+        status: input.status,
+        summary: input.summary,
+        payload: update,
+      });
+    }
   }
 
   private agentJobLeaseOwner(): string {
@@ -2969,41 +3156,10 @@ export class Broker extends EventEmitter {
     agentId: AgentId;
     receipts: ParsedMissionReceipt[];
   }): void {
-    if (input.receipts.length === 0) return;
-    if (!input.task) {
-      for (const receipt of input.receipts) {
-        this.recordRunAction({
-          roomId: input.roomId,
-          taskId: null,
-          runId: input.runId,
-          agentId: input.agentId,
-          kind: 'diagnostic',
-          status: 'failed',
-          label: 'mission receipt ignored',
-          detail: this.missionReceiptDetail(receipt, 'No active mission exists for this receipt.'),
-        });
-      }
-      return;
-    }
-
-    for (const receipt of input.receipts) {
-      const actionStatus: CreateAgentRunActionInput['status'] =
-        receipt.status === 'completed'
-          ? 'completed'
-          : receipt.status === 'blocked'
-            ? 'failed'
-            : 'info';
-      this.recordRunAction({
-        roomId: input.roomId,
-        taskId: input.task.id,
-        runId: input.runId,
-        agentId: input.agentId,
-        kind: 'ledger',
-        status: actionStatus,
-        label: `mission receipt: ${receipt.status}`,
-        detail: this.missionReceiptDetail(receipt),
-      });
-    }
+    recordMissionReceiptsState({
+      ...input,
+      recordRunAction: (action) => this.recordRunAction(action),
+    });
   }
 
   private reconcileMissionState(input: {
@@ -3016,344 +3172,12 @@ export class Broker extends EventEmitter {
     workLane: WorkLaneAssignment | undefined;
     explicitMissionUpdates: number;
   }): MissionReconciliationResult {
-    const result: MissionReconciliationResult = {
-      applied: 0,
-      receiptUpdates: 0,
-      laneUpdates: 0,
-    };
-    if (!input.task) return result;
-    const task = input.task;
-
-    const receiptTouchedItems = new Set<string>();
-    for (const receipt of input.receipts) {
-      const item = this.resolveReceiptChecklistItem(task, receipt, input.workLane);
-      if (item) {
-        const updated = this.reconcileChecklistItemFromReceipt({
-          roomId: input.roomId,
-          task,
-          runId: input.runId,
-          agentId: input.agentId,
-          item,
-          receipt,
-        });
-        if (updated > 0) {
-          result.applied += updated;
-          result.receiptUpdates += updated;
-          receiptTouchedItems.add(item.id);
-        }
-      }
-
-      const phase = receipt.phaseRef
-        ? this.resolvePhase(listTaskPhases(this.deps.db, task.id), receipt.phaseRef)
-        : null;
-      if (phase) {
-        const updated = this.reconcilePhaseFromReceipt({
-          roomId: input.roomId,
-          task,
-          runId: input.runId,
-          agentId: input.agentId,
-          phase,
-          receipt,
-        });
-        if (updated > 0) {
-          result.applied += updated;
-          result.receiptUpdates += updated;
-        }
-      }
-    }
-
-    if (
-      input.workLane &&
-      input.explicitMissionUpdates === 0 &&
-      !receiptTouchedItems.has(input.workLane.item.id)
-    ) {
-      const updated = this.reconcileWorkLaneFromVisibleText(input);
-      if (updated > 0) {
-        result.applied += updated;
-        result.laneUpdates += updated;
-      }
-    }
-
-    const phaseUpdates = this.reconcilePhasesFromChecklist(input);
-    if (phaseUpdates > 0) {
-      result.applied += phaseUpdates;
-      result.receiptUpdates += phaseUpdates;
-    }
-
-    if (result.applied > 0) {
-      this.recordRunAction({
-        roomId: input.roomId,
-        taskId: task.id,
-        runId: input.runId,
-        agentId: input.agentId,
-        kind: 'ledger',
-        status: 'completed',
-        label: 'mission state reconciled',
-        detail: JSON.stringify(result),
-      });
-      const updatedTask = getTask(this.deps.db, task.id);
-      if (updatedTask) this.emit('taskUpdated', updatedTask);
-    }
-
-    return result;
-  }
-
-  private resolveReceiptChecklistItem(
-    task: Task,
-    receipt: ParsedMissionReceipt,
-    workLane: WorkLaneAssignment | undefined,
-  ): TaskChecklistItem | null {
-    const items = listTaskChecklistItems(this.deps.db, task.id);
-    if (receipt.itemRef) return this.resolveChecklistItem(items, receipt.itemRef);
-    const canUseAssignedLane =
-      workLane &&
-      !receipt.phaseRef &&
-      !receipt.planRef &&
-      ['completed', 'blocked', 'needs_review', 'continuing'].includes(receipt.status);
-    if (!canUseAssignedLane) return null;
-    return getTaskChecklistItem(this.deps.db, workLane.item.id);
-  }
-
-  private reconcileChecklistItemFromReceipt(input: {
-    roomId: string;
-    task: Task;
-    runId: string;
-    agentId: AgentId;
-    receipt: ParsedMissionReceipt;
-    item: TaskChecklistItem;
-  }): number {
-    const note = this.missionReceiptPlainNote(input.receipt);
-    const patch: UpdateTaskChecklistItemInput = { updatedBy: input.agentId };
-    let noteKind: 'status' | 'completion' | 'blocker' | 'council' = 'status';
-    let label = '';
-
-    if (input.receipt.status === 'completed') {
-      if (input.item.status === 'done') return 0;
-      patch.status = 'done';
-      patch.statusNote = note || `${input.item.title}: completed`;
-      patch.blockedReason = '';
-      patch.councilRequired = false;
-      noteKind = 'completion';
-      label = 'reconciled checklist completion';
-    } else if (input.receipt.status === 'blocked') {
-      if (input.item.status === 'blocked' && !note) return 0;
-      patch.status = 'blocked';
-      patch.blockedReason = note || `${input.item.title}: blocked`;
-      patch.councilRequired = this.receiptNeedsCouncil(input.receipt);
-      noteKind = patch.councilRequired ? 'council' : 'blocker';
-      label = 'reconciled checklist blocker';
-    } else if (input.receipt.status === 'continuing' || input.receipt.status === 'needs_review') {
-      if (!note && input.item.ownerAgentId) return 0;
-      if (!input.item.ownerAgentId) patch.ownerAgentId = input.agentId;
-      if (note) patch.statusNote = note;
-      noteKind = 'status';
-      label =
-        input.receipt.status === 'needs_review'
-          ? 'reconciled checklist review note'
-          : 'reconciled checklist status note';
-    } else {
-      return 0;
-    }
-
-    const updated = updateTaskChecklistItem(this.deps.db, input.item.id, patch);
-    if (!updated) return 0;
-    if (note || input.receipt.status === 'completed' || input.receipt.status === 'blocked') {
-      createTaskChecklistNote(this.deps.db, {
-        taskId: input.task.id,
-        itemId: updated.id,
-        authorId: input.agentId,
-        kind: noteKind,
-        body: (note || `${updated.title}: ${updated.status}`).slice(0, 4000),
-      });
-    }
-    this.recordRunAction({
-      roomId: input.roomId,
-      taskId: input.task.id,
-      runId: input.runId,
-      agentId: input.agentId,
-      kind: 'ledger',
-      status: input.receipt.status === 'blocked' ? 'failed' : 'completed',
-      label,
-      detail: `${updated.title} (${updated.status})`,
+    return reconcileMissionStateReceipts({
+      db: this.deps.db,
+      ...input,
+      recordRunAction: (action) => this.recordRunAction(action),
+      onTaskUpdated: (task) => this.emit('taskUpdated', task),
     });
-    return 1;
-  }
-
-  private reconcilePhaseFromReceipt(input: {
-    roomId: string;
-    task: Task;
-    runId: string;
-    agentId: AgentId;
-    receipt: ParsedMissionReceipt;
-    phase: TaskPhase;
-  }): number {
-    const status =
-      input.receipt.status === 'completed'
-        ? 'done'
-        : input.receipt.status === 'blocked'
-          ? 'blocked'
-          : null;
-    if (!status || input.phase.status === status) return 0;
-    const updated = updateTaskPhase(this.deps.db, input.phase.id, { status });
-    if (!updated) return 0;
-    this.recordRunAction({
-      roomId: input.roomId,
-      taskId: input.task.id,
-      runId: input.runId,
-      agentId: input.agentId,
-      kind: 'ledger',
-      status: status === 'blocked' ? 'failed' : 'completed',
-      label: status === 'done' ? 'reconciled phase completion' : 'reconciled phase blocker',
-      detail: `${updated.title} (${updated.status})`,
-    });
-    if (status === 'done') {
-      this.autoAdvancePhase({
-        roomId: input.roomId,
-        task: input.task,
-        runId: input.runId,
-        agentId: input.agentId,
-        completedPhase: updated,
-      });
-    }
-    return 1;
-  }
-
-  private reconcileWorkLaneFromVisibleText(input: {
-    roomId: string;
-    task: Task | null;
-    runId: string;
-    agentId: AgentId;
-    visibleText: string;
-    workLane: WorkLaneAssignment | undefined;
-  }): number {
-    if (!input.task || !input.workLane) return 0;
-    const item = getTaskChecklistItem(this.deps.db, input.workLane.item.id);
-    if (!item || item.status === 'done' || item.status === 'skipped') return 0;
-    const signal = this.workLaneSignal(input.visibleText);
-    if (signal === 'none') return 0;
-    const note = oneLine(input.visibleText || `${item.title}: ${signal}`, 500);
-    const patch: UpdateTaskChecklistItemInput = {
-      updatedBy: input.agentId,
-      ownerAgentId: item.ownerAgentId || input.agentId,
-    };
-    if (signal === 'done') {
-      patch.status = 'done';
-      patch.statusNote = note || `${item.title}: completed`;
-      patch.blockedReason = '';
-      patch.councilRequired = false;
-    } else {
-      patch.status = 'blocked';
-      patch.blockedReason = note || `${item.title}: blocked`;
-      patch.councilRequired =
-        /\b(human|council|decision|intervene|intervention|approval|permission)\b/i.test(
-          input.visibleText,
-        );
-    }
-    const updated = updateTaskChecklistItem(this.deps.db, item.id, patch);
-    if (!updated) return 0;
-    createTaskChecklistNote(this.deps.db, {
-      taskId: input.task.id,
-      itemId: updated.id,
-      authorId: input.agentId,
-      kind: signal === 'done' ? 'completion' : patch.councilRequired ? 'council' : 'blocker',
-      body: (note || `${updated.title}: ${updated.status}`).slice(0, 4000),
-    });
-    this.recordRunAction({
-      roomId: input.roomId,
-      taskId: input.task.id,
-      runId: input.runId,
-      agentId: input.agentId,
-      kind: 'ledger',
-      status: signal === 'done' ? 'completed' : 'failed',
-      label: signal === 'done' ? 'reconciled lane completion' : 'reconciled lane blocker',
-      detail: `${updated.title} (${updated.status})`,
-    });
-    return 1;
-  }
-
-  private reconcilePhasesFromChecklist(input: {
-    roomId: string;
-    task: Task | null;
-    runId: string;
-    agentId: AgentId;
-  }): number {
-    if (!input.task) return 0;
-    const phases = listTaskPhases(this.deps.db, input.task.id);
-    const items = listTaskChecklistItems(this.deps.db, input.task.id);
-    let applied = 0;
-    for (const phase of phases) {
-      if (phase.status === 'done' || phase.status === 'planned') continue;
-      const phaseItems = items.filter((item) => item.phaseId === phase.id);
-      if (phaseItems.length === 0) continue;
-      if (!phaseItems.every((item) => item.status === 'done' || item.status === 'skipped')) {
-        continue;
-      }
-      const updated = updateTaskPhase(this.deps.db, phase.id, { status: 'done' });
-      if (!updated) continue;
-      applied += 1;
-      this.recordRunAction({
-        roomId: input.roomId,
-        taskId: input.task.id,
-        runId: input.runId,
-        agentId: input.agentId,
-        kind: 'ledger',
-        status: 'completed',
-        label: 'reconciled phase from checklist',
-        detail: `${updated.title} done; all ${phaseItems.length} checklist item(s) are closed`,
-      });
-      this.autoAdvancePhase({
-        roomId: input.roomId,
-        task: input.task,
-        runId: input.runId,
-        agentId: input.agentId,
-        completedPhase: updated,
-      });
-    }
-    return applied;
-  }
-
-  private missionReceiptPlainNote(receipt: ParsedMissionReceipt): string {
-    return [
-      receipt.summary,
-      receipt.evidence ? `Evidence: ${receipt.evidence}` : '',
-      receipt.next ? `Next: ${receipt.next}` : '',
-    ]
-      .filter(Boolean)
-      .join('\n')
-      .trim();
-  }
-
-  private receiptNeedsCouncil(receipt: ParsedMissionReceipt): boolean {
-    return /\b(human|council|decision|intervene|intervention|approval|permission|blocked by matt|waiting for matt)\b/i.test(
-      [receipt.summary, receipt.evidence, receipt.next].filter(Boolean).join(' '),
-    );
-  }
-
-  private workLaneSignal(text: string): 'done' | 'blocked' | 'none' {
-    const normalized = text.toLowerCase();
-    if (!normalized.trim()) return 'none';
-    if (
-      /\b(blocked|stuck|unable|can't|cannot|could not|failed|failing|waiting on|waiting for|needs human|need human|requires human|requires council|permission denied)\b/.test(
-        normalized,
-      )
-    ) {
-      return 'blocked';
-    }
-    if (
-      /\b(not done|not complete|not completed|incomplete|still pending|still open|remaining|remains|needs work|will continue|continuing next)\b/.test(
-        normalized,
-      )
-    ) {
-      return 'none';
-    }
-    if (
-      /\b(done|complete|completed|finished|resolved|accepted|settled|merged|landed|implemented|verified|tests? pass(?:ed)?|green)\b/.test(
-        normalized,
-      )
-    ) {
-      return 'done';
-    }
-    return 'none';
   }
 
   private recordMissingMissionReceipt(input: {
@@ -3409,7 +3233,7 @@ export class Broker extends EventEmitter {
     }
     if (input.visibleText.trim().length === 0) {
       violations.push('agent returned an empty visible message during an active mission');
-    } else if (this.workLaneSignal(input.visibleText) !== 'none') {
+    } else if (workLaneSignal(input.visibleText) !== 'none') {
       violations.push(
         'visible text implies work completed or blocked but Mission Control was not updated',
       );
@@ -3610,64 +3434,36 @@ export class Broker extends EventEmitter {
     agentId: AgentId;
     onSignal: () => void;
   }): (event: AgentStreamEvent) => void {
-    let lastMessageActionAt = 0;
-    let lastLabel = '';
-    let lastDetail = '';
-    let lastDuplicateAt = 0;
-    let lastRunSignalUpdateAt = 0;
+    const signalState = createProviderSignalProcessingState();
     return (event: AgentStreamEvent): void => {
-      const now = Date.now();
-      const label = event.label.trim() || 'provider signal';
-      const detail = (event.detail ?? '').trim();
+      const processed = processProviderSignalEvent(signalState, event, {
+        runSignalUpdateThrottleMs: RUN_SIGNAL_UPDATE_THROTTLE_MS,
+        streamMessageThrottleMs: STREAM_MESSAGE_THROTTLE_MS,
+      });
       input.onSignal();
-      if (now - lastRunSignalUpdateAt >= RUN_SIGNAL_UPDATE_THROTTLE_MS) {
-        lastRunSignalUpdateAt = now;
+      if (processed.lifecycleUpdate) {
         this.updateRunLifecycle({
           runId: input.runId,
-          state: 'streaming_turn',
-          reason: label,
-          lastSignalAt: now,
+          state: processed.lifecycleUpdate.state,
+          reason: processed.lifecycleUpdate.reason,
+          lastSignalAt: processed.lifecycleUpdate.lastSignalAt,
         });
       }
-      if (!isVisibleProviderSignal({ label, detail })) {
-        return;
-      }
-      const visibleDetail = readableProviderSignalDetail(detail) || detail;
-      if (event.kind === 'message' && event.status === 'running') {
-        if (now - lastMessageActionAt < STREAM_MESSAGE_THROTTLE_MS) return;
-        lastMessageActionAt = now;
-      }
-      if (label === lastLabel && visibleDetail === lastDetail && now - lastDuplicateAt < 750) {
-        return;
-      }
-      lastLabel = label;
-      lastDetail = visibleDetail;
-      lastDuplicateAt = now;
+      if (!processed.action) return;
       this.recordRunAction({
         roomId: input.roomId,
         taskId: input.taskId,
         runId: input.runId,
         agentId: input.agentId,
-        kind: this.actionKindForProviderSignal(event),
-        status: event.status,
-        label,
-        detail: visibleDetail,
-        ...(event.contextUsage ? { contextUsage: event.contextUsage } : {}),
+        kind: processed.action.kind,
+        status: processed.action.status,
+        label: processed.action.label,
+        detail: processed.action.detail,
+        ...(processed.action.contextUsage
+          ? { contextUsage: processed.action.contextUsage }
+          : {}),
       });
     };
-  }
-
-  private actionKindForProviderSignal(event: AgentStreamEvent): CreateAgentRunActionInput['kind'] {
-    switch (event.kind) {
-      case 'message':
-        return 'message';
-      case 'stderr':
-        return 'diagnostic';
-      case 'tool':
-      case 'usage':
-      case 'event':
-        return 'adapter';
-    }
   }
 
   private startRunHeartbeat(input: {
@@ -3684,20 +3480,18 @@ export class Broker extends EventEmitter {
     const timer = setInterval(() => {
       if (stopped) return;
       const now = Date.now();
-      const elapsedSeconds = Math.max(0, Math.round((now - input.startedAt) / 1000));
-      const latestProviderSignalAt = input.latestProviderSignalAt();
-      const idleMs =
-        latestProviderSignalAt > 0 ? now - latestProviderSignalAt : now - input.startedAt;
-      const detail =
-        latestProviderSignalAt > 0
-          ? `last provider signal ${Math.max(0, Math.round((now - latestProviderSignalAt) / 1000))}s ago; process still running`
-          : `${elapsedSeconds}s elapsed; no provider stream output yet`;
-      if (!stalledRecorded && idleMs >= RUN_STALL_AFTER_MS) {
+      const heartbeat = describeRunHeartbeat({
+        startedAt: input.startedAt,
+        latestProviderSignalAt: input.latestProviderSignalAt(),
+        now,
+        stallAfterMs: RUN_STALL_AFTER_MS,
+      });
+      if (!stalledRecorded && heartbeat.stalled) {
         stalledRecorded = true;
         this.updateRunLifecycle({
           runId: input.runId,
           state: 'stalled',
-          reason: detail,
+          reason: heartbeat.detail,
         });
       }
       if (input.agentJobId) {
@@ -3714,7 +3508,7 @@ export class Broker extends EventEmitter {
         kind: 'run',
         status: 'running',
         label: 'still working',
-        detail,
+        detail: heartbeat.detail,
       });
     }, RUN_HEARTBEAT_MS);
     timer.unref?.();
@@ -3755,158 +3549,12 @@ export class Broker extends EventEmitter {
     agentId: AgentId;
     notes: ParsedCollaborationNote[];
   }): void {
-    for (const note of input.notes) {
-      const item = createCollaborationItem(this.deps.db, {
-        roomId: input.roomId,
-        taskId: input.taskId,
-        messageId: input.messageId,
-        runId: input.runId,
-        agentId: input.agentId,
-        kind: note.kind,
-        status: note.status,
-        confidence: note.confidence,
-        title: note.title,
-        target: note.target,
-        body: note.body,
-        evidence: note.evidence,
-      });
-      this.emit('collaborationItemCreated', item);
-      this.recordRunAction({
-        roomId: input.roomId,
-        taskId: input.taskId,
-        runId: input.runId,
-        agentId: input.agentId,
-        kind: 'ledger',
-        status: 'completed',
-        label: `recorded ${note.kind}`,
-        detail: note.title,
-      });
-    }
-  }
-
-  private resolveChecklistItem(items: TaskChecklistItem[], ref: string): TaskChecklistItem | null {
-    const trimmed = ref.trim();
-    if (!trimmed) return null;
-    const lower = trimmed.toLowerCase();
-    return (
-      items.find((item) => item.id === trimmed) ??
-      items.find((item) => item.title.toLowerCase() === lower) ??
-      items.find((item) => item.title.toLowerCase().startsWith(lower)) ??
-      null
-    );
-  }
-
-  private resolvePhaseId(phases: TaskPhase[], ref: string): string | null {
-    const trimmed = ref.trim();
-    if (!trimmed) return null;
-    const exactIdMatch = phases.find((phase) => phase.id === trimmed);
-    if (exactIdMatch) return exactIdMatch.id;
-
-    const lower = trimmed.toLowerCase();
-    const normalized = this.normalizePhaseRef(trimmed);
-    return (
-      this.preferredPhaseMatch(phases.filter((phase) => phase.title.toLowerCase() === lower))
-        ?.id ??
-      (normalized
-        ? this.preferredPhaseMatch(
-            phases.filter((phase) => this.normalizePhaseRef(phase.title) === normalized),
-          )?.id
-        : null) ??
-      this.preferredPhaseMatch(phases.filter((phase) => phase.title.toLowerCase().startsWith(lower)))
-        ?.id ??
-      (normalized
-        ? this.preferredPhaseMatch(
-            phases.filter((phase) => this.normalizePhaseRef(phase.title).startsWith(normalized)),
-          )?.id
-        : null) ??
-      null
-    );
-  }
-
-  private resolvePhase(phases: TaskPhase[], ref: string): TaskPhase | null {
-    const phaseId = this.resolvePhaseId(phases, ref);
-    return phaseId ? (phases.find((phase) => phase.id === phaseId) ?? null) : null;
-  }
-
-  private normalizePhaseRef(value: string): string {
-    return value
-      .trim()
-      .toLowerCase()
-      .normalize('NFKD')
-      .replace(/[\u0300-\u036f]/g, '')
-      .replace(/[^a-z0-9]+/g, ' ')
-      .trim()
-      .replace(/\s+/g, ' ');
-  }
-
-  private preferredPhaseMatch(matches: TaskPhase[]): TaskPhase | null {
-    return (
-      matches.find((phase) => phase.status === 'active') ??
-      matches.find((phase) => phase.status === 'blocked') ??
-      matches.find((phase) => phase.status === 'planned') ??
-      matches.find((phase) => phase.status === 'done') ??
-      null
-    );
-  }
-
-  private resolvePlan(plans: TaskPlan[], ref: string): TaskPlan | null {
-    const trimmed = ref.trim();
-    if (!trimmed) return plans.find((plan) => plan.status === 'active') ?? null;
-    const lower = trimmed.toLowerCase();
-    if (['active', 'current', 'current active'].includes(lower)) {
-      return plans.find((plan) => plan.status === 'active') ?? null;
-    }
-    if (['none', 'unassigned', 'no plan'].includes(lower)) return null;
-    return (
-      plans.find((plan) => plan.id === trimmed) ??
-      plans.find((plan) => plan.title.toLowerCase() === lower) ??
-      plans.find((plan) => plan.title.toLowerCase().startsWith(lower)) ??
-      null
-    );
-  }
-
-  private resolvePlanId(plans: TaskPlan[], ref: string): string | null {
-    return this.resolvePlan(plans, ref)?.id ?? null;
-  }
-
-  private isPlanClearRef(ref: string): boolean {
-    return ['none', 'unassigned', 'no plan'].includes(ref.trim().toLowerCase());
-  }
-
-  private resolveDependencyIds(
-    items: TaskChecklistItem[],
-    refs: string[],
-    currentItemId = '',
-  ): string[] {
-    return [
-      ...new Set(
-        refs
-          .map((ref) => this.resolveChecklistItem(items, ref)?.id ?? '')
-          .filter((id) => id && id !== currentItemId),
-      ),
-    ];
-  }
-
-  private noteKindForMissionUpdate(
-    update: ParsedMissionTaskUpdate,
-  ): 'status' | 'completion' | 'blocker' | 'council' {
-    if (update.councilRequired === true) return 'council';
-    if (this.inferChecklistCompletion(update)) return 'completion';
-    return update.noteKind;
-  }
-
-  private nextPlannedPhaseAfter(phases: TaskPhase[], completedPhase: TaskPhase): TaskPhase | null {
-    return (
-      phases.find(
-        (phase) =>
-          phase.status === 'planned' &&
-          (phase.sortOrder > completedPhase.sortOrder ||
-            (phase.sortOrder === completedPhase.sortOrder &&
-              phase.createdAt > completedPhase.createdAt)),
-      ) ??
-      phases.find((phase) => phase.status === 'planned') ??
-      null
-    );
+    storeCollaborationNotesState({
+      db: this.deps.db,
+      ...input,
+      recordRunAction: (action) => this.recordRunAction(action),
+      onCollaborationItemCreated: (item) => this.emit('collaborationItemCreated', item),
+    });
   }
 
   private autoAdvancePhase(input: {
@@ -3916,42 +3564,11 @@ export class Broker extends EventEmitter {
     agentId: AgentId;
     completedPhase: TaskPhase | null;
   }): void {
-    if (!input.completedPhase) return;
-    const phases = listTaskPhases(this.deps.db, input.task.id);
-    if (phases.some((phase) => phase.status === 'active')) return;
-    const refreshedCompleted =
-      phases.find((phase) => phase.id === input.completedPhase?.id) ?? input.completedPhase;
-    const nextPhase = this.nextPlannedPhaseAfter(phases, refreshedCompleted);
-    if (!nextPhase) return;
-    const advanced = updateTaskPhase(this.deps.db, nextPhase.id, { status: 'active' });
-    if (!advanced) return;
-    this.recordRunAction({
-      roomId: input.roomId,
-      taskId: input.task.id,
-      runId: input.runId,
-      agentId: input.agentId,
-      kind: 'ledger',
-      status: 'completed',
-      label: 'mission phase auto-advance',
-      detail: `${refreshedCompleted.title} done; ${advanced.title} active`,
+    autoAdvanceMissionPhase({
+      db: this.deps.db,
+      ...input,
+      recordRunAction: (action) => this.recordRunAction(action),
     });
-  }
-
-  private inferChecklistCompletion(update: ParsedMissionTaskUpdate): boolean {
-    if (update.status) return update.status === 'done';
-    if (update.noteKind === 'completion') return true;
-    const text = [update.note, update.statusNote].filter(Boolean).join(' ').toLowerCase();
-    if (!text) return false;
-    if (
-      /\b(blocked|blocking|gated|gate|waiting|pending|queued|not done|not complete|incomplete|remaining|remains|needs|requires|required)\b/.test(
-        text,
-      )
-    ) {
-      return false;
-    }
-    return /\b(done|complete|completed|finished|resolved|accepted|settled|merged|landed)\b/.test(
-      text,
-    );
   }
 
   private temporaryAgentLimitPerLead(): number {
@@ -4263,74 +3880,11 @@ export class Broker extends EventEmitter {
     agentId: AgentId;
     updates: ParsedMissionCreateUpdate[];
   }): Task | null {
-    if (input.updates.length === 0) return null;
-    if (input.activeTask) {
-      this.recordRunAction({
-        roomId: input.roomId,
-        taskId: input.activeTask.id,
-        runId: input.runId,
-        agentId: input.agentId,
-        kind: 'diagnostic',
-        status: 'failed',
-        label: 'mission create ignored',
-        detail: `active mission already exists: ${input.activeTask.title}`,
-      });
-      return null;
-    }
-
-    let created: Task | null = null;
-    for (const update of input.updates) {
-      if (created) {
-        this.recordRunAction({
-          roomId: input.roomId,
-          taskId: created.id,
-          runId: input.runId,
-          agentId: input.agentId,
-          kind: 'diagnostic',
-          status: 'failed',
-          label: 'mission create ignored',
-          detail: `mission already created this turn: ${created.title}`,
-        });
-        continue;
-      }
-
-      created = this.createTask(input.roomId, {
-        title: update.title.slice(0, 200),
-        goal: update.goal.slice(0, 4000),
-        repoPath: update.repoPath.slice(0, 2000),
-        acceptanceCriteria: update.acceptanceCriteria.slice(0, 4000),
-        ...(update.agents ? { agents: update.agents } : {}),
-        ...(update.capabilityProfile ? { capabilityProfile: update.capabilityProfile } : {}),
-        summary: update.summary.slice(0, 2000),
-      });
-
-      if (!created) {
-        this.recordRunAction({
-          roomId: input.roomId,
-          taskId: null,
-          runId: input.runId,
-          agentId: input.agentId,
-          kind: 'diagnostic',
-          status: 'failed',
-          label: 'mission create ignored',
-          detail: update.title,
-        });
-        continue;
-      }
-
-      this.recordRunAction({
-        roomId: input.roomId,
-        taskId: created.id,
-        runId: input.runId,
-        agentId: input.agentId,
-        kind: 'ledger',
-        status: 'completed',
-        label: 'mission created',
-        detail: `${created.title} (${created.capabilityProfile})`,
-      });
-    }
-
-    return created;
+    return applyMissionCreateUpdatesState({
+      ...input,
+      createTask: (roomId, taskInput) => this.createTask(roomId, taskInput),
+      recordRunAction: (action) => this.recordRunAction(action),
+    });
   }
 
   private applyMissionPlanUpdates(input: {
@@ -4340,76 +3894,12 @@ export class Broker extends EventEmitter {
     agentId: AgentId;
     updates: ParsedMissionPlanUpdate[];
   }): TaskPlan | null {
-    if (input.updates.length === 0) return null;
-    if (!input.task) {
-      this.recordRunAction({
-        roomId: input.roomId,
-        taskId: null,
-        runId: input.runId,
-        agentId: input.agentId,
-        kind: 'diagnostic',
-        status: 'failed',
-        label: 'mission plan update ignored',
-        detail: 'no active mission',
-      });
-      return null;
-    }
-
-    let plans = listTaskPlans(this.deps.db, input.task.id);
-    let lastActivePlan: TaskPlan | null = null;
-    for (const update of input.updates) {
-      const existing =
-        update.action === 'create' ? null : this.resolvePlan(plans, update.id || update.title);
-      const shouldCreate = update.action === 'create' || (!existing && update.title);
-      const appliedAction = shouldCreate ? 'create' : update.action;
-      const patch: UpdateTaskPlanInput = {
-        ...(update.title ? { title: update.title.slice(0, 180) } : {}),
-        ...(update.body ? { body: update.body.slice(0, 20_000) } : {}),
-        ...(update.status ? { status: update.status } : {}),
-      };
-
-      const plan = shouldCreate
-        ? createTaskPlan(this.deps.db, {
-            taskId: input.task.id,
-            title: update.title.slice(0, 180),
-            body: update.body.slice(0, 20_000),
-            status: update.status ?? 'active',
-          })
-        : existing
-          ? updateTaskPlan(this.deps.db, existing.id, patch)
-          : null;
-
-      if (!plan) {
-        this.recordRunAction({
-          roomId: input.roomId,
-          taskId: input.task.id,
-          runId: input.runId,
-          agentId: input.agentId,
-          kind: 'diagnostic',
-          status: 'failed',
-          label: 'mission plan update ignored',
-          detail: update.id || update.title || 'active plan',
-        });
-        continue;
-      }
-
-      plans = listTaskPlans(this.deps.db, input.task.id);
-      if (plan.status === 'active') lastActivePlan = plan;
-      this.recordRunAction({
-        roomId: input.roomId,
-        taskId: input.task.id,
-        runId: input.runId,
-        agentId: input.agentId,
-        kind: 'ledger',
-        status: 'completed',
-        label: `mission plan ${appliedAction}`,
-        detail: `${plan.title} (${plan.status})`,
-      });
-    }
-
-    const updatedTask = getTask(this.deps.db, input.task.id);
-    if (updatedTask) this.emit('taskUpdated', updatedTask);
-    return lastActivePlan;
+    return applyMissionPlanUpdatesState({
+      db: this.deps.db,
+      ...input,
+      recordRunAction: (action) => this.recordRunAction(action),
+      onTaskUpdated: (task) => this.emit('taskUpdated', task),
+    });
   }
 
   private applyMissionPhaseUpdates(input: {
@@ -4421,113 +3911,13 @@ export class Broker extends EventEmitter {
     defaultPlanId: string | null;
     forcePlanOnUpdates: boolean;
   }): void {
-    if (input.updates.length === 0) return;
-    if (!input.task) {
-      this.recordRunAction({
-        roomId: input.roomId,
-        taskId: null,
-        runId: input.runId,
-        agentId: input.agentId,
-        kind: 'diagnostic',
-        status: 'failed',
-        label: 'mission phase update ignored',
-        detail: 'no active mission',
-      });
-      return;
-    }
-
-    let phases = listTaskPhases(this.deps.db, input.task.id);
-    const plans = listTaskPlans(this.deps.db, input.task.id);
-    let lastCompletedPhase: TaskPhase | null = null;
-    for (const update of input.updates) {
-      const existing =
-        update.action === 'create'
-          ? null
-          : (update.id ? this.resolvePhase(phases, update.id) : null) ??
-            (update.title ? this.resolvePhase(phases, update.title) : null);
-      const shouldCreate = update.action === 'create' || (!existing && update.title);
-      const appliedAction = shouldCreate ? 'create' : update.action;
-      const hasPlanRef = update.planRef.trim().length > 0;
-      const explicitPlanId = hasPlanRef ? this.resolvePlanId(plans, update.planRef) : null;
-      if (hasPlanRef && !explicitPlanId && !this.isPlanClearRef(update.planRef)) {
-        this.recordRunAction({
-          roomId: input.roomId,
-          taskId: input.task.id,
-          runId: input.runId,
-          agentId: input.agentId,
-          kind: 'diagnostic',
-          status: 'failed',
-          label: 'mission phase plan unresolved',
-          detail: update.planRef,
-        });
-        continue;
-      }
-      const planId = hasPlanRef
-        ? explicitPlanId
-        : shouldCreate || input.forcePlanOnUpdates
-          ? input.defaultPlanId
-          : null;
-      const patch: UpdateTaskPhaseInput = {
-        ...(hasPlanRef || input.forcePlanOnUpdates ? { planId } : {}),
-        ...(update.title ? { title: update.title.slice(0, 160) } : {}),
-        ...(update.description ? { description: update.description.slice(0, 2000) } : {}),
-        ...(update.status ? { status: update.status } : {}),
-        ...(update.gate ? { gate: update.gate.slice(0, 2000) } : {}),
-        ...(update.sortOrder !== null ? { sortOrder: update.sortOrder } : {}),
-      };
-
-      const phase = shouldCreate
-        ? createTaskPhase(this.deps.db, {
-            taskId: input.task.id,
-            planId,
-            title: update.title.slice(0, 160),
-            description: update.description.slice(0, 2000),
-            status: update.status ?? (phases.length === 0 ? 'active' : 'planned'),
-            gate: update.gate.slice(0, 2000),
-            sortOrder: update.sortOrder ?? phases.length + 1,
-          })
-        : existing
-          ? updateTaskPhase(this.deps.db, existing.id, patch)
-          : null;
-
-      if (!phase) {
-        this.recordRunAction({
-          roomId: input.roomId,
-          taskId: input.task.id,
-          runId: input.runId,
-          agentId: input.agentId,
-          kind: 'diagnostic',
-          status: 'failed',
-          label: 'mission phase update ignored',
-          detail: update.id || update.title || 'unknown phase',
-        });
-        continue;
-      }
-
-      phases = listTaskPhases(this.deps.db, input.task.id);
-      if (phase.status === 'done') lastCompletedPhase = phase;
-      this.recordRunAction({
-        roomId: input.roomId,
-        taskId: input.task.id,
-        runId: input.runId,
-        agentId: input.agentId,
-        kind: 'ledger',
-        status: 'completed',
-        label: `mission phase ${appliedAction}`,
-        detail: `${phase.title} (${phase.status})`,
-      });
-    }
-
-    this.autoAdvancePhase({
-      roomId: input.roomId,
-      task: input.task,
-      runId: input.runId,
-      agentId: input.agentId,
-      completedPhase: lastCompletedPhase,
+    applyMissionPhaseUpdatesState({
+      db: this.deps.db,
+      ...input,
+      recordRunAction: (action) => this.recordRunAction(action),
+      onTaskUpdated: (task) => this.emit('taskUpdated', task),
+      autoAdvancePhase: (phaseInput) => this.autoAdvancePhase(phaseInput),
     });
-
-    const updatedTask = getTask(this.deps.db, input.task.id);
-    if (updatedTask) this.emit('taskUpdated', updatedTask);
   }
 
   private applyMissionTaskUpdates(input: {
@@ -4538,153 +3928,79 @@ export class Broker extends EventEmitter {
     updates: ParsedMissionTaskUpdate[];
     defaultPlanId: string | null;
     forcePlanOnUpdates: boolean;
-  }): void {
-    if (input.updates.length === 0) return;
-    if (!input.task) {
-      this.recordRunAction({
+  }): MissionTaskApplyResult {
+    return applyMissionTaskUpdatesState({
+      db: this.deps.db,
+      roomId: input.roomId,
+      task: input.task,
+      runId: input.runId,
+      agentId: input.agentId,
+      updates: input.updates,
+      defaultPlanId: input.defaultPlanId,
+      forcePlanOnUpdates: input.forcePlanOnUpdates,
+      recordRunAction: (action) => this.recordRunAction(action),
+      onTaskUpdated: (task) => this.emit('taskUpdated', task),
+    });
+  }
+
+  private routeMissionWorkDispatches(input: {
+    roomId: string;
+    task: Task | null;
+    runId: string;
+    agentId: AgentId;
+    changedItems: TaskChecklistItem[];
+  }): MissionWorkDispatch[] {
+    if (!input.task || input.changedItems.length === 0) return [];
+    const room = getRoom(this.deps.db, input.roomId);
+    if (!room) return [];
+    const allItems = listTaskChecklistItems(this.deps.db, input.task.id);
+    const activeJobs = listActiveAgentJobsForRoom(this.deps.db, input.roomId).filter(
+      (job) => job.taskId === input.task!.id,
+    );
+    const activeItemIds = new Set(
+      activeJobs.map((job) => job.checklistItemId).filter((id): id is string => Boolean(id)),
+    );
+    const decision = routeMissionWorkUpdates({
+      changedItems: input.changedItems,
+      allItems,
+      roomAgents: room.agents,
+      authorId: input.agentId,
+      busyAgents: this.busyAgentsInRoom(input.roomId),
+      activeItemIds,
+    });
+
+    logger.info(
+      {
         roomId: input.roomId,
-        taskId: null,
+        taskId: input.task.id,
         runId: input.runId,
         agentId: input.agentId,
-        kind: 'diagnostic',
-        status: 'failed',
-        label: 'mission task update ignored',
-        detail: 'no active mission',
-      });
-      return;
-    }
+        dispatches: decision.dispatches.map((dispatch) => ({
+          agentId: dispatch.agentId,
+          itemId: dispatch.item.id,
+          title: dispatch.item.title,
+          reason: dispatch.reason,
+        })),
+        trace: decision.trace,
+      },
+      'mission work routing decision',
+    );
+    createRoutingDecision(this.deps.db, {
+      roomId: input.roomId,
+      taskId: input.task.id,
+      runId: input.runId,
+      authorId: input.agentId,
+      kind: 'mission-work',
+      action: decision.dispatches.length > 0 ? 'dispatch' : 'no-dispatch',
+      reason:
+        decision.dispatches.length > 0
+          ? `${decision.dispatches.length} dispatch(es) selected`
+          : 'no eligible mission work dispatches',
+      responders: decision.dispatches.map((dispatch) => dispatch.agentId),
+      trace: decision.trace,
+    });
 
-    let anyCouncilBlock = false;
-    let currentItems = listTaskChecklistItems(this.deps.db, input.task.id);
-    const phases = listTaskPhases(this.deps.db, input.task.id);
-    const plans = listTaskPlans(this.deps.db, input.task.id);
-
-    for (const update of input.updates) {
-      const existing =
-        update.action === 'create'
-          ? null
-          : this.resolveChecklistItem(currentItems, update.id || update.title);
-      const phaseId = this.resolvePhaseId(phases, update.phaseRef);
-      const phase =
-        (phaseId ? (phases.find((candidate) => candidate.id === phaseId) ?? null) : null) ??
-        (!update.phaseRef && existing?.phaseId
-          ? (phases.find((candidate) => candidate.id === existing.phaseId) ?? null)
-          : null);
-      const hasPlanRef = update.planRef.trim().length > 0;
-      const explicitPlanId = hasPlanRef ? this.resolvePlanId(plans, update.planRef) : null;
-      if (hasPlanRef && !explicitPlanId && !this.isPlanClearRef(update.planRef)) {
-        this.recordRunAction({
-          roomId: input.roomId,
-          taskId: input.task.id,
-          runId: input.runId,
-          agentId: input.agentId,
-          kind: 'diagnostic',
-          status: 'failed',
-          label: 'mission task plan unresolved',
-          detail: update.planRef,
-        });
-        continue;
-      }
-      if (hasPlanRef && explicitPlanId && phase?.planId && explicitPlanId !== phase.planId) {
-        this.recordRunAction({
-          roomId: input.roomId,
-          taskId: input.task.id,
-          runId: input.runId,
-          agentId: input.agentId,
-          kind: 'diagnostic',
-          status: 'failed',
-          label: 'mission task plan mismatch',
-          detail: `${update.title || update.id}: phase belongs to ${phase.planId}, request used ${explicitPlanId}`,
-        });
-        continue;
-      }
-      const planId =
-        phase?.planId ??
-        (hasPlanRef
-          ? explicitPlanId
-          : update.action === 'create' || input.forcePlanOnUpdates
-            ? input.defaultPlanId
-            : null);
-      const dependencyIds = this.resolveDependencyIds(
-        currentItems,
-        update.dependencyRefs,
-        existing?.id ?? '',
-      );
-      const effectiveStatus =
-        update.status ?? (this.inferChecklistCompletion(update) ? 'done' : null);
-      const basePatch: UpdateTaskChecklistItemInput = {
-        ...(hasPlanRef || phase?.planId || input.forcePlanOnUpdates ? { planId } : {}),
-        ...(update.title ? { title: update.title.slice(0, 240) } : {}),
-        ...(update.detail ? { detail: update.detail.slice(0, 2000) } : {}),
-        ...(effectiveStatus ? { status: effectiveStatus } : {}),
-        ...(update.dependencyRefs.length > 0 ? { dependencyIds } : {}),
-        ...(update.expectedTouches.length > 0 ? { expectedTouches: update.expectedTouches } : {}),
-        ...(update.parallelism ? { parallelism: update.parallelism } : {}),
-        ...(update.conflictGroup ? { conflictGroup: update.conflictGroup.slice(0, 160) } : {}),
-        ...(update.workRole ? { workRole: update.workRole.slice(0, 80) } : {}),
-        ...(update.ownerAgentId ? { ownerAgentId: update.ownerAgentId.slice(0, 80) } : {}),
-        ...(update.statusNote ? { statusNote: update.statusNote.slice(0, 2000) } : {}),
-        ...(update.blockedReason ? { blockedReason: update.blockedReason.slice(0, 2000) } : {}),
-        ...(update.councilRequired !== null ? { councilRequired: update.councilRequired } : {}),
-        ...(phaseId ? { phaseId } : {}),
-        updatedBy: input.agentId,
-      };
-
-      const item =
-        update.action === 'create'
-          ? createTaskChecklistItem(this.deps.db, {
-              taskId: input.task.id,
-              planId,
-              phaseId,
-              title: update.title.slice(0, 240),
-              detail: update.detail.slice(0, 2000),
-              status: effectiveStatus ?? 'open',
-              dependencyIds,
-              expectedTouches: update.expectedTouches,
-              ...(update.parallelism ? { parallelism: update.parallelism } : {}),
-              conflictGroup: update.conflictGroup.slice(0, 160),
-              workRole: update.workRole.slice(0, 80),
-              ownerAgentId: update.ownerAgentId.slice(0, 80),
-              statusNote: update.statusNote.slice(0, 2000),
-              blockedReason: update.blockedReason.slice(0, 2000),
-              councilRequired: update.councilRequired === true,
-              updatedBy: input.agentId,
-              sortOrder: currentItems.length + 1,
-            })
-          : existing
-            ? updateTaskChecklistItem(this.deps.db, existing.id, basePatch)
-            : null;
-
-      if (!item) {
-        this.recordRunAction({
-          roomId: input.roomId,
-          taskId: input.task.id,
-          runId: input.runId,
-          agentId: input.agentId,
-          kind: 'diagnostic',
-          status: 'failed',
-          label: 'mission task update ignored',
-          detail: update.id || update.title || 'unknown item',
-        });
-        continue;
-      }
-
-      const noteBody =
-        update.note ||
-        update.statusNote ||
-        update.blockedReason ||
-        (effectiveStatus ? `${item.title}: ${effectiveStatus}` : '');
-      if (noteBody) {
-        createTaskChecklistNote(this.deps.db, {
-          taskId: input.task.id,
-          itemId: item.id,
-          authorId: input.agentId,
-          kind: this.noteKindForMissionUpdate(update),
-          body: noteBody.slice(0, 4000),
-        });
-      }
-      if (item.status === 'blocked' && item.councilRequired) anyCouncilBlock = true;
-      currentItems = listTaskChecklistItems(this.deps.db, input.task.id);
+    for (const dispatch of decision.dispatches) {
       this.recordRunAction({
         roomId: input.roomId,
         taskId: input.task.id,
@@ -4692,19 +4008,71 @@ export class Broker extends EventEmitter {
         agentId: input.agentId,
         kind: 'ledger',
         status: 'completed',
-        label: `mission task ${update.action}`,
-        detail: `${item.title} (${item.status})`,
+        label: 'mission work dispatch',
+        detail: `${dispatch.agentId} <- ${dispatch.item.title} [id=${dispatch.item.id}]`,
       });
     }
+    return decision.dispatches;
+  }
 
-    if (anyCouncilBlock && input.task.status !== 'blocked') {
-      updateTaskRepo(this.deps.db, input.task.id, {
-        status: 'blocked',
-        summary: input.task.summary || 'Blocked checklist item requires council action.',
-      });
+  private evaluateMissionLivenessDispatches(input: {
+    roomId: string;
+    task: Task | null;
+    runId: string;
+    agentId: AgentId;
+    existingDispatches: MissionWorkDispatch[];
+    allowLiveness: boolean;
+  }): MissionWorkDispatch[] {
+    if (!input.allowLiveness || !input.task || input.existingDispatches.length > 0) {
+      return input.existingDispatches;
     }
-    const updatedTask = getTask(this.deps.db, input.task.id);
-    if (updatedTask) this.emit('taskUpdated', updatedTask);
+    const room = getRoom(this.deps.db, input.roomId);
+    if (!room) return input.existingDispatches;
+    const decision = evaluateMissionLiveness({
+      task: input.task,
+      items: listTaskChecklistItems(this.deps.db, input.task.id),
+      roomAgents: room.agents,
+      activeJobs: listActiveAgentJobsForRoom(this.deps.db, input.roomId),
+      recentOutcomes: listAgentTurnOutcomesForRoom(this.deps.db, input.roomId, 8),
+    });
+    this.recordRunAction({
+      roomId: input.roomId,
+      taskId: input.task.id,
+      runId: input.runId,
+      agentId: input.agentId,
+      kind: 'ledger',
+      status: decision.action === 'dispatch-ready-work' ? 'completed' : 'info',
+      label: 'mission liveness decision',
+      detail: JSON.stringify({
+        action: decision.action,
+        reason: decision.reason,
+        dispatches: decision.dispatches.map((dispatch) => ({
+          agentId: dispatch.agentId,
+          itemId: dispatch.item.id,
+          title: dispatch.item.title,
+        })),
+        latestOutcome: decision.latestOutcome
+          ? {
+              runId: decision.latestOutcome.runId,
+              agentId: decision.latestOutcome.agentId,
+              status: decision.latestOutcome.status,
+              progressed: decision.latestOutcome.progressed,
+            }
+          : null,
+      }),
+    });
+    createRoutingDecision(this.deps.db, {
+      roomId: input.roomId,
+      taskId: input.task.id,
+      runId: input.runId,
+      authorId: 'fireside',
+      kind: 'mission-work',
+      action: `liveness:${decision.action}`,
+      reason: decision.reason,
+      responders: decision.dispatches.map((dispatch) => dispatch.agentId),
+      trace: decision.trace,
+    });
+    return decision.dispatches.length > 0 ? decision.dispatches : input.existingDispatches;
   }
 
   private yoloStatus(state: YoloDiscussionState, active: boolean, reason?: string): YoloStatus {
@@ -4720,9 +4088,42 @@ export class Broker extends EventEmitter {
       remainingReplies,
       cancelled: state.cancelled,
       ...(state.cancelledBy !== undefined ? { cancelledBy: state.cancelledBy } : {}),
-      ...(!active ? { stoppedAt: state.cancelledAt ?? Date.now() } : {}),
-      ...((reason ?? state.cancelReason) ? { reason: reason ?? state.cancelReason } : {}),
+      ...(!active ? { stoppedAt: state.cancelledAt ?? state.stoppedAt ?? Date.now() } : {}),
+      ...((reason ?? state.cancelReason ?? state.stoppedReason)
+        ? { reason: reason ?? state.cancelReason ?? state.stoppedReason }
+        : {}),
     };
+  }
+
+  private stopYoloState(state: YoloDiscussionState, reason: string): YoloStatus {
+    if (state.stoppedReason || state.cancelled) {
+      return this.yoloStatus(state, false, reason);
+    }
+    state.stoppedReason = reason;
+    state.stoppedAt = Date.now();
+    const status = this.yoloStatus(state, false, reason);
+    this.emit('yoloStatusUpdated', status);
+    return status;
+  }
+
+  private yoloHumanWaitReason(roomId: string): string {
+    const task = getActiveTask(this.deps.db, roomId);
+    if (!task || task.status !== 'blocked') return '';
+    const items = listTaskChecklistItems(this.deps.db, task.id);
+    const byId = new Map(items.map((item) => [item.id, item]));
+    const hasOpenDispatchableWork = items.some(
+      (item) => item.status === 'open' && checklistDependenciesSatisfied(item, byId),
+    );
+    if (hasOpenDispatchableWork) return '';
+    const councilBlocks = items.filter((item) => item.status === 'blocked' && item.councilRequired);
+    if (councilBlocks.length === 0) return '';
+    return `waiting-on-human:${oneLine(councilBlocks.map((item) => item.title).join('; '), 180)}`;
+  }
+
+  private productiveMissionReceiptCount(receipts: ParsedMissionReceipt[]): number {
+    return receipts.filter(
+      (receipt) => receipt.status !== 'no_update' && receipt.status !== 'continuing',
+    ).length;
   }
 
   private cancelYoloState(
@@ -4935,12 +4336,15 @@ export class Broker extends EventEmitter {
         if (!message) return;
         const room = getRoom(this.deps.db, roomId);
         if (!room) return;
-        const responders = this.pickResponders(room, message.text, message.authorId);
+        const explicitResponders = this.pickExplicitResponders(room, message.text, message.authorId);
+        const responders = explicitResponders ?? this.pickResponders(room, message.text, message.authorId);
         if (responders.length === 0) {
           this.markQueuedMessagesDelivered(roomId, [message]);
           continue;
         }
-        await this.runRoomAwareDiscussionThread(roomId, room, responders, message);
+        await this.runRoomAwareDiscussionThread(roomId, room, responders, message, {
+          ...(explicitResponders !== null ? { bypassRoomYolo: true } : {}),
+        });
       }
     } finally {
       this.drainingQueuedRooms.delete(roomId);
@@ -4948,12 +4352,12 @@ export class Broker extends EventEmitter {
   }
 
   private pickResponders(room: Room, text: string, authorId: string): AgentId[] {
-    const references = this.parseRoomAgentReferenceResult(room, text);
-    if (references.ambiguousAliases.length > 0) return [];
+    const references = resolveRoomAgentReferences(room, text);
     const mentions = references.agentIds;
     if (mentions.length > 0) {
       return mentions.filter((m) => room.agents.includes(m) && m !== authorId);
     }
+    if (references.ambiguousAliases.length > 0) return [];
     return room.agents.filter((a) => a !== authorId);
   }
 
@@ -4962,99 +4366,11 @@ export class Broker extends EventEmitter {
     text: string,
     authorId: string,
   ): AgentId[] | null {
-    const references = this.parseRoomAgentReferenceResult(room, text);
-    if (references.ambiguousAliases.length > 0) return [];
+    const references = resolveRoomAgentReferences(room, text);
     if (references.agentIds.length === 0) return null;
     return references.agentIds.filter(
       (agentId) => room.agents.includes(agentId) && agentId !== authorId,
     );
-  }
-
-  private parseRoomAgentReferences(room: Room, text: string): AgentId[] {
-    return this.parseRoomAgentReferenceResult(room, text).agentIds;
-  }
-
-  private parseRoomAgentReferenceResult(room: Room, text: string): RoomAgentReferenceResult {
-    const aliases = new Map<AgentId, string[]>();
-    const aliasIndex = new Map<string, AgentId[]>();
-    const providerCounts = new Map<string, number>();
-    for (const agentId of room.agents) {
-      const profile =
-        room.agentProfiles.find((candidate) => candidate.id === agentId) ??
-        defaultAgentProfile(agentId);
-      providerCounts.set(profile.providerId, (providerCounts.get(profile.providerId) ?? 0) + 1);
-    }
-
-    for (const agentId of room.agents) {
-      const profile =
-        room.agentProfiles.find((candidate) => candidate.id === agentId) ??
-        defaultAgentProfile(agentId);
-      const providerIsAmbiguous = (providerCounts.get(profile.providerId) ?? 0) > 1;
-      const displayNameSlug = mentionAliasSlug(profile.displayName);
-      const profileAliases = [agentId];
-      if (!providerIsAmbiguous) profileAliases.push(profile.providerId);
-      if (!providerIsAmbiguous || displayNameSlug !== profile.providerId) {
-        profileAliases.push(
-          profile.displayName,
-          profile.displayName.replace(/\s+/g, '-'),
-          displayNameSlug,
-        );
-      }
-      aliases.set(agentId, profileAliases);
-      for (const alias of profileAliases) {
-        const token = mentionAliasSlug(alias);
-        if (!token) continue;
-        const matches = aliasIndex.get(token) ?? [];
-        if (!matches.includes(agentId)) matches.push(agentId);
-        aliasIndex.set(token, matches);
-      }
-    }
-    const dynamic = parseAgentReferencesForAliases(text, aliases);
-    const ambiguousAliases = new Set<string>();
-    const staticMatches: AgentId[] = [];
-    const explicitTokens = parseMentionTokens(text);
-    const explicitTokenSet = new Set(explicitTokens);
-
-    for (const token of explicitTokens) {
-      const aliasMatches = aliasIndex.get(token) ?? [];
-      if (aliasMatches.length === 1) {
-        staticMatches.push(aliasMatches[0]!);
-        continue;
-      }
-      if (aliasMatches.length > 1) {
-        ambiguousAliases.add(token);
-        continue;
-      }
-      if ((providerCounts.get(token) ?? 0) > 1) ambiguousAliases.add(token);
-    }
-
-    for (const match of parseAgentReferences(text)) {
-      const token = mentionAliasSlug(match);
-      if (!token || explicitTokenSet.has(token)) continue;
-      const aliasMatches = aliasIndex.get(token) ?? [];
-      if (aliasMatches.length === 1) {
-        staticMatches.push(aliasMatches[0]!);
-        continue;
-      }
-      if (aliasMatches.length > 1) {
-        ambiguousAliases.add(token);
-        continue;
-      }
-      const providerMatches = room.agentProfiles.filter((profile) => profile.providerId === token);
-      if (providerMatches.length > 1) {
-        ambiguousAliases.add(token);
-        continue;
-      }
-      const agentMatches = room.agentProfiles.filter(
-        (profile) => profile.providerId === token || profile.id === token,
-      );
-      staticMatches.push(...agentMatches.map((profile) => profile.id));
-    }
-
-    return {
-      agentIds: [...new Set([...dynamic, ...staticMatches])],
-      ambiguousAliases: [...ambiguousAliases],
-    };
   }
 
   private pickAgentHandoffResponders(
@@ -5063,14 +4379,33 @@ export class Broker extends EventEmitter {
     authorId: AgentId,
     allowedAgents?: Set<AgentId>,
   ): AgentId[] {
-    const references = this.parseRoomAgentReferenceResult(room, text);
-    if (references.ambiguousAliases.length > 0) return [];
-    return references.agentIds.filter(
-      (agentId) =>
-        agentId !== authorId &&
-        room.agents.includes(agentId) &&
-        (allowedAgents ? allowedAgents.has(agentId) : true),
+    const decision = routeAgentMessage({ room, text, authorId, allowedAgents });
+    logger.info(
+      {
+        roomId: room.id,
+        action: decision.action,
+        reason: decision.reason,
+        authorId,
+        responders: decision.responders,
+        references: {
+          agentIds: decision.references.agentIds,
+          ambiguousAliases: decision.references.ambiguousAliases,
+          explicitTokens: decision.references.explicitTokens,
+        },
+        trace: decision.trace,
+      },
+      'agent message routing decision',
     );
+    createRoutingDecision(this.deps.db, {
+      roomId: room.id,
+      authorId,
+      kind: 'agent-message',
+      action: decision.action,
+      reason: decision.reason,
+      responders: decision.responders,
+      trace: decision.trace,
+    });
+    return decision.responders;
   }
 
   private async runAgentHandoffs(
@@ -5110,79 +4445,104 @@ export class Broker extends EventEmitter {
     const isCancelled = (): boolean => options.yoloState?.cancelled === true;
     const room = getRoom(this.deps.db, roomId);
     const roomAgents = room?.agents ?? responders;
-    const optionHandoffPool =
-      options.mode === 'yolo' && options.handoffPool
-        ? options.handoffPool.filter((agent) => roomAgents.includes(agent))
-        : [];
-    const handoffPool =
-      options.mode === 'yolo'
-        ? optionHandoffPool.length > 0
-          ? optionHandoffPool
-          : options.responders
-            ? responders
-            : roomAgents
-        : roomAgents;
-    const uniqueResponders = responders.filter(
-      (agentId, index) => responders.indexOf(agentId) === index,
-    );
-    const openFloor = options.mode === 'yolo' || uniqueResponders.length > 1;
-
     const maxReplies = Math.max(
       1,
       Math.floor(options.maxRepliesPerAgent ?? this.maxAgentRepliesPerThread()),
     );
-    const configuredMaxTotalReplies = Math.max(
-      1,
-      Math.floor(options.maxTotalReplies ?? maxReplies * Math.max(1, handoffPool.length)),
-    );
+    const scheduler = createDiscussionScheduler({
+      mode: options.mode ?? 'normal',
+      responders,
+      roomAgents,
+      handoffPool: options.handoffPool,
+      preferResponderPool: options.responders !== undefined,
+      maxRepliesPerAgent: maxReplies,
+      ...(options.maxTotalReplies !== undefined ? { maxTotalReplies: options.maxTotalReplies } : {}),
+      ...(options.yoloState?.totalRepliesUsed !== undefined
+        ? { totalRepliesUsed: options.yoloState.totalRepliesUsed }
+        : {}),
+    });
     if (options.yoloState) {
+      syncDiscussionTotalBudget(scheduler, options.yoloState.maxTotalReplies);
       options.yoloState.maxTotalReplies = Math.max(
         options.yoloState.maxTotalReplies,
-        configuredMaxTotalReplies,
+        currentMaxTotalReplies(scheduler),
       );
       this.emit('yoloStatusUpdated', this.yoloStatus(options.yoloState, true));
     }
-    const currentMaxTotalReplies = (): number =>
-      options.yoloState?.maxTotalReplies ?? configuredMaxTotalReplies;
-    const currentMaxRepliesPerAgent = (): number =>
-      options.mode === 'yolo' ? currentMaxTotalReplies() : maxReplies;
-    const currentMaxPromptRounds = (): number =>
-      options.mode === 'yolo' || handoffPool.length > 1
-        ? Math.max(1, Math.min(currentMaxRepliesPerAgent(), currentMaxTotalReplies()))
-        : 1;
-    const knownAgents = new Set<AgentId>([...handoffPool, ...uniqueResponders]);
-    const allowedAgents = new Set<AgentId>(uniqueResponders);
-    const replyCounts = new Map<AgentId, number>(Array.from(knownAgents).map((id) => [id, 0]));
-    let candidates = [...uniqueResponders];
-    let totalReplies = options.yoloState?.totalRepliesUsed ?? 0;
+    const pendingWorkLanes = new Map<AgentId, WorkLaneAssignment>();
 
     try {
       for (
         let round = 1;
-        candidates.length > 0 && totalReplies < currentMaxTotalReplies();
+        scheduler.candidates.length > 0 && scheduler.totalReplies < currentMaxTotalReplies(scheduler);
         round++
       ) {
         if (isCancelled()) return;
+        if (options.yoloState) {
+          syncDiscussionTotalBudget(scheduler, options.yoloState.maxTotalReplies);
+        }
         const laneAssignments =
-          options.mode === 'yolo'
+          scheduler.mode === 'yolo'
             ? this.assignYoloWorkLanes(
                 roomId,
-                handoffPool.filter(
-                  (id) => (replyCounts.get(id) ?? 0) < currentMaxRepliesPerAgent(),
+                scheduler.handoffPool.filter(
+                  (id) =>
+                    !scheduler.quarantinedAgents.has(id) &&
+                    (scheduler.replyCounts.get(id) ?? 0) <
+                      currentMaxRepliesPerAgent(scheduler),
                 ),
               )
             : new Map<AgentId, WorkLaneAssignment>();
-        for (const agentId of laneAssignments.keys()) {
-          allowedAgents.add(agentId);
+        if (pendingWorkLanes.size > 0) {
+          const busyAgents = this.busyAgentsInRoom(roomId);
+          const activeTask = getActiveTask(this.deps.db, roomId);
+          const items = activeTask ? listTaskChecklistItems(this.deps.db, activeTask.id) : [];
+          const itemsById = new Map(items.map((item) => [item.id, item]));
+          const reservedContracts = activeTask
+            ? [
+                ...this.activeWorkLaneContracts(roomId, activeTask.id),
+                ...Array.from(laneAssignments.values()).map((assignment) =>
+                  workLaneScopeContract(assignment.item, '', 'checklist'),
+                ),
+              ]
+            : [];
+          for (const [agentId, assignment] of pendingWorkLanes) {
+            const freshItem = itemsById.get(assignment.item.id);
+            if (
+              !freshItem ||
+              freshItem.status !== 'open' ||
+              !scheduler.handoffPool.includes(agentId) ||
+              busyAgents.has(agentId) ||
+              scheduler.quarantinedAgents.has(agentId) ||
+              (scheduler.replyCounts.get(agentId) ?? 0) >=
+                currentMaxRepliesPerAgent(scheduler) ||
+              !checklistDependenciesSatisfied(freshItem, itemsById) ||
+              workLaneConflictReason(freshItem, reservedContracts)
+            ) {
+              continue;
+            }
+            laneAssignments.set(agentId, { item: freshItem });
+            reservedContracts.push(workLaneScopeContract(freshItem, agentId, 'checklist'));
+          }
+        }
+        if (scheduler.mode === 'yolo' && laneAssignments.size === 0) {
+          const humanWaitReason = this.yoloHumanWaitReason(roomId);
+          if (humanWaitReason) {
+            if (options.yoloState) this.stopYoloState(options.yoloState, humanWaitReason);
+            return;
+          }
         }
         const trigger = this.latestMessage(roomId, initialTrigger);
-        const remainingTotal = currentMaxTotalReplies() - totalReplies;
-        const candidateSet = new Set<AgentId>([...candidates, ...laneAssignments.keys()]);
-        const eligible = Array.from(candidateSet)
-          .filter((id) => (replyCounts.get(id) ?? 0) < currentMaxRepliesPerAgent())
-          .slice(0, remainingTotal);
+        const roundPlan = planDiscussionRound(scheduler, {
+          round,
+          laneAgents: Array.from(laneAssignments.keys()),
+        });
+        const eligible = roundPlan.eligibleAgents;
         if (eligible.length === 0) return;
         if (isCancelled()) return;
+        for (const agentId of eligible) {
+          if (laneAssignments.has(agentId)) pendingWorkLanes.delete(agentId);
+        }
 
         const results = await Promise.all(
           eligible.map(async (agentId) => ({
@@ -5192,13 +4552,13 @@ export class Broker extends EventEmitter {
               agentId,
               trigger,
               {
-                round: Math.min(round, currentMaxPromptRounds()),
-                maxRounds: currentMaxPromptRounds(),
-                repliesUsed: replyCounts.get(agentId) ?? 0,
-                maxRepliesPerAgent: currentMaxRepliesPerAgent(),
+                round: Math.min(round, roundPlan.maxPromptRounds),
+                maxRounds: roundPlan.maxPromptRounds,
+                repliesUsed: scheduler.replyCounts.get(agentId) ?? 0,
+                maxRepliesPerAgent: roundPlan.maxRepliesPerAgent,
                 mode: options.mode ?? 'normal',
-                totalRepliesUsed: totalReplies,
-                maxTotalReplies: currentMaxTotalReplies(),
+                totalRepliesUsed: scheduler.totalReplies,
+                maxTotalReplies: roundPlan.maxTotalReplies,
               },
               options.permission,
               options.yoloState?.abortController.signal,
@@ -5209,66 +4569,75 @@ export class Broker extends EventEmitter {
         );
         if (isCancelled()) return;
 
-        const activeAgents: AgentId[] = [];
-        const directedAgents: AgentId[] = [];
+        const resultSummaries: DiscussionResultSummary[] = [];
         for (const { agentId, result } of results) {
-          if (!result.progressed && !result.message) continue;
-          activeAgents.push(agentId);
-          replyCounts.set(agentId, (replyCounts.get(agentId) ?? 0) + 1);
-          totalReplies += 1;
-          if (options.yoloState) {
-            options.yoloState.totalRepliesUsed = totalReplies;
-            this.emit('yoloStatusUpdated', this.yoloStatus(options.yoloState, true));
-          }
-          if (!result.message) continue;
           const handoffs = room
-            ? this.pickAgentHandoffResponders(
-                room,
-                result.message.text,
-                agentId,
-                new Set(handoffPool),
-              )
+            ? result.message
+              ? this.pickAgentHandoffResponders(
+                  room,
+                  result.message.text,
+                  agentId,
+                  new Set(scheduler.handoffPool),
+                )
+              : []
             : [];
-          for (const agentId of handoffs) {
-            allowedAgents.add(agentId);
-            if (!directedAgents.includes(agentId)) directedAgents.push(agentId);
+          const workDispatches: AgentId[] = [];
+          for (const dispatch of result.workDispatches ?? []) {
+            if (!scheduler.handoffPool.includes(dispatch.agentId)) continue;
+            pendingWorkLanes.set(dispatch.agentId, { item: dispatch.item });
+            workDispatches.push(dispatch.agentId);
           }
+          resultSummaries.push({
+            agentId,
+            progressed: result.progressed,
+            hasMessage: Boolean(result.message),
+            failed: result.failed === true,
+            handoffs,
+            workDispatches,
+            runId: result.runId ?? '',
+            error: result.error ?? '',
+          });
         }
 
-        if (activeAgents.length === 0) return;
+        const outcome = applyDiscussionRoundResults(scheduler, {
+          results: resultSummaries,
+          roomYoloAgents: room?.yoloAgents ?? [],
+        });
+        for (const failure of outcome.failedYoloAgents) {
+          if (!failure.runId) continue;
+          this.recordRunAction({
+            roomId,
+            taskId: getActiveTask(this.deps.db, roomId)?.id ?? null,
+            runId: failure.runId,
+            agentId: failure.agentId,
+            kind: 'run',
+            status: 'failed',
+            label: 'agent paused for YOLO session',
+            detail: failure.error
+              ? `Provider failed after retries; pausing this agent for the current YOLO session: ${failure.error}`
+              : 'Provider failed after retries; pausing this agent for the current YOLO session.',
+          });
+        }
+        if (options.yoloState && options.yoloState.totalRepliesUsed !== scheduler.totalReplies) {
+          options.yoloState.totalRepliesUsed = scheduler.totalReplies;
+          this.emit('yoloStatusUpdated', this.yoloStatus(options.yoloState, true));
+        }
 
-        const underLimit = Array.from(allowedAgents).filter(
-          (id) => (replyCounts.get(id) ?? 0) < currentMaxRepliesPerAgent(),
-        );
-        const directedUnderLimit = directedAgents.filter(
-          (id) => (replyCounts.get(id) ?? 0) < currentMaxRepliesPerAgent(),
-        );
-        const directedYoloAgents =
-          options.mode === 'yolo'
-            ? []
-            : directedUnderLimit.filter((id) => room?.yoloAgents.includes(id));
-        if (directedYoloAgents.length > 0) {
+        if (outcome.shouldStop) {
+          if (scheduler.mode === 'yolo' && options.yoloState) {
+            this.stopYoloState(options.yoloState, outcome.stopReason);
+          }
+          return;
+        }
+
+        if (outcome.directedYoloAgents.length > 0) {
           const handoffTrigger = this.latestMessage(roomId, initialTrigger);
           await this.runRoomYoloDiscussionThread(
             roomId,
             handoffTrigger.authorId,
-            directedYoloAgents,
+            outcome.directedYoloAgents,
             handoffTrigger,
           );
-        }
-        const directedNormalAgents =
-          directedYoloAgents.length > 0
-            ? directedUnderLimit.filter((id) => !directedYoloAgents.includes(id))
-            : directedUnderLimit;
-        if (directedUnderLimit.length > 0) {
-          candidates = directedNormalAgents;
-        } else if (!openFloor) {
-          candidates = [];
-        } else {
-          candidates =
-            options.mode !== 'yolo' && activeAgents.length === 1
-              ? underLimit.filter((id) => id !== activeAgents[0])
-              : underLimit;
         }
       }
     } finally {

@@ -9,6 +9,7 @@ export interface Project {
   description: string;
   createdAt: number;
   updatedAt: number;
+  archivedAt: number | null;
 }
 
 interface ProjectRow {
@@ -17,6 +18,7 @@ interface ProjectRow {
   description: string;
   created_at: number;
   updated_at: number;
+  archived_at: number | null;
 }
 
 function rowToProject(row: ProjectRow): Project {
@@ -26,6 +28,7 @@ function rowToProject(row: ProjectRow): Project {
     description: row.description,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
+    archivedAt: row.archived_at ?? null,
   };
 }
 
@@ -79,4 +82,33 @@ export function updateProject(
     id,
   );
   return getProject(db, id);
+}
+
+export function setProjectArchivedAt(
+  db: Database,
+  id: string,
+  archivedAt: number | null,
+): Project | null {
+  if (id === DEFAULT_PROJECT_ID && archivedAt !== null) return null;
+  const existing = getProject(db, id);
+  if (!existing) return null;
+  db.prepare(`UPDATE projects SET archived_at = ?, updated_at = ? WHERE id = ?`).run(
+    archivedAt,
+    Date.now(),
+    id,
+  );
+  return getProject(db, id);
+}
+
+export function deleteProjectRow(db: Database, id: string): boolean {
+  if (id === DEFAULT_PROJECT_ID) return false;
+  const result = db.prepare(`DELETE FROM projects WHERE id = ?`).run(id);
+  return result.changes > 0;
+}
+
+export function listRoomIdsByProject(db: Database, projectId: string): string[] {
+  const rows = db
+    .prepare(`SELECT id FROM rooms WHERE project_id = ?`)
+    .all(projectId) as Array<{ id: string }>;
+  return rows.map((row) => row.id);
 }

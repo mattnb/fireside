@@ -9,6 +9,7 @@ import type {
   YoloStatus,
 } from './broker.js';
 import type { Message } from './repos/messages.js';
+import type { Project } from './repos/projects.js';
 import type { Room } from './repos/rooms.js';
 import type { PermissionRequest, YoloPermissionProfile } from './permissions.js';
 import type { Task } from './repos/tasks.js';
@@ -217,6 +218,22 @@ export function attachWebSocketServer(httpServer: HttpServer, broker: Broker): W
     }
   });
 
+  broker.on('projectUpdated', (project: Project) => {
+    const payload = JSON.stringify({ type: 'projectUpdated', project });
+    for (const [client] of clients.entries()) {
+      // Broadcast to ALL clients — project list is global, every client needs
+      // the archived-flag flip and the resulting sidebar update.
+      if (client.readyState === client.OPEN) client.send(payload);
+    }
+  });
+
+  broker.on('projectDeleted', (evt: { projectId: string }) => {
+    const payload = JSON.stringify({ type: 'projectDeleted', projectId: evt.projectId });
+    for (const [client] of clients.entries()) {
+      if (client.readyState === client.OPEN) client.send(payload);
+    }
+  });
+
   wss.on('connection', (client) => {
     clients.set(client, { rooms: new Set() });
 
@@ -234,6 +251,10 @@ export function attachWebSocketServer(httpServer: HttpServer, broker: Broker): W
       if (parsed.type === 'subscribe') {
         state.rooms.add(parsed.roomId);
         client.send(JSON.stringify({ type: 'subscribed', roomId: parsed.roomId }));
+        const yoloStatus = broker.currentYoloStatus(parsed.roomId);
+        if (yoloStatus) {
+          client.send(JSON.stringify({ type: 'yoloStatusUpdated', status: yoloStatus }));
+        }
       } else if (parsed.type === 'unsubscribe') {
         state.rooms.delete(parsed.roomId);
       } else if (parsed.type === 'postMessage') {

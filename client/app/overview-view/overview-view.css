@@ -1,0 +1,632 @@
+/* client/app/overview-view/overview-view.css
+ * Outer host placement only. The hero, attention frame, and stat tiles use
+ * shared `.ov-*` selectors that stay global in app.css alongside other mission
+ * surfaces.
+ */
+
+:host {
+  display: block;
+  grid-column: 1 / -1;
+}
+
+/* === migrated from app-mission.css === */
+
+
+
+/* === Mission Overview hero (v39) ===========================================
+   Three-column layout: active-mission copy (left, ~72ch), attention card
+   (centre, 360px), stats column (right, 360px). A WebGL canvas paints
+   volumetric god rays + glass refraction across the whole .ov-body. */
+
+.ov-pane {
+  display: block;
+  /* The parent .mission-pane is a 2-column grid; the overview hero
+     spans the full width like the old .panel--wide rule did. */
+  grid-column: 1 / -1;
+}
+
+.ov-body {
+  display: flex;
+  justify-content: center;
+  align-items: start;
+  gap: 22px;
+  padding: 56px 32px 56px;
+  min-height: 720px;
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
+  background: var(--bg-canvas);
+  border: 1px solid var(--border-medium);
+  border-radius: 14px;
+  box-shadow:
+    0 28px 48px -32px rgba(0, 0, 0, 0.7),
+    0 1px 0 rgba(255, 255, 255, 0.02) inset;
+}
+
+.ov-main {
+  flex: 1;
+  min-width: 0;
+  padding-right: 0;
+}
+
+/* === Mission tab header (Mission brief | Active phase ∗ NN of NN) === */
+.ov-mission-tabs {
+  display: flex;
+  align-items: center;
+  gap: 28px;
+  margin-bottom: 4px;
+}
+.ov-mission-tabs::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: linear-gradient(to right, rgba(229, 169, 26, 0.4), transparent);
+  margin-left: 14px;
+}
+
+.ov-mtab {
+  position: relative;
+  background: none;
+  border: none;
+  padding: 6px 0;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 0;
+  transition: color 280ms ease, filter 320ms ease;
+  white-space: nowrap;
+}
+.ov-mtab::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -3px;
+  height: 1px;
+  background: currentColor;
+  opacity: 0;
+  transform: scaleX(0.4);
+  transform-origin: left center;
+  transition: opacity 220ms ease, transform 280ms ease, background 280ms ease;
+}
+.ov-mtab:hover {
+  color: var(--text-secondary);
+}
+.ov-mtab:hover::after {
+  opacity: 0.6;
+  transform: scaleX(1);
+}
+.ov-mtab.is-active {
+  color: var(--ember);
+}
+.ov-mtab.is-active::after {
+  opacity: 1;
+  transform: scaleX(1);
+  background: linear-gradient(to right, currentColor, transparent);
+}
+
+/* phase pill — slides out from behind the Active phase label when ACTIVE
+   is selected; collapses its layout space and slides leftward + desaturates
+   when ACTIVE is deselected so the trailing rule extends up to the label. */
+.ov-mtab__phase {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--ember);
+  font-weight: 500;
+  margin-left: 14px;
+  max-width: 240px;
+  overflow: hidden;
+  white-space: nowrap;
+  transform: translateX(0);
+  opacity: 1;
+  filter: saturate(1);
+  transition:
+    transform 420ms cubic-bezier(0.22, 1, 0.36, 1),
+    opacity 320ms ease,
+    filter 420ms ease,
+    color 320ms ease,
+    max-width 420ms cubic-bezier(0.22, 1, 0.36, 1),
+    margin-left 420ms cubic-bezier(0.22, 1, 0.36, 1);
+  pointer-events: none;
+}
+.ov-mtab:not(.is-active) .ov-mtab__phase {
+  transform: translateX(-24px);
+  opacity: 0;
+  filter: saturate(0);
+  max-width: 0;
+  margin-left: 0;
+}
+.ov-mtab__mark {
+  color: color-mix(in srgb, var(--ember) 70%, transparent);
+  font-size: 11px;
+  transform: translateY(-1px);
+}
+
+/* === Mission-level facts strip ============================================ */
+.ov-facts {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 24px;
+  margin: 18px 0 22px 0;
+  max-width: 46ch;
+}
+.ov-fact {
+  display: grid;
+  gap: 4px;
+}
+.ov-fact__label {
+  font-family: var(--font-mono);
+  font-size: 8.5px;
+  font-weight: 600;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+.ov-fact__value {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 500;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.005em;
+}
+
+/* === Mission view pane (brief / active phase) =============================
+   Width lives here, not on .ov-main, so the tab header and facts strip
+   above can size to their content while the body content stays at the
+   intended reading column width. */
+.ov-mission-pane {
+  position: relative;
+  width: calc(72ch + 32px);
+}
+.ov-mission-view {
+  transition: opacity 260ms ease;
+}
+.ov-mission-view[hidden] {
+  display: none;
+}
+
+.ov-title {
+  font-family: var(--font-display);
+  font-weight: 500;
+  font-size: 44px;
+  line-height: 1.08;
+  letter-spacing: -0.015em;
+  color: var(--text-primary);
+  margin: 0 0 22px 0;
+  font-variation-settings: 'opsz' 144;
+  max-width: 18ch;
+}
+.ov-lede {
+  font-size: 16px;
+  line-height: 1.65;
+  color: var(--text-secondary);
+  max-width: 62ch;
+  margin: 0 0 32px 0;
+  white-space: pre-wrap;
+}
+.ov-lede em {
+  color: var(--text-primary);
+  font-style: normal;
+  font-weight: 500;
+}
+.ov-lede code {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  color: var(--accent);
+  background: rgba(94, 196, 144, 0.06);
+  padding: 1px 6px;
+  border-radius: 3px;
+}
+.ov-accept {
+  font-size: 14px;
+  line-height: 1.7;
+  color: var(--text-secondary);
+  max-width: 62ch;
+  margin: 0;
+  white-space: pre-wrap;
+}
+.ov-accept code {
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  color: var(--accent);
+  background: rgba(94, 196, 144, 0.06);
+  padding: 1px 6px;
+  border-radius: 3px;
+}
+
+/* "Working on now" callout (active phase view) */
+.ov-current-item {
+  margin: 28px 0;
+  padding: 18px 22px;
+  border: 1px solid color-mix(in srgb, var(--ember) 22%, transparent);
+  background: color-mix(in srgb, var(--ember) 4%, transparent);
+  border-radius: 10px;
+  display: grid;
+  gap: 8px;
+  max-width: 60ch;
+}
+.ov-current-item__head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: color-mix(in srgb, var(--ember) 75%, var(--text-secondary));
+  font-weight: 600;
+}
+.ov-current-item__pulse {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--ember);
+  box-shadow: 0 0 6px var(--ember);
+  animation: ov-pulse 2.4s ease-in-out infinite;
+}
+.ov-current-item h3 {
+  font-family: var(--font-display);
+  font-size: 19px;
+  font-weight: 500;
+  line-height: 1.32;
+  color: var(--text-primary);
+  margin: 0;
+}
+.ov-current-item p {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--text-muted);
+  margin: 0;
+}
+
+/* === Attention card (right side of main) ================================== */
+.ov-attn-frame {
+  position: relative;
+  align-self: start;
+  margin-left: 74px;
+}
+.ov-card-shell {
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-soft);
+  border-radius: 12px;
+  padding: 22px 22px 16px;
+  align-self: start;
+  display: grid;
+  gap: 26px;
+  box-shadow: 0 12px 28px -22px rgba(0, 0, 0, 0.6);
+  width: 360px;
+}
+/* WebGL paints the glass interior — strip the chrome bg */
+.ov-attn-card {
+  position: relative;
+  z-index: 1;
+  background: transparent;
+  border: 1px solid rgba(255, 255, 255, 0.05);
+  box-shadow: 0 18px 42px -28px rgba(0, 0, 0, 0.7);
+}
+
+.ov-attn-section {
+  display: grid;
+  gap: 8px;
+}
+.ov-attn-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  margin-bottom: 6px;
+}
+.ov-attn-head strong {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+  font-weight: 500;
+}
+.ov-attn-head small {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--text-faint);
+  letter-spacing: 0.06em;
+}
+.ov-attn-head.is-primary strong {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text-primary);
+  letter-spacing: 0.2em;
+}
+.ov-attn-head.is-primary small {
+  color: var(--text-muted);
+}
+
+/* Attention rows — the markup uses <button> for clickable items + <div>
+   for static up-next items; reset button chrome and use grid layout. */
+.ov-card {
+  display: grid;
+  grid-template-columns: 3px 1fr;
+  gap: 12px;
+  padding: 12px 0;
+  align-items: start;
+  border: none;
+  background: transparent;
+  width: 100%;
+  text-align: left;
+  font: inherit;
+  color: inherit;
+}
+button.ov-card {
+  cursor: pointer;
+}
+button.ov-card:disabled {
+  cursor: default;
+}
+.ov-card:first-child {
+  padding-top: 4px;
+}
+.ov-card:last-child {
+  padding-bottom: 4px;
+}
+.ov-card__bar {
+  width: 3px;
+  align-self: stretch;
+  border-radius: 2px;
+  min-height: 32px;
+}
+.ov-card--block .ov-card__bar {
+  background: var(--accent-danger);
+  width: 4px;
+}
+.ov-card--warn .ov-card__bar {
+  background: var(--ember);
+  width: 4px;
+}
+.ov-card--info {
+  gap: 0;
+  grid-template-columns: 0 1fr;
+}
+.ov-card--info .ov-card__bar {
+  background: transparent;
+  width: 1px;
+}
+.ov-card__title {
+  color: var(--text-primary);
+  font-weight: 500;
+  font-size: 13px;
+  line-height: 1.4;
+}
+.ov-card--info .ov-card__title {
+  color: var(--text-secondary);
+  font-weight: 400;
+}
+.ov-card__detail {
+  color: var(--text-muted);
+  font-size: 11.5px;
+  line-height: 1.5;
+  margin-top: 4px;
+  display: block;
+  white-space: pre-wrap;
+}
+.ov-card--info .ov-card__detail {
+  color: var(--text-faint);
+}
+
+/* === Stats column — three calm tiles stacked vertically =================== */
+.ov-stats {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 14px;
+  width: 360px;
+  align-self: start;
+}
+.ov-stat {
+  background: rgba(35, 29, 35, 0.62);
+  border: 1px solid var(--border-soft);
+  border-radius: 12px;
+  padding: 16px 20px 18px;
+  display: grid;
+  gap: 12px;
+  align-content: start;
+  box-shadow: 0 14px 32px -28px rgba(0, 0, 0, 0.7);
+}
+.ov-stat__head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+}
+.ov-stat__label {
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+  font-weight: 600;
+}
+.ov-stat__count {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.04em;
+}
+
+/* AGENTS tile — vertical list, each row: glyph · name · state */
+.ov-stat__agents {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 8px;
+}
+.ov-stat__agent {
+  display: grid;
+  grid-template-columns: 22px 1fr auto;
+  column-gap: 12px;
+  align-items: center;
+  padding: 4px 0;
+}
+.ov-stat__agent__glyph {
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+}
+.ov-stat__agent strong {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  letter-spacing: -0.005em;
+}
+.ov-stat__agent em {
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  font-style: normal;
+  color: var(--text-faint);
+  letter-spacing: 0.06em;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.ov-stat__agent em::before {
+  content: '';
+  width: 5px;
+  height: 5px;
+  border-radius: 99px;
+  background: var(--text-faint);
+}
+.ov-stat__agent--working em {
+  color: var(--accent);
+}
+.ov-stat__agent--working em::before {
+  background: var(--accent);
+  box-shadow: 0 0 5px var(--accent);
+}
+.ov-stat__agent--idle em {
+  color: var(--text-faint);
+}
+
+/* TELEMETRY tile — runtime + tokens with sparkline */
+.ov-stat__metrics {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+  align-items: end;
+}
+.ov-stat__metrics .ov-stat__metric:last-child {
+  justify-self: flex-end;
+}
+.ov-stat__metric {
+  display: grid;
+  gap: 2px;
+}
+.ov-stat__metric strong {
+  font-family: var(--font-display);
+  font-size: 26px;
+  font-weight: 500;
+  color: var(--text-primary);
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.01em;
+}
+.ov-stat__metric strong small {
+  font-family: var(--font-display);
+  font-size: 14px;
+  color: var(--text-muted);
+  font-weight: 400;
+  margin-left: 1px;
+}
+.ov-stat__metric span {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+.ov-stat__spark {
+  width: 100%;
+  height: 28px;
+  color: color-mix(in srgb, var(--accent) 60%, transparent);
+  overflow: visible;
+}
+
+/* PROGRESS tile — bar + percent + phase markers */
+.ov-stat__progress {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 14px;
+  align-items: center;
+}
+.ov-stat__bar {
+  height: 6px;
+  background: rgba(255, 255, 255, 0.05);
+  border-radius: 99px;
+  overflow: hidden;
+}
+.ov-stat__bar span {
+  display: block;
+  height: 100%;
+  background: linear-gradient(
+    to right,
+    var(--ember),
+    color-mix(in srgb, var(--ember) 60%, var(--accent))
+  );
+  border-radius: 99px;
+}
+.ov-stat__pct {
+  font-family: var(--font-display);
+  font-size: 26px;
+  font-weight: 500;
+  color: var(--text-primary);
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+}
+.ov-stat__pct small {
+  font-family: var(--font-display);
+  font-size: 14px;
+  color: var(--text-muted);
+  font-weight: 400;
+}
+.ov-stat__phases {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.ov-phase-marker {
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+  padding: 3px 8px;
+  border: 1px solid var(--border-soft);
+  border-radius: 99px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+.ov-phase-marker.is-done {
+  color: var(--text-muted);
+}
+.ov-phase-marker.is-done::before {
+  content: '✓';
+  font-size: 8px;
+  color: var(--accent);
+}
+.ov-phase-marker.is-current {
+  color: var(--ember);
+  border-color: color-mix(in srgb, var(--ember) 40%, transparent);
+  background: color-mix(in srgb, var(--ember) 6%, transparent);
+}
+.ov-phase-marker.is-current::before {
+  content: '';
+  width: 5px;
+  height: 5px;
+  border-radius: 99px;
+  background: var(--ember);
+  box-shadow: 0 0 5px var(--ember);
+}

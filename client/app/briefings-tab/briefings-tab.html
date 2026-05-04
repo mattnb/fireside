@@ -1,0 +1,240 @@
+<section class="briefings-pane" aria-label="Briefing Room">
+  <section class="briefing-list-panel">
+    <header class="briefing-panel-head">
+      <div>
+        <div class="section-label">briefing room</div>
+        <h2>mission snapshots</h2>
+      </div>
+      <button type="button" class="control-btn" (click)="refresh()">refresh</button>
+    </header>
+    <div class="briefing-list">
+      @for (briefing of briefings(); track briefing.id) {
+      <button
+        type="button"
+        class="briefing-row"
+        [class.is-active]="briefing.id === selectedBriefingId()"
+        (click)="selectBriefing(briefing.id)"
+      >
+        <span>{{ briefing.title }}</span>
+        <strong>{{ formatShortTime(briefing.createdAt) }}</strong>
+        <p>{{ oneLine(briefing.summary, 150) }}</p>
+        <small
+          >{{ briefing.messageCount }} messages / {{ briefing.runCount }} runs / {{
+          briefing.createdBy }}</small
+        >
+      </button>
+      } @empty {
+      <p class="empty-copy">no mission snapshots saved yet</p>
+      }
+    </div>
+  </section>
+
+  <section class="briefing-detail-panel">
+    @if (briefingLoading()) {
+    <p class="empty-copy">loading briefing</p>
+    } @else if (briefingError()) {
+    <pre class="run-detail__pre">{{ briefingError() }}</pre>
+    } @else if (selectedBriefing(); as briefing) {
+    <header class="briefing-detail-head">
+      <div>
+        <div class="section-label">snapshot</div>
+        <h2>{{ briefing.title }}</h2>
+        <p>{{ briefing.summary }}</p>
+      </div>
+      <dl class="briefing-facts">
+        <div>
+          <dt>captured</dt>
+          <dd>{{ formatDateTime(briefing.createdAt) }}</dd>
+        </div>
+        <div>
+          <dt>room</dt>
+          <dd>#{{ briefing.payload.room.name }}</dd>
+        </div>
+        <div>
+          <dt>mission</dt>
+          <dd>{{ briefing.payload.task?.title || 'none' }}</dd>
+        </div>
+        <div>
+          <dt>state</dt>
+          <dd>{{ briefing.payload.task?.status || 'archived' }}</dd>
+        </div>
+        <div>
+          <dt>checklist</dt>
+          <dd>{{ briefingStatusCounts(briefing) }}</dd>
+        </div>
+        <div>
+          <dt>phases</dt>
+          <dd>{{ briefingPhaseCounts(briefing) }}</dd>
+        </div>
+      </dl>
+    </header>
+
+    <div class="briefing-grid">
+      <section class="briefing-section briefing-section--wide">
+        <div class="section-label">mission brief</div>
+        @if (briefing.payload.task; as task) {
+        <h3>{{ task.title }}</h3>
+        <p>{{ task.goal || 'No goal captured.' }}</p>
+        @if (task.acceptanceCriteria) {
+        <p><strong>Done when:</strong> {{ task.acceptanceCriteria }}</p>
+        } @if (task.repoPath) {
+        <small>{{ task.repoPath }}</small>
+        } } @else {
+        <p class="empty-copy">snapshot captured without an active mission</p>
+        }
+      </section>
+
+      <section class="briefing-section briefing-section--wide">
+        <div class="section-label">plans</div>
+        <div class="briefing-plan-list">
+          @for (plan of briefing.payload.plans; track plan.id) {
+          <article class="briefing-plan">
+            <header>
+              <h3>{{ plan.title }}</h3>
+              <strong>{{ plan.status }}</strong>
+            </header>
+            <div class="markdown-body" [innerHTML]="briefingPlanHtml(plan.body)"></div>
+          </article>
+          } @empty {
+          <p class="empty-copy">no plans captured</p>
+          }
+        </div>
+      </section>
+
+      <section class="briefing-section briefing-section--paired briefing-section--phases">
+        <div class="section-label">phase gates</div>
+        <div class="phase-grid phase-grid--briefing">
+          @for (phase of briefing.payload.phases; track phase.id) {
+          <article class="phase-card" [class.is-done]="phase.status === 'done'">
+            <header>
+              <span>{{ phase.title }}</span>
+              <strong>{{ phase.status }}</strong>
+            </header>
+            @if (phase.planId) {
+            <small class="phase-card__meta"
+              >plan {{ briefingPlanLabel(briefing, phase.planId) }}</small
+            >
+            }
+            <p>{{ phase.gate || phase.description || 'No gate criteria recorded.' }}</p>
+          </article>
+          } @empty {
+          <p class="empty-copy">no phase gates captured</p>
+          }
+        </div>
+      </section>
+
+      <section class="briefing-section briefing-section--paired briefing-section--conversation">
+        <div class="section-label">conversation archive</div>
+        @if (briefing.payload.messages.length > briefingMessages(briefing).length) {
+        <p class="panel-note">
+          showing latest {{ briefingMessages(briefing).length }} of {{
+          briefing.payload.messages.length }} messages; the full transcript is stored in the
+          snapshot payload.
+        </p>
+        }
+        <div class="briefing-transcript">
+          @for (message of briefingMessages(briefing); track message.id) {
+          <article class="briefing-message">
+            <header>
+              <span>{{
+                message.authorKind === 'agent'
+                  ? display.nameForRoom(briefing.payload.room, message.authorId)
+                  : message.authorId
+              }}</span>
+              <strong>{{ formatShortTime(message.createdAt) }}</strong>
+            </header>
+            <p>{{ message.text }}</p>
+          </article>
+          } @empty {
+          <p class="empty-copy">no messages captured</p>
+          }
+        </div>
+      </section>
+
+      <section class="briefing-section briefing-section--paired briefing-section--checklist">
+        <div class="section-label">checklist</div>
+        <div class="checklist">
+          @for (item of briefing.payload.checklistItems; track item.id) {
+          <article
+            class="check-item"
+            [class.is-blocked]="item.status === 'blocked'"
+            [class.is-done]="item.status === 'done'"
+          >
+            <label class="check-item__main">
+              <input type="checkbox" [checked]="item.status === 'done'" disabled />
+              <span class="check-item__title">
+                <strong>{{ item.title }}</strong>
+                @if (item.detail) {
+                <small>{{ item.detail }}</small>
+                }
+              </span>
+              @if (item.ownerAgentId) {
+              <span
+                class="check-owner check-owner--assigned"
+                [title]="'Owner: ' + display.nameForRoom(briefing.payload.room, item.ownerAgentId)"
+              >
+                <span
+                  class="avatar avatar--sm"
+                  [class]="display.avatarClass(item.ownerAgentId, 'sm')"
+                >
+                  @if (!display.isAgentOwner(item.ownerAgentId)) { {{ item.ownerAgentId.slice(0,
+                  1).toUpperCase() }} }
+                </span>
+              </span>
+              }
+              <em>{{ item.status }}</em>
+            </label>
+            @if (item.planId || item.phaseId || item.dependencyIds.length) {
+            <div class="check-item__meta">
+              @if (item.planId) {
+              <span>plan {{ briefingPlanLabel(briefing, item.planId) }}</span>
+              } @if (item.phaseId) {
+              <span>phase {{ item.phaseId }}</span>
+              } @if (item.dependencyIds.length) {
+              <span>after {{ item.dependencyIds.join(', ') }}</span>
+              } @if (item.parallelism) {
+              <span>{{ item.parallelism }}</span>
+              } @if (item.expectedTouches?.length) {
+              <span>{{ item.expectedTouches.length }} touch(es)</span>
+              } @if (item.conflictGroup) {
+              <span>group {{ item.conflictGroup }}</span>
+              }
+            </div>
+            } @if (item.statusNote || item.blockedReason) {
+            <p>{{ item.blockedReason || item.statusNote }}</p>
+            } @for (note of briefingChecklistNotes(briefing, item.id); track note.id) {
+            <small class="check-note"
+              >{{ display.nameForRoom(briefing.payload.room, note.authorId) }} / {{
+                note.kind
+              }}: {{ note.body }}</small
+            >
+            }
+          </article>
+          } @empty {
+          <p class="empty-copy">no checklist captured</p>
+          }
+        </div>
+      </section>
+
+      <section class="briefing-section briefing-section--paired briefing-section--collaboration">
+        <div class="section-label">collaboration</div>
+        <div class="briefing-ledger">
+          @for (item of briefing.payload.collaboration; track item.id) {
+          <article class="ledger-row">
+            <header>
+              <span>{{ item.kind }}</span>
+              <strong>{{ item.status }}</strong>
+            </header>
+            <p>{{ item.body }}</p>
+          </article>
+          } @empty {
+          <p class="empty-copy">no collaboration notes captured</p>
+          }
+        </div>
+      </section>
+    </div>
+    } @else {
+    <p class="empty-copy">select a saved briefing to inspect its frozen mission state</p>
+    }
+  </section>
+</section>

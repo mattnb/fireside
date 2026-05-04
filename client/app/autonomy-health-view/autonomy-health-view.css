@@ -1,0 +1,223 @@
+:host {
+  display: block;
+  grid-column: 1 / -1;
+}
+
+.panel--autonomy-health {
+  display: grid;
+  gap: 16px;
+  padding: 18px;
+}
+
+.health-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 18px;
+  align-items: flex-start;
+}
+
+.health-head h2 {
+  margin: 4px 0 6px;
+  font-family: Fraunces, serif;
+  font-size: 30px;
+  font-weight: 600;
+  letter-spacing: 0;
+}
+
+.health-head p,
+.health-card p,
+.health-row p {
+  margin: 0;
+  color: var(--text-muted);
+  line-height: 1.45;
+}
+
+.health-state {
+  flex: 0 0 auto;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 999px;
+  padding: 6px 10px;
+  font: 700 11px/1 JetBrains Mono, monospace;
+  text-transform: uppercase;
+}
+
+.health-state--good,
+.health-metric--good {
+  color: var(--accent);
+  border-color: rgba(101, 208, 148, 0.35);
+  background: rgba(101, 208, 148, 0.08);
+}
+
+.health-state--info,
+.health-metric--info {
+  color: var(--accent-blue);
+  border-color: rgba(116, 170, 255, 0.34);
+  background: rgba(116, 170, 255, 0.08);
+}
+
+.health-state--warn,
+.health-metric--warn {
+  color: var(--accent-warning);
+  border-color: rgba(236, 178, 94, 0.35);
+  background: rgba(236, 178, 94, 0.09);
+}
+
+.health-state--danger,
+.health-metric--danger {
+  color: var(--accent-danger);
+  border-color: rgba(255, 119, 119, 0.35);
+  background: rgba(255, 119, 119, 0.08);
+}
+
+.health-state--muted,
+.health-metric--muted {
+  color: var(--text-muted);
+}
+
+.health-metrics {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(120px, 1fr));
+  gap: 10px;
+}
+
+.health-metric,
+.health-card {
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 8px;
+  background: rgba(16, 19, 25, 0.56);
+}
+
+.health-metric {
+  display: grid;
+  gap: 6px;
+  padding: 12px;
+}
+
+.health-metric span,
+.health-card header span {
+  color: var(--text-muted);
+  font: 700 10px/1 JetBrains Mono, monospace;
+  text-transform: uppercase;
+}
+
+.health-metric strong {
+  color: var(--text-primary);
+  font-family: Fraunces, serif;
+  font-size: 28px;
+  font-weight: 600;
+}
+
+.health-metric small {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.health-grid {
+  display: grid;
+  grid-template-columns: 1.2fr 0.9fr 0.9fr;
+  gap: 12px;
+  align-items: stretch;
+}
+
+.health-grid--lower {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.health-card {
+  min-width: 0;
+  padding: 14px;
+}
+
+.health-card--wide {
+  background:
+    radial-gradient(circle at 10% 0%, rgba(227, 147, 94, 0.13), transparent 44%),
+    rgba(16, 19, 25, 0.58);
+}
+
+.health-card header {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: center;
+  margin-bottom: 12px;
+}
+
+.health-card header time,
+.health-card header strong {
+  color: var(--text-muted);
+  font: 700 10px/1 JetBrains Mono, monospace;
+  text-transform: uppercase;
+}
+
+.health-card h3 {
+  margin: 0 0 8px;
+  color: var(--text-primary);
+  font-size: 17px;
+  font-weight: 700;
+}
+
+.health-chip-row,
+.health-facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 12px;
+}
+
+.health-chip,
+.health-facts span,
+.health-row > span {
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 999px;
+  padding: 4px 7px;
+  color: var(--text-muted);
+  background: rgba(255, 255, 255, 0.04);
+  font: 700 10px/1 JetBrains Mono, monospace;
+  text-transform: uppercase;
+}
+
+.health-list {
+  display: grid;
+  gap: 8px;
+  max-height: 420px;
+  overflow: auto;
+}
+
+.health-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: start;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  padding-top: 8px;
+}
+
+.health-row:first-child {
+  border-top: 0;
+  padding-top: 0;
+}
+
+.health-row strong {
+  display: block;
+  margin-bottom: 3px;
+  color: var(--text-primary);
+  font-size: 13px;
+}
+
+.health-row > span.is-good {
+  color: var(--accent);
+  border-color: rgba(101, 208, 148, 0.3);
+}
+
+.health-row > span.is-bad {
+  color: var(--accent-danger);
+  border-color: rgba(255, 119, 119, 0.3);
+}
+
+@media (max-width: 1100px) {
+  .health-metrics,
+  .health-grid,
+  .health-grid--lower {
+    grid-template-columns: 1fr;
+  }
+}

@@ -3,6 +3,11 @@ import type {
   CollaborationKind,
   CollaborationStatus,
 } from './repos/collaboration.js';
+import {
+  hiddenBlockRegex,
+  parseHiddenBlockFields,
+  stripEmptyHiddenBlockComments,
+} from './hidden-blocks.js';
 
 export interface ParsedCollaborationNote {
   kind: CollaborationKind;
@@ -19,7 +24,7 @@ export interface ExtractedCollaborationNotes {
   notes: ParsedCollaborationNote[];
 }
 
-const NOTE_RE = /(^|\n)\/collab-note\s*\n([\s\S]*?)\n[/@]end-collab-note(?=\s|$)/gi;
+const NOTE_RE = hiddenBlockRegex('collab-note', ['collab-note']);
 const KINDS: ReadonlySet<string> = new Set([
   'proposal',
   'challenge',
@@ -68,17 +73,7 @@ function splitEvidence(value: string): string[] {
 }
 
 function parseBlock(block: string): ParsedCollaborationNote | null {
-  const fields = new Map<string, string[]>();
-  for (const rawLine of block.split(/\r?\n/)) {
-    const line = rawLine.trim();
-    if (!line) continue;
-    const idx = line.indexOf(':');
-    if (idx < 0) continue;
-    const key = line.slice(0, idx).trim().toLowerCase();
-    const value = line.slice(idx + 1).trim();
-    if (!fields.has(key)) fields.set(key, []);
-    fields.get(key)!.push(value);
-  }
+  const fields = parseHiddenBlockFields(block);
 
   const kind = normalizeKind(fields.get('kind')?.[0] ?? fields.get('type')?.[0] ?? '');
   if (!kind) return null;
@@ -117,7 +112,7 @@ export function extractCollaborationNotes(text: string): ExtractedCollaborationN
     return prefix === '\n' ? '\n' : '';
   });
   return {
-    visibleText: visibleText.trim(),
+    visibleText: stripEmptyHiddenBlockComments(visibleText).trim(),
     notes,
   };
 }

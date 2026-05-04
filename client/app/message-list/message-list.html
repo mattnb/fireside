@@ -1,0 +1,158 @@
+<ol #messagesList class="messages">
+  @for (item of items(); track item.id) { @if (item.request; as request) {
+  <li
+    class="msg permission-request"
+    [class]="'msg permission-request permission-request--' + request.status"
+  >
+    <span [class]="display.avatarClass(request.agentId)"></span>
+    <div class="permission-card">
+      <header class="permission-card__head">
+        <strong
+          >{{ display.name(request.agentId) }} requests
+          {{ permissionRequestLabel()(request) }} permission</strong
+        >
+        <span [class]="'permission-card__status permission-card__status--' + request.status">
+          {{ request.status }}
+        </span>
+      </header>
+      <div class="permission-card__target">{{ request.target }}</div>
+      <p class="permission-card__reason">{{ request.reason }}</p>
+      <div class="permission-card__facts">
+        <div>
+          <span>effective</span><strong>{{ capabilityText()(request.capabilities) }}</strong>
+        </div>
+        <div><span>target</span><strong>{{ targetStatusText()(request) }}</strong></div>
+        @if (request.providerProfile) {
+        <div><span>provider</span><strong>{{ request.providerProfile }}</strong></div>
+        } @if (request.requestedMode && request.requestedMode !== request.mode) {
+        <div><span>normalized</span><strong>{{ request.requestedMode }}</strong></div>
+        }
+      </div>
+      <footer class="permission-card__foot">
+        @if (request.status === 'pending') {
+        <button
+          type="button"
+          class="permission-card__btn permission-card__btn--deny"
+          (click)="permissionDecided.emit({ request, decision: 'denied' })"
+        >
+          Deny
+        </button>
+        <button
+          type="button"
+          class="permission-card__btn permission-card__btn--allow"
+          (click)="permissionDecided.emit({ request, decision: 'approved' })"
+        >
+          Allow
+        </button>
+        } @else {
+        <span class="permission-card__decided"
+          >{{ request.status }}{{ request.decidedBy ? ' by ' + request.decidedBy : '' }}</span
+        >
+        }
+      </footer>
+    </div>
+  </li>
+  } @else if (item.activity; as activity) {
+  <li class="activity-row" [class]="'activity-row activity-row--' + activity.tone">
+    <span class="activity-row__rail">
+      @if (activity.agentId) {
+      <span class="avatar avatar--sm" [class]="display.avatarClass(activity.agentId, 'sm')"></span>
+      } @else {
+      <span class="activity-row__dot"></span>
+      }
+    </span>
+    <div class="activity-row__main">
+      <div class="activity-row__head">
+        <span>{{ activity.title }}</span>
+        <strong>{{ activity.createdAt | date: 'shortTime' }}</strong>
+      </div>
+      @if (activity.detail) {
+      <p>{{ activity.detail }}</p>
+      }
+    </div>
+  </li>
+  } @else if (item.message; as message) {
+  <li
+    class="msg"
+    [class.is-system]="message.authorKind === 'system'"
+    [class.is-error]="item.isError"
+    [class.is-grouped]="item.grouped"
+    [class.is-queued]="message.authorKind === 'human' && message.deliveryStatus === 'queued'"
+  >
+    <span
+      class="avatar"
+      [class]="message.authorKind === 'agent' ? display.avatarClass(message.authorId) : 'avatar'"
+    >
+      @if (message.authorKind !== 'agent') { {{ message.authorId.slice(0, 1).toUpperCase() }} }
+    </span>
+    <div class="msg__main">
+      @if (!item.grouped) {
+      <div class="msg__head">
+        <span class="msg__author">{{
+          message.authorKind === 'agent' ? display.name(message.authorId) : message.authorId
+        }}</span>
+        <span class="msg__time">{{ message.createdAt | date: 'shortTime' }}</span>
+      </div>
+      } @if (isEditingQueuedMessage(message)) {
+      <form
+        class="msg__edit"
+        (submit)="$event.preventDefault(); saveEdit(message, queuedEditInput)"
+      >
+        <input
+          #queuedEditInput
+          type="text"
+          [value]="message.text"
+          aria-label="Edit queued message"
+        />
+        <div class="msg__edit-actions">
+          <button type="submit">save</button>
+          <button type="button" (click)="cancelEdit()">cancel</button>
+          <button
+            type="button"
+            class="is-danger"
+            (click)="retractQueuedMessage(message)"
+          >
+            retract
+          </button>
+        </div>
+        @if (editError()) {
+        <span class="msg__edit-error">{{ editError() }}</span>
+        }
+      </form>
+      } @else {
+      <div class="msg__body" [innerHTML]="item.html"></div>
+      @if (canManageQueuedMessage(message)) {
+      <div class="msg__actions" aria-label="Queued message actions">
+        <button type="button" (click)="beginEdit(message)">edit</button>
+        <button type="button" class="is-danger" (click)="retractQueuedMessage(message)">
+          retract
+        </button>
+      </div>
+      } } @if (item.seenAgents; as seenAgents) {
+      <div class="msg__seen" [class.is-empty]="seenAgents.length === 0">
+        <span>Seen by</span>
+        @if (seenAgents.length > 0) {
+        <span class="msg__seen-avatars" [attr.aria-label]="display.seenAgentsLabel(seenAgents)">
+          @for (agent of seenAgents; track agent) {
+          <span
+            class="avatar avatar--tiny"
+            [class]="display.avatarClass(agent, 'tiny')"
+            [title]="display.name(agent)"
+            aria-hidden="true"
+          ></span>
+          }
+        </span>
+        } @else {
+        <em>nobody</em>
+        }
+      </div>
+      }
+    </div>
+  </li>
+  } } @empty {
+  <li class="empty-state">
+    <h2>quiet room</h2>
+    <p>Messages from humans and agents will land here.</p>
+  </li>
+  }
+</ol>

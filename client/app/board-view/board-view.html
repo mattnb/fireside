@@ -1,0 +1,240 @@
+<section class="panel panel--wide mission-board">
+  <header class="mission-board__head">
+    <div>
+      <div class="section-label">kanban board</div>
+      <h2>Status lanes by phase</h2>
+    </div>
+    @if (summary(); as graph) {
+    <div class="mission-board__rollup">
+      <span><strong>{{ graph.ready }}</strong>ready</span>
+      <span><strong>{{ graph.activeRuns }}</strong>active</span>
+      <span [class.is-warn]="graph.blocked > 0"
+        ><strong>{{ graph.blocked }}</strong>blocked</span
+      >
+      <span><strong>{{ graph.itemsDone }}</strong>/{{ graph.itemsTotal }} done</span>
+    </div>
+    }
+  </header>
+
+  @if (taskControl()) { @if (parallelism(); as parallelism) {
+  <section
+    class="mission-board__parallel"
+    [class.is-expanded]="showParallelismDetails()"
+    aria-label="Next parallel batch"
+  >
+    <div>
+      <span class="mission-board__parallel-kicker">parallel batch</span>
+      <strong>{{ parallelism.phaseTitle }}</strong>
+      <span>{{ parallelism.readyCount }}/{{ parallelism.candidateCount }} ready</span>
+    </div>
+    <div class="mission-board__parallel-items">
+      @for (item of parallelism.nextBatch; track item.itemId) {
+      <button
+        type="button"
+        class="mission-board__parallel-chip"
+        title="{{ item.reason }}"
+        (click)="selectItem(item.itemId)"
+      >
+        <span>{{ item.title }}</span>
+        @if (item.ownerAgentId) {
+        <em>{{ display.name(item.ownerAgentId) }}</em>
+        } @else {
+        <em>unowned</em>
+        }
+      </button>
+      } @empty {
+      <span class="mission-board__parallel-empty">no safe batch available</span>
+      }
+    </div>
+    <div class="mission-board__parallel-actions">
+      <button
+        type="button"
+        class="mission-board__parallel-detail-toggle"
+        [class.is-active]="showParallelismDetails()"
+        (click)="toggleDetails()"
+      >
+        why
+      </button>
+      <button
+        type="button"
+        class="mission-board__parallel-send"
+        [disabled]="parallelism.nextBatch.length === 0"
+        (click)="dispatchBatch()"
+      >
+        post batch
+      </button>
+    </div>
+    @if (showParallelismDetails()) {
+    <div class="mission-board__parallel-detail" aria-label="Parallelism constraints">
+      @for (cell of parallelismConflictCells(); track cell.leftId + '-' + cell.rightId) {
+      <button
+        type="button"
+        class="mission-board__parallel-reason"
+        (click)="selectItem(cell.leftId)"
+      >
+        <span [class]="'mission-board__parallel-status is-' + cell.status">
+          {{ parallelismStatusLabel(cell.status) }}
+        </span>
+        <strong
+          >{{ parallelismItemTitle(cell.leftId) }} / {{ parallelismItemTitle(cell.rightId) }}</strong
+        >
+        <em>{{ cell.reason }}</em>
+      </button>
+      } @empty {
+      <span class="mission-board__parallel-ok">
+        all candidate pairs are compatible; no scheduling conflicts reported
+      </span>
+      } @if (parallelismConflictOverflow() > 0) {
+      <span class="mission-board__parallel-more">
+        +{{ parallelismConflictOverflow() }} more incompatibilities hidden
+      </span>
+      }
+    </div>
+    }
+  </section>
+  }
+  <div class="mission-board__col-strip">
+    <span class="mission-board__corner">phase</span>
+    @for (column of columns(); track column.id) {
+    <span [class]="'mission-board__col-tag is-' + column.id">
+      {{ column.label }}
+    </span>
+    }
+  </div>
+
+  @for (swimlane of sortedSwimlanes(); track swimlane.id) {
+  <div
+    [class]="'mission-board__swim is-group-' + phaseGroup(swimlane)"
+    [class.is-collapsed]="isCollapsed(swimlane.id)"
+  >
+    <button
+      type="button"
+      class="mission-board__lane-head"
+      (click)="toggleCollapsed(swimlane.id)"
+      [attr.aria-expanded]="!isCollapsed(swimlane.id)"
+    >
+      <span class="mission-board__lane-num"
+        >phase {{ pad2(laneSortOrder(swimlane)) }} · {{ phaseGroup(swimlane) }}</span
+      >
+      <span class="mission-board__lane-name">{{ swimlane.title }}</span>
+      @if (swimlane.gate) {
+      <span class="mission-board__lane-gate">gate: {{ swimlane.gate }}</span>
+      } @if (laneCounts(swimlane); as counts) {
+      <div class="mission-board__lane-counts">
+        @if (counts.ready) {
+        <span><strong>{{ counts.ready }}</strong>ready</span>
+        } @if (counts.active) {
+        <span><strong>{{ counts.active }}</strong>active</span>
+        } @if (counts.blocked) {
+        <span class="is-warn"><strong>{{ counts.blocked }}</strong>blocked</span>
+        } @if (counts.review) {
+        <span><strong>{{ counts.review }}</strong>review</span>
+        } @if (counts.done) {
+        <span><strong>{{ counts.done }}</strong>done</span>
+        }
+      </div>
+      }
+      <span class="mission-board__lane-toggle" aria-hidden="true">
+        {{ isCollapsed(swimlane.id) ? '▸' : '▾' }}
+      </span>
+    </button>
+
+    @if (!isCollapsed(swimlane.id)) {
+    <div class="mission-board__swim-cells">
+      @for (column of columns(); track column.id) {
+      <section class="mission-board__cell">
+        @for (card of swimlane.cardsByColumn[column.id]; track card.item.id) {
+        <article
+          [class]="'mb-card ' + cardClass(card)"
+          [class.is-selected]="selectedItemId() === card.item.id"
+          tabindex="0"
+          (click)="focusItem(card.item)"
+          (keydown.enter)="focusItem(card.item)"
+          (keydown.space)="focusItem(card.item); $event.preventDefault()"
+        >
+          <div class="mb-card__top">
+            <span class="mb-card__title">{{ card.item.title }}</span>
+            <span class="mb-card__status">{{ card.item.status }}</span>
+          </div>
+          @if (card.item.detail) {
+          <p class="mb-card__detail">{{ card.item.detail }}</p>
+          } @if (card.dependencies.length) {
+          <div class="mb-card__links">
+            <span>after</span>
+            <div class="mb-card__targets">
+              @for (dependency of card.dependencies; track dependency.id) {
+              <em [class.is-done]="dependency.done"
+                >{{ dependency.title }} / {{ dependency.status }}</em
+              >
+              }
+            </div>
+          </div>
+          } @if (card.dependents.length) {
+          <div class="mb-card__links">
+            <span>unblocks</span>
+            <div class="mb-card__targets">
+              @for (dependent of card.dependents; track dependent.id) {
+              <em [class.is-done]="dependent.done"
+                >{{ dependent.title }} / {{ dependent.status }}</em
+              >
+              }
+            </div>
+          </div>
+          } @if (card.activeRun || card.latestRun) {
+          <button
+            type="button"
+            class="mb-card__run"
+            [class.is-active]="card.activeRun"
+            (click)="openRun(card, $event)"
+          >
+            ● {{ runLabel()(card) }}
+          </button>
+          } @if (notePreview()(card)) {
+          <small class="mb-card__note">{{ notePreview()(card) }}</small>
+          }
+          <div class="mb-card__meta">
+            @if (card.item.ownerAgentId) {
+            <span [title]="'Owner: ' + display.name(card.item.ownerAgentId)">
+              <span class="avatar avatar--sm" [class]="display.avatarClass(card.item.ownerAgentId, 'sm')">
+                @if (!display.isAgentOwner(card.item.ownerAgentId)) { {{
+                card.item.ownerAgentId.slice(0, 1).toUpperCase() }} }
+              </span>
+              {{ display.name(card.item.ownerAgentId) }}
+            </span>
+            } @else {
+            <span>unassigned</span>
+            }
+            <span
+              class="mb-card__id-copy"
+              title="Click to copy id"
+              (click)="copyId(card.item.id, $event)"
+              >id {{ shortTaskId(card.item.id) }}</span
+            >
+            @if (card.item.parallelism) {
+            <span [class]="'mission-scope-chip is-' + card.item.parallelism">
+              {{ card.item.parallelism }}
+            </span>
+            } @if (card.item.expectedTouches?.length) {
+            <span>{{ card.item.expectedTouches.length }} touch(es)</span>
+            } @if (card.item.conflictGroup) {
+            <span>group {{ card.item.conflictGroup }}</span>
+            } @if (card.notesCount) {
+            <span>{{ card.notesCount }} notes</span>
+            } @if (card.evidenceCount) {
+            <span>{{ card.evidenceCount }} evidence</span>
+            }
+          </div>
+        </article>
+        } @empty {
+        <p class="mission-board__empty">none</p>
+        }
+      </section>
+      }
+    </div>
+    }
+  </div>
+  }
+  } @else {
+  <p class="empty-copy">kanban board is waiting on an active mission</p>
+  }
+</section>

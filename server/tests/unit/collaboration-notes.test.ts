@@ -60,4 +60,37 @@ body: The compact prompt must not teach a malformed terminator.
       body: 'The compact prompt must not teach a malformed terminator.',
     });
   });
+
+  it('parses YAML-style block scalars and list evidence inside hidden comments', () => {
+    const result = extractCollaborationNotes(`Visible summary.
+
+<!--
+/collab-note
+kind: evidence
+title: Slate dispatch evidence
+target: mission control
+status: informational
+confidence: high
+evidence:
+  - run:abc123
+  - test:npm test
+body: |
+  First line of evidence.
+  Second line of evidence.
+/end-collab-note
+-->
+`);
+
+    expect(result.visibleText).toBe('Visible summary.');
+    expect(result.notes).toHaveLength(1);
+    expect(result.notes[0]).toMatchObject({
+      kind: 'evidence',
+      status: 'informational',
+      confidence: 'high',
+      title: 'Slate dispatch evidence',
+      target: 'mission control',
+      body: 'First line of evidence.\nSecond line of evidence.',
+      evidence: ['run:abc123', 'test:npm test'],
+    });
+  });
 });

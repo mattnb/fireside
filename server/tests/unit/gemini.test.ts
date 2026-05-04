@@ -91,6 +91,79 @@ describe('gemini adapter', () => {
     ]);
   });
 
+  it('emits context usage from stream-json result stats', () => {
+    expect(
+      geminiSpec.parseStreamLine?.(
+        JSON.stringify({
+          type: 'result',
+          status: 'success',
+          stats: {
+            usage_metadata: {
+              input_token_count: 15,
+              output_token_count: 8,
+              total_token_count: 23,
+              cached_content_token_count: 0,
+            },
+            duration_ms: 450,
+            model: 'gemini-2.0-flash-exp',
+          },
+        }),
+        'stdout',
+      ),
+    ).toEqual([
+      {
+        kind: 'usage',
+        status: 'completed',
+        label: 'gemini result received',
+        detail: 'gemini-2.0-flash-exp: 23 used / window unknown',
+        contextUsage: {
+          provider: 'gemini',
+          model: 'gemini-2.0-flash-exp',
+          usedTokens: 23,
+          inputTokens: 15,
+          cachedInputTokens: 0,
+          outputTokens: 8,
+          source: 'gemini:stats.usage_metadata',
+        },
+      },
+    ]);
+  });
+
+  it('emits context usage from legacy model token stats', () => {
+    expect(
+      geminiSpec.parseStreamLine?.(
+        JSON.stringify({
+          type: 'result',
+          status: 'success',
+          stats: {
+            models: {
+              'gemini-2.5-flash-lite': {
+                tokens: { input: 10, output: 2, total: 12, cached: 3 },
+              },
+            },
+          },
+        }),
+        'stdout',
+      ),
+    ).toEqual([
+      {
+        kind: 'usage',
+        status: 'completed',
+        label: 'gemini result received',
+        detail: 'gemini-2.5-flash-lite: 12 used / window unknown',
+        contextUsage: {
+          provider: 'gemini',
+          model: 'gemini-2.5-flash-lite',
+          usedTokens: 12,
+          inputTokens: 10,
+          cachedInputTokens: 3,
+          outputTokens: 2,
+          source: 'gemini:stats.models.tokens',
+        },
+      },
+    ]);
+  });
+
   it('creates a fresh empty cwd per turn', () => {
     const first = geminiSpec.buildCwd?.('first', null);
     const second = geminiSpec.buildCwd?.('second', null);

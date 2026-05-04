@@ -1,0 +1,9 @@
+/* client/app/message-list/message-list.css
+ * Outer host placement only. Message-list relies on `.messages`, `.msg`,
+ * `.permission-card`, and `.activity-row` selectors that stay global in
+ * app.css since they're layout-coupled to the chat-pane shell.
+ */
+
+:host {
+  display: contents;
+}

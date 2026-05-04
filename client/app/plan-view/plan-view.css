@@ -1,0 +1,40 @@
+/* client/app/plan-view/plan-view.css
+ * Styles for the active-plan panel and its editorial markdown body.
+ * Migrated out of app.css. The .panel base, .section-label, .markdown-body,
+ * .inline-form, and .control-btn rules continue to live in app.css/styles.css
+ * as global utilities.
+ */
+
+:host {
+  display: block;
+  grid-column: 1 / -1;
+  max-width: 124ch;
+}
+
+.panel--plan {
+  padding: 24px 28px 28px;
+  background: rgb(58 54 32 / 20%);
+}
+
+.panel--plan .section-label {
+  margin-bottom: 12px;
+}
+
+.panel--plan h3 {
+  margin: 0 0 8px;
+  font-family: var(--font-serif, 'Fraunces', 'Times New Roman', serif);
+  font-weight: 500;
+  font-size: 24px;
+  color: var(--text-primary);
+  letter-spacing: -0.01em;
+  line-height: 1.2;
+}
+
+.panel--plan .panel-note {
+  margin: 0 0 18px;
+  color: var(--text-muted);
+  font-size: 12.5px;
+  font-style: italic;
+  line-height: 1.5;
+  max-width: 88ch;
+}

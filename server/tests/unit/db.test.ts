@@ -19,6 +19,9 @@ describe('openDatabase', () => {
     expect(names).toContain('sessions');
     expect(names).toContain('collaboration_items');
     expect(names).toContain('agent_run_actions');
+    expect(names).toContain('routing_decisions');
+    expect(names).toContain('mission_command_events');
+    expect(names).toContain('agent_turn_outcomes');
     expect(names).toContain('agent_jobs');
     expect(names).toContain('task_phases');
     expect(names).toContain('task_checklist_items');
@@ -307,6 +310,128 @@ describe('openDatabase', () => {
       }),
     ]);
     expect(JSON.parse(items[0]!.evidence_json)).toEqual(['test:db']);
+    db.close();
+  });
+
+  it('repairs malformed YAML-style hidden ledger rows from stored run replies', () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), 'fireside-hidden-ledger-repair-'));
+    const filename = path.join(dir, 'fireside.sqlite');
+    const initial = openDatabase(filename);
+    initial
+      .prepare(
+        `INSERT INTO rooms (id, name, created_at, agents_json, yolo_agents_json)
+         VALUES ('room-1', 'room', 1, '[]', '[]')`,
+      )
+      .run();
+    const reply = [
+      '<!--',
+      '/collab-note',
+      'kind: evidence',
+      'title: Repaired evidence',
+      'status: informational',
+      'confidence: high',
+      'evidence:',
+      '  - run:abc123',
+      '  - test:npm test',
+      'body: |',
+      '  First repaired line.',
+      '  Second repaired line.',
+      '/end-collab-note',
+      '-->',
+      '',
+      '<!--',
+      '/mission-receipt',
+      'status: continuing',
+      'summary: |',
+      '  Standby continues.',
+      '  No checklist state changed.',
+      '/end-mission-receipt',
+      '-->',
+    ].join('\n');
+    initial
+      .prepare(
+        `INSERT INTO agent_runs (
+          id, room_id, trigger_message_id, agent_id, status, permission_mode,
+          prompt_chars, estimated_prompt_tokens, live_messages, context_artifacts,
+          started_at, completed_at, reply_text
+        ) VALUES ('run-1', 'room-1', 'trigger-1', 'claude', 'completed', 'plan',
+          10, 3, 1, 0, 2, 2, ?)`,
+      )
+      .run(reply);
+    initial
+      .prepare(
+        `INSERT INTO collaboration_items (
+          id, room_id, task_id, subject_type, subject_id, message_id, run_id, agent_id, kind,
+          status, confidence, title, target, body, evidence_json, created_at
+        ) VALUES ('collab-1', 'room-1', NULL, NULL, NULL, NULL, 'run-1', 'claude',
+          'evidence', 'informational', '', 'Repaired evidence', '', '|', '["|"]', 2)`,
+      )
+      .run();
+    initial
+      .prepare(
+        `INSERT INTO agent_run_actions (
+          id, room_id, task_id, run_id, agent_id, kind, status, label, detail, created_at
+        ) VALUES ('action-1', 'room-1', NULL, 'run-1', 'claude', 'ledger', 'info',
+          'mission receipt: continuing', '{"message":"|","status":"continuing","summary":"|"}', 2)`,
+      )
+      .run();
+    initial.close();
+
+    const db = openDatabase(filename);
+    const collab = db
+      .prepare(`SELECT body, evidence_json, confidence FROM collaboration_items WHERE id = 'collab-1'`)
+      .get() as { body: string; evidence_json: string; confidence: string };
+    const action = db
+      .prepare(`SELECT detail FROM agent_run_actions WHERE id = 'action-1'`)
+      .get() as { detail: string };
+
+    expect(collab.body).toBe('First repaired line.\nSecond repaired line.');
+    expect(JSON.parse(collab.evidence_json)).toEqual(['run:abc123', 'test:npm test']);
+    expect(collab.confidence).toBe('high');
+    expect(JSON.parse(action.detail)).toMatchObject({
+      status: 'continuing',
+      summary: 'Standby continues.\nNo checklist state changed.',
+    });
+    db.close();
+  });
+
+  it('removes empty hidden comment wrapper messages from historical chat', () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), 'fireside-empty-comment-repair-'));
+    const filename = path.join(dir, 'fireside.sqlite');
+    const initial = openDatabase(filename);
+    initial
+      .prepare(
+        `INSERT INTO rooms (id, name, created_at, agents_json, yolo_agents_json)
+         VALUES ('room-1', 'room', 1, '[]', '[]')`,
+      )
+      .run();
+    initial
+      .prepare(
+        `INSERT INTO messages (id, room_id, author_id, author_kind, text, created_at)
+         VALUES ('message-1', 'room-1', 'claude', 'agent', '<!--\n\n-->', 2)`,
+      )
+      .run();
+    initial
+      .prepare(
+        `INSERT INTO agent_runs (
+          id, room_id, trigger_message_id, reply_message_id, agent_id, status, permission_mode,
+          prompt_chars, estimated_prompt_tokens, live_messages, context_artifacts, started_at, completed_at
+        ) VALUES ('run-1', 'room-1', 'trigger-1', 'message-1', 'claude', 'completed', 'plan',
+          10, 3, 1, 0, 2, 2)`,
+      )
+      .run();
+    initial.close();
+
+    const db = openDatabase(filename);
+    const message = db
+      .prepare(`SELECT id FROM messages WHERE id = 'message-1'`)
+      .get() as { id: string } | undefined;
+    const run = db
+      .prepare(`SELECT reply_message_id FROM agent_runs WHERE id = 'run-1'`)
+      .get() as { reply_message_id: string | null };
+
+    expect(message).toBeUndefined();
+    expect(run.reply_message_id).toBeNull();
     db.close();
   });
 

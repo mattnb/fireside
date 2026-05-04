@@ -25,6 +25,16 @@ function slug(value: string): string {
     .slice(0, 64);
 }
 
+function displayNameKey(value: string): string {
+  return cleanDisplayName(value).toLowerCase();
+}
+
+function duplicateDisplayName(base: string, counter: number): string {
+  if (counter === 2) return `${base} Jr.`;
+  if (counter === 3) return `${base} III`;
+  return `${base} ${counter}`;
+}
+
 function uniqueId(base: string, seen: Set<string>): AgentId {
   const cleanBase = slug(base) || 'agent';
   let candidate = cleanBase;
@@ -55,12 +65,77 @@ function uniqueDisplayName(base: string, seen: Set<string>): string {
   const cleanBase = cleanDisplayName(base) || 'Agent';
   let candidate = cleanBase;
   let counter = 2;
-  while (seen.has(candidate.toLowerCase())) {
-    candidate = `${cleanBase} ${counter}`;
+  while (seen.has(displayNameKey(candidate))) {
+    candidate = duplicateDisplayName(cleanBase, counter);
     counter += 1;
   }
-  seen.add(candidate.toLowerCase());
+  seen.add(displayNameKey(candidate));
   return candidate;
+}
+
+export function roomAgentHandleForProfile(
+  profile: Pick<RoomAgentProfile, 'id' | 'providerId' | 'displayName'>,
+  providerCounts: Map<ProviderId, number>,
+): string {
+  const displaySlug = slug(profile.displayName);
+  const providerIsAmbiguous = (providerCounts.get(profile.providerId) ?? 0) > 1;
+  if (displaySlug && (!providerIsAmbiguous || displaySlug !== profile.providerId)) {
+    return displaySlug;
+  }
+  return slug(profile.id) || profile.id.toLowerCase();
+}
+
+export function validateRoomParticipantNames(input: {
+  agentProfiles: Array<Pick<RoomAgentProfile, 'id' | 'providerId' | 'displayName'>>;
+  humanName?: string | null;
+}): string[] {
+  const errors: string[] = [];
+  const seenNames = new Map<string, string>();
+  const seenHandles = new Map<string, string>();
+  const providerCounts = new Map<ProviderId, number>();
+  for (const profile of input.agentProfiles) {
+    providerCounts.set(profile.providerId, (providerCounts.get(profile.providerId) ?? 0) + 1);
+  }
+
+  const addParticipant = (label: string, displayName: string, handle: string): void => {
+    const cleanName = cleanDisplayName(displayName);
+    if (!cleanName) {
+      errors.push(`${label} needs a display name`);
+      return;
+    }
+    const nameKey = displayNameKey(cleanName);
+    const existingName = seenNames.get(nameKey);
+    if (existingName) {
+      errors.push(`${label} name "${cleanName}" conflicts with ${existingName}`);
+    } else {
+      seenNames.set(nameKey, label);
+    }
+
+    const handleKey = slug(handle || cleanName);
+    if (!handleKey) {
+      errors.push(`${label} needs a routeable @handle`);
+      return;
+    }
+    const existingHandle = seenHandles.get(handleKey);
+    if (existingHandle) {
+      errors.push(`${label} handle @${handleKey} conflicts with ${existingHandle}`);
+    } else {
+      seenHandles.set(handleKey, label);
+    }
+  };
+
+  const humanName = cleanDisplayName(input.humanName);
+  if (humanName) addParticipant(`human "${humanName}"`, humanName, humanName);
+
+  for (const profile of input.agentProfiles) {
+    addParticipant(
+      `agent "${cleanDisplayName(profile.displayName) || profile.id}"`,
+      profile.displayName,
+      roomAgentHandleForProfile(profile, providerCounts),
+    );
+  }
+
+  return [...new Set(errors)];
 }
 
 export function providerIdFromAgentId(agentId: AgentId): ProviderId | null {

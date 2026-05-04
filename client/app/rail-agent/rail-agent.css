@@ -1,0 +1,9 @@
+/* client/app/rail-agent/rail-agent.css
+ * Outer host placement only. Rail-agent reuses the global `.rail-agent*`
+ * selectors that share styling with the bare project-agent variant in
+ * app.css.
+ */
+
+:host {
+  display: contents;
+}

@@ -1,0 +1,8 @@
+/* client/app/task-inspector-modal/task-inspector-modal.css
+ * Outer host placement only. The dialog reuses `.modal*` and
+ * `.task-inspector*` selectors that stay global in app.css.
+ */
+
+:host {
+  display: contents;
+}

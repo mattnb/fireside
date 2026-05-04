@@ -95,4 +95,31 @@ describe('mission receipts', () => {
       },
     ]);
   });
+
+  it('parses YAML-style receipt fields and removes empty html wrappers', () => {
+    const extracted = extractMissionReceipts(
+      [
+        '<!--',
+        '/mission-receipt',
+        'status: continuing',
+        'summary: |',
+        '  Standby continues.',
+        '  No checklist state changed.',
+        'evidence: |',
+        '  run:abc123',
+        '  slate room inspection',
+        '/end-mission-receipt',
+        '-->',
+      ].join('\n'),
+    );
+
+    expect(extracted.visibleText).toBe('');
+    expect(extracted.receipts).toMatchObject([
+      {
+        status: 'continuing',
+        summary: 'Standby continues.\nNo checklist state changed.',
+        evidence: 'run:abc123\nslate room inspection',
+      },
+    ]);
+  });
 });

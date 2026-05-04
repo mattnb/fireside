@@ -84,4 +84,47 @@ describe('agent personas', () => {
     expect(technicalLead.prompt).toContain('implementation strategy');
     expect(technicalLead.prompt).toContain('parallelized safely');
   });
+
+  it('includes a dedicated UX team for research, architecture, interaction, and visual systems', () => {
+    const uxArchitect = getAgentPersona('ux-architect');
+    const uxResearcher = getAgentPersona('ux-researcher');
+    const interactionDesigner = getAgentPersona('interaction-designer');
+    const visualDesigner = getAgentPersona('visual-design-systems-designer');
+
+    expect(uxArchitect).toMatchObject({
+      id: 'ux-architect',
+      name: 'UX Architect',
+      category: 'orchestrator',
+    });
+    expect(uxArchitect.prompt).toContain('design language');
+    expect(uxArchitect.prompt).toContain('information architecture');
+    expect(uxArchitect.prompt).toContain('generic model-default UI patterns');
+
+    expect(uxResearcher).toMatchObject({
+      id: 'ux-researcher',
+      name: 'UX Researcher',
+      category: 'researcher',
+    });
+    expect(uxResearcher.prompt).toContain('jobs to be done');
+    expect(uxResearcher.prompt).toContain('Separate evidence from assumptions');
+    expect(uxResearcher.prompt).toContain('usability');
+
+    expect(interactionDesigner).toMatchObject({
+      id: 'interaction-designer',
+      name: 'Interaction Designer',
+      category: 'designer',
+    });
+    expect(interactionDesigner.prompt).toContain('progressive disclosure');
+    expect(interactionDesigner.prompt).toContain('focus order');
+    expect(interactionDesigner.prompt).toContain('what is happening');
+
+    expect(visualDesigner).toMatchObject({
+      id: 'visual-design-systems-designer',
+      name: 'Visual Design Systems Designer',
+      category: 'designer',
+    });
+    expect(visualDesigner.prompt).toContain('typography');
+    expect(visualDesigner.prompt).toContain('wow');
+    expect(visualDesigner.prompt).toContain('reusable tokens');
+  });
 });

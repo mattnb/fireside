@@ -1,0 +1,4 @@
+{"type":"system","subtype":"init","session_id":"fixture-claude-session","model":"claude-opus-4-7[1m]"}
+{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"pong"}}}
+{"type":"assistant","message":{"content":[{"type":"text","text":"pong"}]}}
+{"type":"result","subtype":"success","is_error":false,"result":"pong","session_id":"fixture-claude-session","usage":{"input_tokens":6,"output_tokens":6},"modelUsage":{"claude-opus-4-7[1m]":{"inputTokens":6,"outputTokens":6,"cacheReadInputTokens":0,"cacheCreationInputTokens":0,"contextWindow":1000000}}}

@@ -1,0 +1,61 @@
+/* client/app/app-vfx.css
+ * Smoke + embers, the WebGL god-rays canvas placement, and any keyframes
+ * that drive purely decorative motion.
+ */
+
+
+
+.rooms__vfx {
+  opacity: 0.72;
+}
+
+@keyframes roadmap-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.55;
+  }
+}
+
+@keyframes flicker {
+  0%,
+  100% {
+    transform: scale(1) rotate(0);
+    opacity: 1;
+  }
+  35% {
+    transform: scale(1.05) rotate(-1.2deg);
+    opacity: 0.94;
+  }
+  68% {
+    transform: scale(0.97) rotate(1deg);
+    opacity: 1;
+  }
+}
+
+.ov-rays-canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  display: block;
+}
+
+.ov-body > :not(.ov-rays-canvas) {
+  position: relative;
+  z-index: 1;
+}
+@keyframes ov-pulse {
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.55;
+    transform: scale(0.85);
+  }
+}

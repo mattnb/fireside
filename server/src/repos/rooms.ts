@@ -16,6 +16,7 @@ export interface Room {
   name: string;
   agents: AgentId[];
   yoloAgents: AgentId[];
+  leadAgentId: AgentId | null;
   agentProfiles: RoomAgentProfile[];
   createdAt: number;
 }
@@ -27,6 +28,7 @@ interface RoomRow {
   agents_json: string;
   yolo_agents_json: string;
   agent_profiles_json?: string;
+  lead_agent_id?: string | null;
   created_at: number;
 }
 
@@ -48,6 +50,10 @@ function parseAgents(json: string): AgentId[] {
 function rowToRoom(row: RoomRow): Room {
   const agents = parseAgents(row.agents_json);
   const yoloAgents = parseAgents(row.yolo_agents_json).filter((agent) => agents.includes(agent));
+  const leadAgentId =
+    typeof row.lead_agent_id === 'string' && agents.includes(row.lead_agent_id)
+      ? row.lead_agent_id
+      : null;
   const agentProfiles = parseRoomAgentProfiles(row.agent_profiles_json ?? '[]', agents);
   return {
     id: row.id,
@@ -55,6 +61,7 @@ function rowToRoom(row: RoomRow): Room {
     name: row.name,
     agents,
     yoloAgents,
+    leadAgentId,
     agentProfiles,
     createdAt: row.created_at,
   };
@@ -66,6 +73,7 @@ export function createRoom(
     name: string;
     agents?: AgentId[];
     yoloAgents?: AgentId[];
+    leadAgentId?: AgentId | null;
     agentProfiles?: RoomAgentProfile[];
     projectId?: string | null;
   },
@@ -78,15 +86,17 @@ export function createRoom(
   const agentProfiles = normalizeRoomAgentProfiles(agentProfileInput);
   const agents = agentProfiles.map((profile) => profile.id);
   const yoloAgents = (input.yoloAgents ?? []).filter((agent) => agents.includes(agent));
+  const leadAgentId =
+    input.leadAgentId && agents.includes(input.leadAgentId) ? input.leadAgentId : null;
   const projectId =
     input.projectId && getProject(db, input.projectId)
       ? input.projectId
       : ensureDefaultProject(db).id;
   db.prepare(
     `INSERT INTO rooms (
-      id, project_id, name, created_at, agents_json, yolo_agents_json, agent_profiles_json
+      id, project_id, name, created_at, agents_json, yolo_agents_json, agent_profiles_json, lead_agent_id
     )
-     VALUES (?, ?, ?, ?, ?, ?, ?)`,
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     id,
     projectId,
@@ -95,8 +105,9 @@ export function createRoom(
     JSON.stringify(agents),
     JSON.stringify(yoloAgents),
     JSON.stringify(agentProfiles),
+    leadAgentId,
   );
-  return { id, projectId, name: input.name, agents, yoloAgents, agentProfiles, createdAt: now };
+  return { id, projectId, name: input.name, agents, yoloAgents, leadAgentId, agentProfiles, createdAt: now };
 }
 
 export function getRoom(db: Database, id: string): Room | null {
@@ -121,6 +132,7 @@ export function setRoomAgents(
   agents: AgentId[],
   yoloAgents?: AgentId[],
   agentProfiles?: RoomAgentProfile[],
+  leadAgentId?: AgentId | null,
 ): void {
   const room = getRoom(db, roomId);
   if (!room) return;
@@ -141,18 +153,44 @@ export function setRoomAgents(
   const nextYoloAgents = (yoloAgents ?? room.yoloAgents).filter((agent) =>
     nextAgents.includes(agent),
   );
+  const nextLeadAgentId =
+    leadAgentId === undefined
+      ? room.leadAgentId && nextAgents.includes(room.leadAgentId)
+        ? room.leadAgentId
+        : null
+      : leadAgentId && nextAgents.includes(leadAgentId)
+        ? leadAgentId
+        : null;
   // Run as a transaction so the agent list and session cleanup are atomic.
   const tx = db.transaction((newAgents: AgentId[]) => {
     db.prepare(
       `UPDATE rooms
-       SET agents_json = ?, yolo_agents_json = ?, agent_profiles_json = ?
+       SET agents_json = ?, yolo_agents_json = ?, agent_profiles_json = ?, lead_agent_id = ?
        WHERE id = ?`,
-    ).run(JSON.stringify(newAgents), JSON.stringify(nextYoloAgents), JSON.stringify(nextProfiles), roomId);
+    ).run(
+      JSON.stringify(newAgents),
+      JSON.stringify(nextYoloAgents),
+      JSON.stringify(nextProfiles),
+      nextLeadAgentId,
+      roomId,
+    );
     if (sessionsToDelete.length > 0) {
       for (const agentId of sessionsToDelete) deleteCliSessionId(db, roomId, agentId);
     }
   });
   tx(nextAgents);
+}
+
+export function setRoomLeadAgent(
+  db: Database,
+  roomId: string,
+  leadAgentId: AgentId | null,
+): Room | null {
+  const room = getRoom(db, roomId);
+  if (!room) return null;
+  const nextLeadAgentId = leadAgentId && room.agents.includes(leadAgentId) ? leadAgentId : null;
+  db.prepare(`UPDATE rooms SET lead_agent_id = ? WHERE id = ?`).run(nextLeadAgentId, roomId);
+  return getRoom(db, roomId);
 }
 
 export function deleteRoom(db: Database, roomId: string): boolean {

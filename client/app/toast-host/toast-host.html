@@ -1,0 +1,24 @@
+<div class="toast-host" role="status" aria-live="polite" aria-atomic="false">
+  @for (toast of toastService.toasts(); track toast.id) {
+  <div class="toast">
+    <span class="toast__message">{{ toast.message }}</span>
+    @if (toast.action) {
+    <button
+      type="button"
+      class="toast__action"
+      (click)="toastService.invokeAction(toast.id)"
+    >
+      {{ toast.action.label }}
+    </button>
+    }
+    <button
+      type="button"
+      class="toast__close"
+      aria-label="Dismiss notification"
+      (click)="toastService.dismiss(toast.id)"
+    >
+      &times;
+    </button>
+  </div>
+  }
+</div>

@@ -1,0 +1,100 @@
+<aside class="presence" aria-label="People and active work">
+  <section class="presence__body">
+    <div class="presence-group">
+      <div class="presence-group__head">
+        <span class="section-label">agents</span>
+        <em>
+          {{ hasRoom() ? roomYoloAgents().length : projectYoloAgents().length }} yolo
+        </em>
+      </div>
+      @if (!hasRoom()) { @for (agent of projectAgents(); track agent) {
+      <div
+        [class]="
+          'rail-agent rail-agent--bare rail-agent--' +
+          agent +
+          ' rail-agent--idle rail-agent--no-usage'
+        "
+      >
+        <span class="rail-agent__pulse" aria-hidden="true"></span>
+        <span
+          class="avatar avatar--sm rail-agent__glyph-bare"
+          [class]="display.avatarClass(agent, 'sm') + ' rail-agent__glyph-bare'"
+        ></span>
+        <div class="rail-agent__meta">
+          <div class="rail-agent__head">
+            <span class="rail-agent__name">{{ display.name(agent) }}</span>
+          </div>
+          <span class="rail-agent__status">
+            {{ projectYoloAgents().includes(agent) ? 'yolo' : 'project' }}
+          </span>
+        </div>
+      </div>
+      } @empty {
+      <p class="empty-copy">no project agents yet</p>
+      } } @else { @if (yoloBankVisible()) {
+      <div class="yolo-turn-bank" [class]="'yolo-turn-bank yolo-turn-bank--' + yoloTone()">
+        <div class="yolo-turn-bank__head">
+          <span>yolo turns</span>
+          <button
+            type="button"
+            title="Add YOLO turns"
+            [disabled]="!yoloActive()"
+            (click)="addYoloTurnsRequested.emit()"
+          >
+            +
+          </button>
+        </div>
+        <strong>{{ yoloCounterText() }}</strong>
+        <div class="yolo-turn-bank__bar" aria-hidden="true">
+          <span [style.width.%]="yoloPercentRemaining()"></span>
+        </div>
+      </div>
+      } @for (agent of roomAgents(); track agent) {
+      <fs-rail-agent
+        [agentId]="agent"
+        (compactRequested)="compactRequested.emit($event)"
+      ></fs-rail-agent>
+      } @empty {
+      <p class="empty-copy">no agents in this room</p>
+      }
+      <button class="agent-manage-btn" type="button" (click)="manageAgentsRequested.emit()">
+        Manage Agents
+      </button>
+      }
+    </div>
+
+    <div class="presence-group">
+      <div class="section-label">working</div>
+      @for (run of runningRuns(); track run.id) {
+      <article class="work-card" [class.is-stale]="isRunStale()(run)">
+        <button class="work-row" type="button" (click)="runOpened.emit(run.id)">
+          <span class="work-row__top">
+            <strong>{{ display.name(run.agentId) }}</strong>
+            <em>{{ elapsedLabel()(run.startedAt, run.completedAt) }}</em>
+          </span>
+          <span>{{ runMeta()(run) }}</span>
+          <small>{{ runActionSignal()(run) }}</small>
+          @if (runDraftSignal()(run); as draft) {
+          <span class="work-draft">
+            <span class="work-draft__label">draft</span>
+            <span>{{ draft }}</span>
+          </span>
+          }
+        </button>
+        @if (canDismissRun()(run)) {
+        <button
+          type="button"
+          class="work-dismiss"
+          title="Dismiss stale running cue"
+          (click)="runDismissed.emit({ run, event: $event })"
+        >
+          dismiss
+        </button>
+        }
+      </article>
+      } @empty {
+      <p class="empty-copy">no active runs</p>
+      }
+    </div>
+  </section>
+</aside>

@@ -1,0 +1,238 @@
+<section class="panel panel--checklist">
+  <div class="section-label">checklist</div>
+  @if (taskControl(); as control) {
+  <div class="checklist-toolbar">
+    <label class="inline-check checklist-toggle">
+      <input
+        type="checkbox"
+        [checked]="compactCompleted()"
+        (change)="setCompactCompleted($event)"
+      />
+      compact completed
+    </label>
+  </div>
+  <div class="checklist">
+    @for (phase of control.phases; track phase.id) { @let items = phaseItems(phase.id); @let
+    collapsed = isPhaseCollapsed(phase.id);
+    <section class="check-phase" [class.is-collapsed]="collapsed">
+      <button
+        type="button"
+        class="check-phase__head"
+        (click)="togglePhaseCollapsed(phase.id)"
+        [attr.aria-expanded]="!collapsed"
+      >
+        <span class="check-phase__caret"></span>
+        <span class="check-phase__title">
+          <strong>{{ phase.title }}</strong>
+          @if (phase.summary) {
+          <small>{{ phase.summary }}</small>
+          }
+        </span>
+        <span class="check-phase__progress">
+          <span class="check-phase__bar">
+            <span [style.width.%]="phaseProgressPercent(phase.id)"></span>
+          </span>
+          <span class="check-phase__count">{{ phaseProgressLabel(phase.id) }}</span>
+        </span>
+        <span class="check-phase__status" [class]="'check-phase__status--' + phase.status">
+          {{ phaseStatusLabel(phase.status) }}
+        </span>
+      </button>
+      @if (!collapsed) {
+      <div class="check-phase__items">
+        @for (item of items; track item.id) {
+        <article
+          class="check-item"
+          [class.is-blocked]="item.status === 'blocked'"
+          [class.is-done]="item.status === 'done'"
+          [class.is-waiting]="isWaitingOnDependencies(item)"
+          [class.is-compact-done]="isItemCollapsed(item)"
+        >
+          <label class="check-item__main">
+            <input
+              type="checkbox"
+              [checked]="item.status === 'done'"
+              [disabled]="item.status === 'skipped'"
+              (change)="toggleItem(item, $event)"
+            />
+            <span class="check-item__title">
+              <strong>{{ item.title }}</strong>
+              @if (item.detail) {
+              <small>{{ item.detail }}</small>
+              }
+            </span>
+            <em class="check-item__status">{{ itemStatusLabel(item) }}</em>
+            <span class="check-item__owner-cluster">
+              @if (item.ownerAgentId) {
+              <span
+                class="check-owner check-owner--assigned"
+                [title]="'Owner: ' + display.name(item.ownerAgentId)"
+                [attr.aria-label]="'Owner: ' + display.name(item.ownerAgentId)"
+              >
+                <span class="avatar avatar--sm" [class]="display.avatarClass(item.ownerAgentId, 'sm')">
+                  @if (!display.isAgentOwner(item.ownerAgentId)) { {{ item.ownerAgentId.slice(0,
+                  1).toUpperCase() }} }
+                </span>
+              </span>
+              } @else {
+              <span class="check-owner check-owner--empty">unassigned</span>
+              } @if (!isItemCollapsed(item)) {
+              <span class="check-item__assign-wrap">
+                <select
+                  class="check-item__owner-select"
+                  title="Assign owner"
+                  [value]="item.ownerAgentId"
+                  (change)="assignOwner(item, $event)"
+                  (click)="$event.preventDefault(); $event.stopPropagation()"
+                >
+                  <option value="" [selected]="!item.ownerAgentId">unassigned</option>
+                  @if (item.ownerAgentId && !roomAgents().includes(item.ownerAgentId)) {
+                  <option [value]="item.ownerAgentId" [selected]="true">
+                    {{ display.name(item.ownerAgentId) }}
+                  </option>
+                  } @for (agent of roomAgents(); track agent) {
+                  <option [value]="agent" [selected]="agent === item.ownerAgentId">
+                    {{ display.name(agent) }}
+                  </option>
+                  }
+                </select>
+              </span>
+              }
+            </span>
+          </label>
+          @if (!isItemCollapsed(item)) { @let hasMeta = !!item.planId || item.dependencyIds.length
+          > 0 || !!item.parallelism || (item.expectedTouches?.length ?? 0) > 0 ||
+          !!item.conflictGroup || item.councilRequired; @let hasNote = !!(item.statusNote ||
+          item.blockedReason); @let notes = checklistNotes(item.id); @if (hasMeta || hasNote ||
+          notes.length) {
+          <div class="check-item__sub">
+            @if (hasMeta) {
+            <div class="check-item__meta">
+              @if (item.planId) {
+              <span>plan {{ planLabel()(item.planId) }}</span>
+              } @if (item.dependencyIds.length) {
+              <span>after {{ dependencyLabels(item) }}</span>
+              } @if (item.parallelism) {
+              <span>{{ item.parallelism }}</span>
+              } @if (item.expectedTouches?.length) {
+              <span>{{ item.expectedTouches.length }} touch(es)</span>
+              } @if (item.conflictGroup) {
+              <span>group {{ item.conflictGroup }}</span>
+              } @if (item.councilRequired) {
+              <span class="is-council">council required</span>
+              }
+            </div>
+            } @if (hasNote) {
+            <p class="check-item__note">{{ item.blockedReason || item.statusNote }}</p>
+            } @for (note of notes; track note.id) {
+            <span class="check-note">
+              <em>{{ display.name(note.authorId) }} / {{ note.kind }}</em>{{ note.body }}
+            </span>
+            }
+          </div>
+          } }
+        </article>
+        } @empty {
+        <p class="empty-copy">no items in this phase yet</p>
+        }
+      </div>
+      }
+    </section>
+    } @let unphased = unphasedItems(); @if (unphased.length) {
+    <section class="check-phase">
+      <div class="check-phase__head check-phase__head--static">
+        <span class="check-phase__title">
+          <strong>Unphased</strong>
+          <small>items not yet assigned to a phase</small>
+        </span>
+        <span class="check-phase__count">{{ unphased.length }}</span>
+      </div>
+      <div class="check-phase__items">
+        @for (item of unphased; track item.id) {
+        <article
+          class="check-item"
+          [class.is-blocked]="item.status === 'blocked'"
+          [class.is-done]="item.status === 'done'"
+          [class.is-waiting]="isWaitingOnDependencies(item)"
+          [class.is-compact-done]="isItemCollapsed(item)"
+        >
+          <label class="check-item__main">
+            <input
+              type="checkbox"
+              [checked]="item.status === 'done'"
+              [disabled]="item.status === 'skipped'"
+              (change)="toggleItem(item, $event)"
+            />
+            <span class="check-item__title">
+              <strong>{{ item.title }}</strong>
+              @if (item.detail) {
+              <small>{{ item.detail }}</small>
+              }
+            </span>
+            <em class="check-item__status">{{ itemStatusLabel(item) }}</em>
+            <span class="check-item__owner-cluster">
+              @if (item.ownerAgentId) {
+              <span
+                class="check-owner check-owner--assigned"
+                [title]="'Owner: ' + display.name(item.ownerAgentId)"
+              >
+                <span class="avatar avatar--sm" [class]="display.avatarClass(item.ownerAgentId, 'sm')">
+                  @if (!display.isAgentOwner(item.ownerAgentId)) { {{ item.ownerAgentId.slice(0,
+                  1).toUpperCase() }} }
+                </span>
+              </span>
+              } @else {
+              <span class="check-owner check-owner--empty">unassigned</span>
+              } @if (!isItemCollapsed(item)) {
+              <span class="check-item__assign-wrap">
+                <select
+                  class="check-item__owner-select"
+                  title="Assign owner"
+                  [value]="item.ownerAgentId"
+                  (change)="assignOwner(item, $event)"
+                >
+                  <option value="" [selected]="!item.ownerAgentId">unassigned</option>
+                  @for (agent of roomAgents(); track agent) {
+                  <option [value]="agent" [selected]="agent === item.ownerAgentId">
+                    {{ display.name(agent) }}
+                  </option>
+                  }
+                </select>
+              </span>
+              }
+            </span>
+          </label>
+        </article>
+        }
+      </div>
+    </section>
+    } @if (control.checklistItems.length === 0) {
+    <p class="empty-copy">no checklist items yet</p>
+    }
+  </div>
+  } @else {
+  <p class="empty-copy">no active checklist</p>
+  } @if (task()) {
+  <form
+    class="inline-form"
+    (submit)="$event.preventDefault(); addItem(checkTitle, checkDetail, checkPhase, checkDeps, checkOwner)"
+  >
+    <input #checkTitle type="text" placeholder="checklist item" />
+    <textarea #checkDetail rows="2" placeholder="detail or evidence needed"></textarea>
+    <select #checkPhase>
+      <option value="">no phase</option>
+      @for (phase of taskControl()?.phases || []; track phase.id) {
+      <option [value]="phase.id">{{ phase.title }}</option>
+      }
+    </select>
+    <input #checkDeps type="text" placeholder="depends on item title or id" />
+    <select #checkOwner>
+      <option value="">unassigned</option>
+      @for (agent of roomAgents(); track agent) {
+      <option [value]="agent">{{ display.name(agent) }}</option>
+      }
+    </select>
+    <button class="control-btn" type="submit">add item</button>
+  </form>
+  }
+</section>

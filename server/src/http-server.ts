@@ -3,10 +3,11 @@ import Fastify from 'fastify';
 import fastifyStatic from '@fastify/static';
 import type { Database } from 'better-sqlite3';
 import path from 'node:path';
+import { spawn } from 'node:child_process';
 import { createRoom, getRoom, listRooms, updateRoomProject } from './repos/rooms.js';
 import { createProject, getProject, listProjects, updateProject } from './repos/projects.js';
 import { getPermissionRequest, listPermissionRequests } from './repos/permission-requests.js';
-import type { AgentId } from './agents/types.js';
+import type { AgentId, ProviderId, RoomAgentProfile } from './agents/types.js';
 import type { TaskStatus } from './repos/tasks.js';
 import type { TaskChecklistParallelism, TaskChecklistStatus } from './repos/task-checklist.js';
 import type { TaskPhaseStatus } from './repos/task-phases.js';
@@ -17,8 +18,18 @@ import { pickFile, pickFolder } from './folder-picker.js';
 import { logger } from './logger.js';
 import type { ConversationArtifactFile } from './context-files.js';
 import { buildStatusSnapshot } from './status-snapshot.js';
-import { AGENT_PERSONAS, AGENT_PROVIDERS } from './agents/personas.js';
-import type { RoomAgentProfile } from './agents/types.js';
+import { AGENT_PERSONAS, AGENT_PROVIDERS, isProviderId } from './agents/personas.js';
+import {
+  defaultAgentProfile,
+  normalizeRoomAgentProfiles,
+  validateRoomParticipantNames,
+} from './agents/profiles.js';
+import {
+  scoreProvidersForSlot,
+  type ProviderCapabilityTag,
+  type ProviderHealth,
+  type ProviderScoringSlot,
+} from './agents/provider-scoring.js';
 
 export interface HttpDeps {
   db: Database;
@@ -34,6 +45,38 @@ const TASK_PHASE_STATUSES = ['planned', 'active', 'blocked', 'done'] as const;
 const TASK_CHECKLIST_STATUSES = ['open', 'blocked', 'done', 'skipped'] as const;
 const TASK_CHECKLIST_PARALLELISM = ['parallel-safe', 'coordinate', 'exclusive'] as const;
 const TASK_PLAN_STATUSES = ['draft', 'active', 'superseded', 'archived'] as const;
+
+interface ProviderScoreSlotBody {
+  id?: unknown;
+  personaId?: unknown;
+  providerId?: unknown;
+  preferredProviders?: unknown;
+  fallbackProviders?: unknown;
+  avoidProviders?: unknown;
+  capabilityTags?: unknown;
+}
+
+interface ProviderScoreBody {
+  slots?: unknown;
+}
+
+function openInOs(absPath: string): void {
+  const platform = process.platform;
+  let cmd: string;
+  let args: string[];
+  if (platform === 'win32') {
+    cmd = 'cmd';
+    args = ['/c', 'start', '""', absPath];
+  } else if (platform === 'darwin') {
+    cmd = 'open';
+    args = [absPath];
+  } else {
+    cmd = 'xdg-open';
+    args = [absPath];
+  }
+  const child = spawn(cmd, args, { detached: true, stdio: 'ignore' });
+  child.unref();
+}
 
 function isTaskStatus(value: unknown): value is TaskStatus {
   return typeof value === 'string' && (TASK_STATUSES as readonly string[]).includes(value);
@@ -69,6 +112,129 @@ function optionalOrder(value: unknown): number | undefined {
   return Number.isFinite(parsed) ? Math.trunc(parsed) : 0;
 }
 
+function providerIds(value: unknown): ProviderId[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter((item): item is ProviderId => typeof item === 'string' && isProviderId(item));
+}
+
+function capabilityTags(value: unknown): ProviderCapabilityTag[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter((item): item is ProviderCapabilityTag => typeof item === 'string');
+}
+
+function quotaResetMillis(value: number | undefined): number | undefined {
+  if (value === undefined || !Number.isFinite(value) || value <= 0) return undefined;
+  return value < 10_000_000_000 ? Math.trunc(value * 1000) : Math.trunc(value);
+}
+
+function mergeQuotaWindow(
+  health: ProviderHealth,
+  prefix: 'quota5h' | 'quota7d',
+  quota: { percent?: number; resetsAt?: number; windowMinutes?: number } | undefined,
+  now: number,
+): void {
+  if (!quota) return;
+  const resetsAt = quotaResetMillis(quota.resetsAt);
+  const expired = resetsAt !== undefined && resetsAt <= now;
+  if (expired) return;
+
+  const percentKey = `${prefix}Percent` as 'quota5hPercent' | 'quota7dPercent';
+  const resetsAtKey = `${prefix}ResetsAt` as 'quota5hResetsAt' | 'quota7dResetsAt';
+  const windowKey = `${prefix}WindowMinutes` as 'quota5hWindowMinutes' | 'quota7dWindowMinutes';
+  if (quota.percent !== undefined && Number.isFinite(quota.percent)) {
+    health[percentKey] = Math.max(health[percentKey] ?? 0, Math.max(0, Math.min(100, quota.percent)));
+  }
+  if (resetsAt !== undefined) health[resetsAtKey] = resetsAt;
+  if (quota.windowMinutes !== undefined && Number.isFinite(quota.windowMinutes) && quota.windowMinutes > 0) {
+    health[windowKey] = Math.trunc(quota.windowMinutes);
+  }
+}
+
+function sanitizeProviderScoreSlot(
+  raw: ProviderScoreSlotBody,
+  index: number,
+): { id: string; currentProviderId: ProviderId | null; slot: ProviderScoringSlot } {
+  const id =
+    typeof raw.id === 'string' && raw.id.trim() ? raw.id.trim().slice(0, 100) : `slot-${index + 1}`;
+  const currentProviderId =
+    typeof raw.providerId === 'string' && isProviderId(raw.providerId) ? raw.providerId : null;
+  const slot: ProviderScoringSlot = { id };
+  if (typeof raw.personaId === 'string' && raw.personaId.trim()) {
+    slot.personaId = raw.personaId.trim().slice(0, 120);
+  }
+  const preferredProviders = providerIds(raw.preferredProviders);
+  if (preferredProviders.length > 0) slot.preferredProviders = preferredProviders;
+  const fallbackProviders = providerIds(raw.fallbackProviders);
+  if (fallbackProviders.length > 0) slot.fallbackProviders = fallbackProviders;
+  const avoidProviders = providerIds(raw.avoidProviders);
+  if (avoidProviders.length > 0) slot.avoidProviders = avoidProviders;
+  const tags = capabilityTags(raw.capabilityTags);
+  if (tags.length > 0) slot.capabilityTags = tags;
+  return { id, currentProviderId, slot };
+}
+
+function providerHealthFromSnapshot(
+  snapshot: ReturnType<typeof buildStatusSnapshot>,
+  db: Database,
+): Partial<Record<ProviderId, ProviderHealth>> {
+  const now = Date.now();
+  const agentProviderById = new Map<AgentId, ProviderId>();
+  for (const room of snapshot.rooms) {
+    for (const profile of room.agentProfiles) {
+      agentProviderById.set(profile.id, profile.providerId);
+    }
+  }
+
+  const healthByProvider: Partial<Record<ProviderId, ProviderHealth>> = {};
+  const ensure = (providerId: ProviderId): ProviderHealth => {
+    const existing = healthByProvider[providerId];
+    if (existing) return existing;
+    const health: ProviderHealth = {};
+    healthByProvider[providerId] = health;
+    return health;
+  };
+
+  for (const entry of snapshot.contextUsage.byAgent) {
+    const providerId = isProviderId(entry.usage.provider)
+      ? entry.usage.provider
+      : agentProviderById.get(entry.agentId);
+    if (!providerId) continue;
+    const health = ensure(providerId);
+    if (entry.usage.percentUsed !== undefined) {
+      health.contextPercent = Math.max(health.contextPercent ?? 0, entry.usage.percentUsed);
+    }
+    const quota = entry.usage.quota;
+    mergeQuotaWindow(health, 'quota5h', quota?.fiveHour, now);
+    mergeQuotaWindow(health, 'quota7d', quota?.sevenDay, now);
+    const quotaStatus =
+      quota?.fiveHour?.status ?? quota?.sevenDay?.status ?? quota?.rateLimitReachedType;
+    if (quotaStatus) health.quotaStatus = quotaStatus;
+  }
+
+  const runRows = db
+    .prepare(
+      `SELECT agent_id, status
+       FROM agent_runs
+       ORDER BY started_at DESC, id DESC
+       LIMIT 200`,
+    )
+    .all() as Array<{ agent_id: AgentId; status: string }>;
+  for (const row of runRows) {
+    const providerId = agentProviderById.get(row.agent_id);
+    if (!providerId) continue;
+    const health = ensure(providerId);
+    health.recentRuns = (health.recentRuns ?? 0) + 1;
+    if (row.status === 'failed') health.recentFailures = (health.recentFailures ?? 0) + 1;
+  }
+  for (const health of Object.values(healthByProvider)) {
+    if (!health) continue;
+    const runs = health.recentRuns ?? 0;
+    if (runs > 0) health.recentFailureRate = (health.recentFailures ?? 0) / runs;
+  }
+
+  return healthByProvider;
+}
+
 export function buildHttpServer(deps: HttpDeps) {
   const app = Fastify({ loggerInstance: logger });
 
@@ -86,6 +252,57 @@ export function buildHttpServer(deps: HttpDeps) {
     return {
       providers: AGENT_PROVIDERS,
       personas: AGENT_PERSONAS,
+    };
+  });
+
+  app.post<{ Body: ProviderScoreBody }>('/api/agents/provider-score', async (req) => {
+    const rawSlots = Array.isArray(req.body?.slots)
+      ? (req.body.slots as ProviderScoreSlotBody[]).slice(0, 50)
+      : [];
+    const slots = rawSlots.map((raw, index) =>
+      sanitizeProviderScoreSlot(
+        raw && typeof raw === 'object' ? (raw as ProviderScoreSlotBody) : {},
+        index,
+      ),
+    );
+    const providerCounts: Partial<Record<ProviderId, number>> = {};
+    for (const slot of slots) {
+      if (!slot.currentProviderId) continue;
+      providerCounts[slot.currentProviderId] = (providerCounts[slot.currentProviderId] ?? 0) + 1;
+    }
+
+    const snapshot = buildStatusSnapshot({ db: deps.db });
+    const healthByProvider = providerHealthFromSnapshot(snapshot, deps.db);
+    const providers = AGENT_PROVIDERS.map((provider) => ({
+      id: provider.id,
+      displayName: provider.displayName,
+    }));
+
+    return {
+      generatedAt: Date.now(),
+      providerHealth: healthByProvider,
+      slots: slots.map((slot) => {
+        const teamCounts = { ...providerCounts };
+        if (slot.currentProviderId) {
+          teamCounts[slot.currentProviderId] = Math.max(
+            0,
+            (teamCounts[slot.currentProviderId] ?? 0) - 1,
+          );
+        }
+        const result = scoreProvidersForSlot({
+          providers,
+          slot: slot.slot,
+          healthByProvider,
+          currentTeamProviderCounts: teamCounts,
+        });
+        return {
+          id: slot.id,
+          currentProviderId: slot.currentProviderId,
+          recommendationMatchesCurrent:
+            !!slot.currentProviderId && result.selectedProviderId === slot.currentProviderId,
+          ...result,
+        };
+      }),
     };
   });
 
@@ -128,41 +345,75 @@ export function buildHttpServer(deps: HttpDeps) {
     },
   );
 
-  app.patch<{ Params: { id: string }; Body: { name?: string; description?: string } }>(
-    '/api/projects/:id',
-    async (req, reply) => {
-      const name =
-        typeof req.body?.name === 'string' ? req.body.name.trim().slice(0, 160) : undefined;
-      const description =
-        typeof req.body?.description === 'string'
-          ? req.body.description.trim().slice(0, 1000)
-          : undefined;
-      const updated = updateProject(deps.db, req.params.id, {
-        ...(name !== undefined ? { name } : {}),
-        ...(description !== undefined ? { description } : {}),
-      });
-      if (!updated) return reply.code(404).send({ error: 'not found' });
-      return updated;
-    },
-  );
+  app.patch<{
+    Params: { id: string };
+    Body: { name?: string; description?: string; archivedAt?: number | null };
+  }>('/api/projects/:id', async (req, reply) => {
+    const name =
+      typeof req.body?.name === 'string' ? req.body.name.trim().slice(0, 160) : undefined;
+    const description =
+      typeof req.body?.description === 'string'
+        ? req.body.description.trim().slice(0, 1000)
+        : undefined;
+    let updated =
+      name !== undefined || description !== undefined
+        ? updateProject(deps.db, req.params.id, {
+            ...(name !== undefined ? { name } : {}),
+            ...(description !== undefined ? { description } : {}),
+          })
+        : null;
+
+    if (Object.prototype.hasOwnProperty.call(req.body ?? {}, 'archivedAt')) {
+      const raw = req.body?.archivedAt;
+      const archivedAt =
+        raw === null || raw === undefined ? null : typeof raw === 'number' ? raw : Date.now();
+      const archiveResult = deps.broker.setProjectArchived(req.params.id, archivedAt);
+      if (!archiveResult) {
+        return reply
+          .code(req.params.id === 'general' ? 400 : 404)
+          .send({ error: req.params.id === 'general' ? 'cannot archive default project' : 'not found' });
+      }
+      updated = archiveResult;
+    }
+
+    if (!updated) {
+      const existing = getProject(deps.db, req.params.id);
+      if (!existing) return reply.code(404).send({ error: 'not found' });
+      return existing;
+    }
+    return updated;
+  });
+
+  app.delete<{ Params: { id: string } }>('/api/projects/:id', async (req, reply) => {
+    if (req.params.id === 'general') {
+      return reply.code(400).send({ error: 'cannot delete default project' });
+    }
+    const ok = deps.broker.deleteProject(req.params.id);
+    if (!ok) return reply.code(404).send({ error: 'not found' });
+    return reply.code(204).send();
+  });
 
   app.post<{
     Body: {
       name: string;
       agents?: AgentId[];
       yoloAgents?: AgentId[];
+      leadAgentId?: AgentId | null;
       agentProfiles?: RoomAgentProfile[];
       projectId?: string;
+      humanName?: string;
     };
   }>('/api/rooms', async (req, reply) => {
-    const { name, agents, yoloAgents, agentProfiles, projectId } =
+    const { name, agents, yoloAgents, leadAgentId, agentProfiles, projectId, humanName } =
       req.body ??
       ({} as {
         name: string;
         agents?: AgentId[];
         yoloAgents?: AgentId[];
+        leadAgentId?: AgentId | null;
         agentProfiles?: RoomAgentProfile[];
         projectId?: string;
+        humanName?: string;
       });
     if (!name || (!Array.isArray(agents) && !Array.isArray(agentProfiles))) {
       return reply.code(400).send({ error: 'name and agents or agentProfiles are required' });
@@ -179,12 +430,33 @@ export function buildHttpServer(deps: HttpDeps) {
     if (projectId && !getProject(deps.db, projectId)) {
       return reply.code(400).send({ error: 'project not found' });
     }
+    const normalizeInput: { agents?: AgentId[]; agentProfiles?: RoomAgentProfile[] } = {};
+    if (agents !== undefined) normalizeInput.agents = agents;
+    if (agentProfiles !== undefined) normalizeInput.agentProfiles = agentProfiles;
+    const normalizedProfiles = normalizeRoomAgentProfiles(normalizeInput);
+    const normalizedAgents = normalizedProfiles.map((profile) => profile.id);
+    const normalizedLeadAgentId =
+      typeof leadAgentId === 'string' && normalizedAgents.includes(leadAgentId)
+        ? leadAgentId
+        : null;
+    if (leadAgentId && !normalizedLeadAgentId) {
+      return reply.code(400).send({ error: 'leadAgentId must be one of the room agents' });
+    }
+    const validationInput: {
+      agentProfiles: RoomAgentProfile[];
+      humanName?: string | null;
+    } = { agentProfiles: normalizedProfiles };
+    if (humanName !== undefined) validationInput.humanName = humanName;
+    const validationErrors = validateRoomParticipantNames(validationInput);
+    if (validationErrors.length > 0) {
+      return reply.code(400).send({ error: validationErrors[0], errors: validationErrors });
+    }
     const createInput: Parameters<typeof createRoom>[1] = {
       name,
       yoloAgents: yoloAgents ?? [],
+      leadAgentId: normalizedLeadAgentId,
+      agentProfiles: normalizedProfiles,
     };
-    if (agents !== undefined) createInput.agents = agents;
-    if (agentProfiles !== undefined) createInput.agentProfiles = agentProfiles;
     if (projectId !== undefined) createInput.projectId = projectId;
     return createRoom(deps.db, createInput);
   });
@@ -220,18 +492,21 @@ export function buildHttpServer(deps: HttpDeps) {
 
   app.patch<{
     Params: { id: string };
-    Body: { agents?: AgentId[]; yoloAgents?: AgentId[]; agentProfiles?: RoomAgentProfile[]; projectId?: string };
+    Body: { agents?: AgentId[]; yoloAgents?: AgentId[]; leadAgentId?: AgentId | null; agentProfiles?: RoomAgentProfile[]; projectId?: string; humanName?: string };
   }>('/api/rooms/:id', async (req, reply) => {
-    const { agents, yoloAgents, agentProfiles, projectId } =
+    const { agents, yoloAgents, leadAgentId, agentProfiles, projectId, humanName } =
       req.body ??
       ({} as {
         agents?: AgentId[];
         yoloAgents?: AgentId[];
+        leadAgentId?: AgentId | null;
         agentProfiles?: RoomAgentProfile[];
         projectId?: string;
+        humanName?: string;
       });
     let updated = getRoom(deps.db, req.params.id);
     if (!updated) return reply.code(404).send({ error: 'not found' });
+    const currentRoom = updated;
     if (agents !== undefined && !Array.isArray(agents)) {
       return reply.code(400).send({ error: 'agents must be an array' });
     }
@@ -242,7 +517,47 @@ export function buildHttpServer(deps: HttpDeps) {
       return reply.code(400).send({ error: 'agentProfiles must be an array' });
     }
     if (agents !== undefined || agentProfiles !== undefined) {
-      updated = deps.broker.setAgents(req.params.id, agents ?? [], yoloAgents, agentProfiles);
+      const normalizedProfiles = normalizeRoomAgentProfiles({
+        agents: agents ?? currentRoom.agents,
+        agentProfiles:
+          agentProfiles ??
+          (agents !== undefined
+            ? agents.map(
+                (agentId) =>
+                  currentRoom.agentProfiles.find((profile) => profile.id === agentId) ??
+                  defaultAgentProfile(agentId),
+              )
+            : currentRoom.agentProfiles),
+      });
+      const validationInput: {
+        agentProfiles: RoomAgentProfile[];
+        humanName?: string | null;
+      } = { agentProfiles: normalizedProfiles };
+      if (humanName !== undefined) validationInput.humanName = humanName;
+      const validationErrors = validateRoomParticipantNames(validationInput);
+      if (validationErrors.length > 0) {
+        return reply.code(400).send({ error: validationErrors[0], errors: validationErrors });
+      }
+      const normalizedAgentIds = normalizedProfiles.map((profile) => profile.id);
+      const requestedLead =
+        leadAgentId === undefined ? currentRoom.leadAgentId : leadAgentId || null;
+      if (requestedLead && !normalizedAgentIds.includes(requestedLead)) {
+        return reply.code(400).send({ error: 'leadAgentId must be one of the room agents' });
+      }
+      updated = deps.broker.setAgents(
+        req.params.id,
+        normalizedAgentIds,
+        yoloAgents,
+        normalizedProfiles,
+        requestedLead,
+      );
+      if (!updated) return reply.code(404).send({ error: 'not found' });
+    } else if (Object.prototype.hasOwnProperty.call(req.body ?? {}, 'leadAgentId')) {
+      const requestedLead = leadAgentId || null;
+      if (requestedLead && !updated.agents.includes(requestedLead)) {
+        return reply.code(400).send({ error: 'leadAgentId must be one of the room agents' });
+      }
+      updated = deps.broker.setRoomLeadAgent(req.params.id, requestedLead);
       if (!updated) return reply.code(404).send({ error: 'not found' });
     }
     if (projectId !== undefined) {
@@ -745,6 +1060,39 @@ export function buildHttpServer(deps: HttpDeps) {
     },
   );
 
+  app.get<{ Params: { id: string }; Querystring: { limit?: string } }>(
+    '/api/rooms/:id/routing-decisions',
+    async (req, reply) => {
+      const room = getRoom(deps.db, req.params.id);
+      if (!room) return reply.code(404).send({ error: 'not found' });
+      const limit = req.query.limit ? Number(req.query.limit) : 100;
+      return deps.broker.listRoutingDecisions(req.params.id, Number.isFinite(limit) ? limit : 100);
+    },
+  );
+
+  app.get<{ Params: { id: string }; Querystring: { limit?: string } }>(
+    '/api/rooms/:id/mission-command-events',
+    async (req, reply) => {
+      const room = getRoom(deps.db, req.params.id);
+      if (!room) return reply.code(404).send({ error: 'not found' });
+      const limit = req.query.limit ? Number(req.query.limit) : 100;
+      return deps.broker.listMissionCommandEvents(
+        req.params.id,
+        Number.isFinite(limit) ? limit : 100,
+      );
+    },
+  );
+
+  app.get<{ Params: { id: string }; Querystring: { limit?: string } }>(
+    '/api/rooms/:id/turn-outcomes',
+    async (req, reply) => {
+      const room = getRoom(deps.db, req.params.id);
+      if (!room) return reply.code(404).send({ error: 'not found' });
+      const limit = req.query.limit ? Number(req.query.limit) : 100;
+      return deps.broker.listTurnOutcomes(req.params.id, Number.isFinite(limit) ? limit : 100);
+    },
+  );
+
   app.get<{ Params: { id: string } }>('/api/rooms/:id/artifacts', async (req, reply) => {
     const room = getRoom(deps.db, req.params.id);
     if (!room) return reply.code(404).send({ error: 'not found' });
@@ -782,6 +1130,32 @@ export function buildHttpServer(deps: HttpDeps) {
       return reply.code(code).send({ error: message });
     }
   });
+
+  app.post<{ Params: { id: string }; Body: { path?: string } }>(
+    '/api/rooms/:id/artifacts/open',
+    async (req, reply) => {
+      const room = getRoom(deps.db, req.params.id);
+      if (!room) return reply.code(404).send({ error: 'not found' });
+      const requested = typeof req.body?.path === 'string' ? req.body.path.slice(0, 4000) : '';
+      if (!requested) return reply.code(400).send({ error: 'path required' });
+
+      const listing = deps.broker.listArtifacts(req.params.id);
+      if (!listing) return reply.code(503).send({ error: 'context artifacts disabled' });
+
+      const requestedAbs = path.resolve(requested);
+      const allowed = listing.files.some((file) => path.resolve(file.path) === requestedAbs);
+      if (!allowed) return reply.code(403).send({ error: 'artifact not in this room' });
+
+      try {
+        openInOs(requestedAbs);
+        return { ok: true };
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        return reply.code(500).send({ error: message });
+      }
+    },
+  );
+
 
   app.post<{ Params: { id: string }; Body: { sourcePath: string } }>(
     '/api/rooms/:id/fixtures',

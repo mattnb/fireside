@@ -1,0 +1,59 @@
+<div class="modal">
+  <div class="modal__scrim" (click)="closed.emit()"></div>
+  <section
+    class="modal__panel"
+    role="dialog"
+    aria-modal="true"
+    aria-labelledby="compact-agent-title"
+  >
+    <header class="modal__head">
+      <h2 id="compact-agent-title">compact {{ display.name(agentId()) }} context</h2>
+      <p>{{ ring.compactDescription(agentId()) }}</p>
+    </header>
+    <div class="compact-agent">
+      <div class="compact-agent__agent">
+        <span [class]="display.avatarClass(agentId(), 'sm')"></span>
+        <div>
+          <strong>{{ display.name(agentId()) }}</strong>
+          <span>{{ display.isAgentRunning(agentId()) ? 'working now' : 'idle and eligible' }}</span>
+        </div>
+      </div>
+      @if (ring.contextUsage(agentId()); as usage) {
+      <div class="compact-agent__usage">
+        <span>current context</span>
+        <strong>{{ ring.contextLabel(usage) }}</strong>
+        <div
+          [class]="'agent-context ' + ring.contextTone(usage)"
+          [title]="ring.contextTitle(usage)"
+        >
+          <span class="agent-context__bar" aria-hidden="true">
+            <span [style.width.%]="ring.contextPercent(usage)"></span>
+          </span>
+        </div>
+      </div>
+      } @else {
+      <p class="empty-copy">no context telemetry has been recorded for this agent yet</p>
+      } @if (error()) {
+      <p class="compact-agent__error">{{ error() }}</p>
+      }
+    </div>
+    <footer class="modal__foot">
+      <button
+        type="button"
+        class="control-btn"
+        [disabled]="store.compactingAgent() === agentId()"
+        (click)="closed.emit()"
+      >
+        close
+      </button>
+      <button
+        type="button"
+        class="control-btn control-btn--primary"
+        [disabled]="display.isAgentRunning(agentId()) || store.compactingAgent() === agentId()"
+        (click)="compactStarted.emit(agentId())"
+      >
+        @if (store.compactingAgent() === agentId()) { starting } @else { compact now }
+      </button>
+    </footer>
+  </section>
+</div>

@@ -1,0 +1,226 @@
+/* client/app/app-tokens.css
+ * Atomic primitives shared across the entire shell: avatars, control
+ * buttons, panel framing, scrollbars, the standard empty-copy paragraph,
+ * inline-check styles, and tone helpers. Loaded first so domain files
+ * cascade on top.
+ */
+
+
+
+.avatar {
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 600;
+  font-size: 12px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  color: var(--text-primary);
+  position: relative;
+  overflow: hidden;
+  flex-shrink: 0;
+}
+
+.avatar--sm {
+  width: 28px;
+  height: 28px;
+  border-radius: 7px;
+  font-size: 11px;
+}
+
+.avatar--tiny {
+  width: 17px;
+  height: 17px;
+  border-radius: 5px;
+  font-size: 0;
+}
+
+.avatar--claude {
+  --avatar-icon: url('/assets/agents/claude.svg');
+  background: rgba(229, 169, 26, 0.12);
+  border-color: rgba(229, 169, 26, 0.28);
+  color: #d6b760;
+}
+
+.avatar--codex {
+  --avatar-icon: url('/assets/agents/codex.svg');
+  background: rgba(0, 0, 0, 0.75);
+  border-color: rgba(255, 255, 255, 1);
+  color: rgba(255, 255, 255, 1);
+}
+
+.avatar--gemini {
+  --avatar-icon: url('/assets/agents/gemini.svg');
+  background: rgba(26, 27, 31, 0.58);
+  border-color: #4285f4;
+  color: #4285f4;
+}
+
+.avatar--claude,
+.avatar--codex,
+.avatar--gemini {
+  font-size: 0;
+  letter-spacing: 0;
+}
+
+.avatar--claude::before,
+.avatar--codex::before,
+.avatar--gemini::before {
+  content: '';
+  display: block;
+  width: 68%;
+  height: 68%;
+  background: currentColor;
+  mask: var(--avatar-icon) center / contain no-repeat;
+  -webkit-mask: var(--avatar-icon) center / contain no-repeat;
+}
+
+.avatar--sm.avatar--claude::before,
+.avatar--sm.avatar--gemini::before {
+  width: 64%;
+  height: 64%;
+}
+
+.avatar--codex::before {
+  width: 72%;
+  height: 72%;
+}
+
+.panel--wide {
+  grid-column: 1 / -1;
+}
+
+.panel--phases {
+  grid-column: 1 / -1;
+}
+
+
+.panel--collaboration,
+.panel--evidence {
+  grid-column: 1 / -1;
+}
+
+.panel {
+  display: grid;
+  gap: 8px;
+}
+
+.mini-btn {
+  border: 1px solid var(--border-soft);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.025);
+  color: var(--text-secondary);
+  cursor: pointer;
+  font: inherit;
+  font-size: 10px;
+  font-weight: 800;
+  padding: 3px 7px;
+}
+
+.mini-btn--primary {
+  color: var(--accent-hover);
+  border-color: rgba(94, 196, 144, 0.32);
+  background: rgba(94, 196, 144, 0.1);
+}
+
+.mini-btn--done {
+  color: var(--accent-warning);
+  border-color: rgba(229, 169, 26, 0.3);
+}
+
+.panel--controls {
+  align-content: start;
+  display: grid;
+  gap: 13px;
+  grid-row: span 2;
+}
+
+.control-btn {
+  min-height: 30px;
+  border: 1px solid var(--border-medium);
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.025);
+  color: var(--text-secondary);
+  cursor: pointer;
+  font: inherit;
+  font-size: 11.5px;
+  font-weight: 700;
+  padding: 6px 9px;
+}
+
+.control-btn:hover {
+  color: var(--text-primary);
+  border-color: rgba(142, 160, 232, 0.28);
+  background: rgba(142, 160, 232, 0.07);
+}
+
+.control-btn--primary {
+  color: var(--accent-hover);
+  border-color: rgba(94, 196, 144, 0.34);
+  background: rgba(94, 196, 144, 0.12);
+}
+
+.control-btn--briefing {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  min-height: 36px;
+  border-color: rgba(229, 169, 26, 0.58);
+  background:
+    linear-gradient(180deg, rgba(229, 169, 26, 0.24), rgba(229, 169, 26, 0.12)),
+    rgba(13, 17, 23, 0.34);
+  box-shadow:
+    0 0 0 1px rgba(255, 255, 255, 0.035) inset,
+    0 8px 24px rgba(229, 169, 26, 0.11);
+  color: #f2d17d;
+  font-size: 12px;
+  font-weight: 900;
+  padding: 7px 12px;
+}
+
+.control-btn--briefing:hover {
+  border-color: rgba(229, 169, 26, 0.76);
+  background:
+    linear-gradient(180deg, rgba(229, 169, 26, 0.31), rgba(229, 169, 26, 0.15)),
+    rgba(13, 17, 23, 0.34);
+  color: #ffe1a1;
+}
+
+.control-btn--briefing svg {
+  width: 15px;
+  height: 15px;
+  flex: 0 0 auto;
+}
+
+.control-btn--danger {
+  color: #ffb4ae;
+  border-color: rgba(248, 81, 73, 0.34);
+  background: rgba(248, 81, 73, 0.1);
+}
+
+.control-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.inline-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 30px;
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+
+.panel-note {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 11.5px;
+  line-height: 1.4;
+}

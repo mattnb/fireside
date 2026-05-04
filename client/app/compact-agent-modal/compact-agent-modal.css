@@ -1,0 +1,8 @@
+/* client/app/compact-agent-modal/compact-agent-modal.css
+ * Outer host placement only. Reuses `.modal*`, `.compact-agent*`, and
+ * `.agent-context*` selectors that stay global in app.css.
+ */
+
+:host {
+  display: contents;
+}

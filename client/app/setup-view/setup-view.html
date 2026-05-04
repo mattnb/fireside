@@ -1,0 +1,210 @@
+<section class="panel panel--setup">
+  <div class="section-label">mission</div>
+  @if (activeTask(); as task) {
+  <h2>{{ task.title }}</h2>
+  <p class="panel-note">{{ task.goal || 'No goal written yet.' }}</p>
+  <dl class="facts">
+    <div>
+      <dt>status</dt>
+      <dd>{{ task.status }}</dd>
+    </div>
+    <div>
+      <dt>profile</dt>
+      <dd>{{ task.capabilityProfile }}</dd>
+    </div>
+    <div>
+      <dt>path</dt>
+      <dd>{{ task.repoPath || 'not set' }}</dd>
+    </div>
+  </dl>
+  } @else {
+  <h2>no active mission</h2>
+  <p class="panel-note">Create the mission brief here; agents will receive it in future turns.</p>
+  } @if (missionHistory().length > 0) {
+  <section class="mission-switcher">
+    <header>
+      <span class="section-label">mission history</span>
+      @if (activeTask()) {
+      <button type="button" class="control-btn" (click)="toggleMissionDraft()">
+        {{ creatingMissionDraft() ? 'close' : 'new mission' }}
+      </button>
+      }
+    </header>
+    <div class="mission-list">
+      @for (mission of missionHistory(); track mission.id) {
+      <article class="mission-row" [class.is-current]="isCurrentMission(mission)">
+        <div>
+          <strong>{{ mission.title }}</strong>
+          <small
+            >{{ mission.status }} / {{ formatShortTime(mission.updatedAt || mission.createdAt)
+            }}</small
+          >
+        </div>
+        <span>{{ mission.capabilityProfile }}</span>
+        <div class="mission-row__actions">
+          @if (isCurrentMission(mission)) {
+          <button type="button" class="mini-btn" (click)="pauseMission(mission)">pause</button>
+          <button
+            type="button"
+            class="mini-btn mini-btn--done"
+            (click)="completeMission(mission)"
+          >
+            done
+          </button>
+          } @else {
+          <button
+            type="button"
+            class="mini-btn mini-btn--primary"
+            (click)="activateMission(mission)"
+          >
+            {{ missionActionLabel(mission) }}
+          </button>
+          }
+        </div>
+      </article>
+      }
+    </div>
+  </section>
+  } @if (activeTask() && creatingMissionDraft()) {
+  <form
+    class="mission-form mission-form--new"
+    (submit)="$event.preventDefault(); createMission(draftTitle, draftGoal, draftPath, draftAcceptance, draftProfile)"
+  >
+    <label>
+      <span>new mission title</span>
+      <input #draftTitle type="text" placeholder="next mission for this team" />
+    </label>
+    <label>
+      <span>goal</span>
+      <textarea
+        #draftGoal
+        rows="3"
+        placeholder="what outcome should the team achieve?"
+      ></textarea>
+    </label>
+    <label>
+      <span>repo/path</span>
+      <div class="path-picker-row">
+        <input #draftPath type="text" [value]="activeTask()?.repoPath || ''" />
+        <button class="control-btn" type="button" (click)="browseFolderInto(draftPath)">
+          browse
+        </button>
+      </div>
+    </label>
+    <label>
+      <span>done when</span>
+      <textarea #draftAcceptance rows="3" placeholder="acceptance criteria"></textarea>
+    </label>
+    <label>
+      <span>profile</span>
+      <select #draftProfile>
+        <option value="plan">read-only</option>
+        <option value="edit">edit/write</option>
+        <option value="full-auto">full auto</option>
+      </select>
+    </label>
+    <div class="mission-form__actions">
+      <button
+        class="control-btn"
+        type="button"
+        (click)="cancelMissionDraft(draftTitle, draftGoal, draftPath, draftAcceptance, draftProfile)"
+      >
+        cancel
+      </button>
+      <button class="control-btn control-btn--primary" type="submit">start new mission</button>
+    </div>
+  </form>
+  } @if (activeTask(); as task) {
+  <form
+    class="mission-form"
+    (submit)="$event.preventDefault(); updateMission(editTitle, editGoal, editPath, editAcceptance, editProfile, editStatus, editSummary)"
+  >
+    <label>
+      <span>title</span>
+      <input #editTitle type="text" [value]="task.title" />
+    </label>
+    <label>
+      <span>goal</span>
+      <textarea #editGoal rows="3" [value]="task.goal || ''"></textarea>
+    </label>
+    <label>
+      <span>repo/path</span>
+      <div class="path-picker-row">
+        <input #editPath type="text" [value]="task.repoPath || ''" />
+        <button class="control-btn" type="button" (click)="browseFolderInto(editPath)">
+          browse
+        </button>
+      </div>
+    </label>
+    <label>
+      <span>done when</span>
+      <textarea #editAcceptance rows="3" [value]="task.acceptanceCriteria || ''"></textarea>
+    </label>
+    <div class="mission-form__row">
+      <label>
+        <span>profile</span>
+        <select #editProfile [value]="task.capabilityProfile">
+          <option value="plan">read-only</option>
+          <option value="edit">edit/write</option>
+          <option value="full-auto">full auto</option>
+        </select>
+      </label>
+      <label>
+        <span>status</span>
+        <select #editStatus [value]="task.status">
+          <option value="active">active</option>
+          <option value="blocked">blocked</option>
+          <option value="verifying">verifying</option>
+          <option value="paused">paused</option>
+          <option value="done">done</option>
+        </select>
+      </label>
+    </div>
+    <label>
+      <span>summary</span>
+      <textarea #editSummary rows="3" [value]="task.summary || ''"></textarea>
+    </label>
+    <button class="control-btn control-btn--primary" type="submit">save brief</button>
+  </form>
+  } @else {
+  <form
+    class="mission-form"
+    (submit)="$event.preventDefault(); createMission(newTitle, newGoal, newPath, newAcceptance, newProfile)"
+  >
+    <label>
+      <span>title</span>
+      <input #newTitle type="text" placeholder="ship the thing" />
+    </label>
+    <label>
+      <span>goal</span>
+      <textarea
+        #newGoal
+        rows="3"
+        placeholder="what outcome should the team achieve?"
+      ></textarea>
+    </label>
+    <label>
+      <span>repo/path</span>
+      <div class="path-picker-row">
+        <input #newPath type="text" placeholder="C:\path\to\repo" />
+        <button class="control-btn" type="button" (click)="browseFolderInto(newPath)">
+          browse
+        </button>
+      </div>
+    </label>
+    <label>
+      <span>done when</span>
+      <textarea #newAcceptance rows="3" placeholder="acceptance criteria"></textarea>
+    </label>
+    <label>
+      <span>profile</span>
+      <select #newProfile>
+        <option value="plan">read-only</option>
+        <option value="edit">edit/write</option>
+        <option value="full-auto">full auto</option>
+      </select>
+    </label>
+    <button class="control-btn control-btn--primary" type="submit">create mission</button>
+  </form>
+  }
+</section>

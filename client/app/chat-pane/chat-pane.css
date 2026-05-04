@@ -1,0 +1,9 @@
+/* client/app/chat-pane/chat-pane.css
+ * Outer host placement only. The chat surface uses `.chat-pane`,
+ * `.messages`, `.composer`, etc. from app.css since they're co-located with
+ * the rest of the chat chrome.
+ */
+
+:host {
+  display: contents;
+}

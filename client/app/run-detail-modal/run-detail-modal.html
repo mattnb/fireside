@@ -1,0 +1,206 @@
+<div class="modal">
+  <div class="modal__scrim" (click)="closed.emit()"></div>
+  <section
+    class="modal__panel modal__panel--wide"
+    role="dialog"
+    aria-modal="true"
+    aria-labelledby="run-detail-title"
+  >
+    <header class="modal__head">
+      <h2 id="run-detail-title">
+        {{ runDetail()?.run?.agentId ? display.name(runDetail()!.run.agentId) : 'agent' }} run
+      </h2>
+      <p>
+        @if (runDetail(); as detail) { {{ detail.run.status }} / {{
+        elapsedLabel()(detail.run.startedAt, detail.run.completedAt) }} / {{
+        detail.run.estimatedPromptTokens || 0 }}t / {{
+        permissionModeLabel()(detail.run.permissionMode) }} } @else { loading }
+      </p>
+      <label class="run-detail__filter-toggle">
+        <input
+          type="checkbox"
+          [checked]="showLowSignalEvents()"
+          (change)="lowSignalToggled.emit($event)"
+        />
+        show low-signal events
+      </label>
+    </header>
+    <div class="run-detail">
+      @if (loading()) {
+      <p class="empty-copy">loading run</p>
+      } @else if (error()) {
+      <pre class="run-detail__pre">{{ error() }}</pre>
+      } @else if (runDetail(); as detail) {
+      <div class="run-detail__grid">
+        <div><span>status</span><strong>{{ detail.run.status }}</strong></div>
+        <div>
+          <span>agent</span><strong>{{ display.name(detail.run.agentId) }}</strong>
+        </div>
+        <div>
+          <span>started</span><strong>{{ formatDateTime()(detail.run.startedAt) }}</strong>
+        </div>
+        <div>
+          <span>completed</span
+          ><strong>{{ formatDateTime()(detail.run.completedAt) }}</strong>
+        </div>
+        <div>
+          <span>duration</span
+          ><strong
+            >{{ elapsedLabel()(detail.run.startedAt, detail.run.completedAt) }}</strong
+          >
+        </div>
+        <div>
+          <span>permission</span
+          ><strong>{{ permissionModeLabel()(detail.run.permissionMode) }}</strong>
+        </div>
+        <div>
+          <span>prompt</span
+          ><strong
+            >{{ detail.run.promptChars || 0 }} chars / {{ detail.run.estimatedPromptTokens || 0 }}
+            tokens</strong
+          >
+        </div>
+        <div>
+          <span>live context</span
+          ><strong
+            >{{ detail.run.liveMessages || 0 }} messages / {{ detail.run.contextArtifacts || 0 }}
+            artifacts</strong
+          >
+        </div>
+        <div><span>session</span><strong>{{ detail.run.cliSessionId || 'none' }}</strong></div>
+        <div><span>task</span><strong>{{ detail.run.taskId || 'none' }}</strong></div>
+      </div>
+
+      @if (detail.run.permissionTarget || detail.run.permissionSource ||
+      detail.run.permissionReason) {
+      <section class="run-detail__section">
+        <h3>permission</h3>
+        <div class="run-detail__grid">
+          <div>
+            <span>source</span><strong>{{ detail.run.permissionSource || 'none' }}</strong>
+          </div>
+          <div>
+            <span>target</span><strong>{{ detail.run.permissionTarget || 'none' }}</strong>
+          </div>
+          <div>
+            <span>target status</span><strong>{{ targetStatusText()(detail.run) }}</strong>
+          </div>
+          <div>
+            <span>capabilities</span
+            ><strong>{{ capabilityText()(detail.run.permissionCapabilities) }}</strong>
+          </div>
+          <div>
+            <span>provider</span
+            ><strong>{{ detail.run.permissionProviderProfile || 'none' }}</strong>
+          </div>
+          <div>
+            <span>scope</span
+            ><strong>{{ detail.run.permissionFilesystemScope || 'none' }}</strong>
+          </div>
+          <div>
+            <span>web</span
+            ><strong>{{ detail.run.permissionWeb ? 'requested' : 'not requested' }}</strong>
+          </div>
+        </div>
+        @if (detail.run.permissionReason) {
+        <p class="run-detail__message-body">{{ detail.run.permissionReason }}</p>
+        }
+      </section>
+      }
+
+      <section class="run-detail__section">
+        <h3>trigger</h3>
+        <p class="run-detail__message-meta">
+          {{ detail.triggerMessage?.authorId || 'unknown' }} / {{
+          formatDateTime()(detail.triggerMessage?.createdAt) }}
+        </p>
+        <p class="run-detail__message-body">
+          {{ oneLine()(detail.triggerMessage?.text, 900) || 'trigger message unavailable' }}
+        </p>
+      </section>
+
+      <section class="run-detail__section">
+        <h3>{{ detail.run.error ? 'error' : 'reply' }}</h3>
+        @if (detail.run.error) {
+        <pre class="run-detail__pre">{{ detail.run.error }}</pre>
+        } @else {
+        <p class="run-detail__message-meta">
+          {{ detail.replyMessage?.authorId || 'no visible reply' }} / {{
+          formatDateTime()(detail.replyMessage?.createdAt) }}
+        </p>
+        <p class="run-detail__message-body">
+          {{ oneLine()(detail.replyMessage?.text || detail.run.replyText, 900) || 'no visible reply' }}
+        </p>
+        }
+      </section>
+
+      <section class="run-detail__section">
+        <div class="run-detail__section-head">
+          <h3>signals</h3>
+        </div>
+        @if (hiddenDiagnosticSignalCount()(detail.diagnostics.signals)) {
+        <p class="run-detail__filter-note">
+          {{ hiddenDiagnosticSignalCount()(detail.diagnostics.signals) }} low-signal provider events
+          hidden
+        </p>
+        } @else if (showLowSignalEvents() &&
+        lowSignalDiagnosticSignalCount()(detail.diagnostics.signals)) {
+        <p class="run-detail__filter-note">
+          showing {{ lowSignalDiagnosticSignalCount()(detail.diagnostics.signals) }} low-signal
+          provider events
+        </p>
+        } @for (signal of visibleDiagnosticSignals()(detail.diagnostics.signals); track signal.label
+        + signal.detail) {
+        <div class="run-detail__signal">
+          <strong>{{ signal.label }}</strong>
+          <span>{{ providerSignalDetail()(signal) }}</span>
+        </div>
+        } @empty {
+        <p class="empty-copy">no structured CLI events detected</p>
+        }
+      </section>
+
+      <section class="run-detail__section">
+        <div class="run-detail__section-head">
+          <h3>timeline</h3>
+        </div>
+        @if (hiddenRunActionCount()(detail.actions)) {
+        <p class="run-detail__filter-note">
+          {{ hiddenRunActionCount()(detail.actions) }} low-signal provider events hidden
+        </p>
+        } @else if (showLowSignalEvents() && lowSignalRunActionCount()(detail.actions)) {
+        <p class="run-detail__filter-note">
+          showing {{ lowSignalRunActionCount()(detail.actions) }} low-signal provider events
+        </p>
+        } @for (action of visibleRunActions()(detail.actions); track action.id) {
+        <div class="run-detail__signal">
+          <strong
+            >{{ formatShortTime()(action.createdAt) }} / {{ action.kind || 'event' }} / {{
+            action.label }}</strong
+          >
+          <span>{{ runActionDetail()(action) }}</span>
+        </div>
+        } @empty {
+        <p class="empty-copy">no action timeline recorded</p>
+        }
+      </section>
+
+      <section class="run-detail__section">
+        <h3>prompt</h3>
+        <pre class="run-detail__pre">{{ detail.run.promptText || 'prompt not stored' }}</pre>
+      </section>
+      <section class="run-detail__section">
+        <h3>stdout</h3>
+        <pre class="run-detail__pre">{{ detail.run.stdout || 'empty' }}</pre>
+      </section>
+      <section class="run-detail__section">
+        <h3>stderr</h3>
+        <pre class="run-detail__pre">{{ detail.run.stderr || 'empty' }}</pre>
+      </section>
+      }
+    </div>
+    <footer class="modal__foot">
+      <button type="button" class="control-btn" (click)="closed.emit()">close</button>
+    </footer>
+  </section>
+</div>

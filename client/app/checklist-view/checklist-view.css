@@ -1,0 +1,16 @@
+/* client/app/checklist-view/checklist-view.css
+ * Outer host placement for the mission checklist panel. The .check-phase,
+ * .check-item, .check-owner, .checklist-toolbar, and .checklist styles stay
+ * global in app.css because the briefings-tab template also renders the
+ * .check-item shape inside its checklist section.
+ */
+
+:host {
+  display: block;
+  grid-column: 1 / -1;
+}
+
+.panel--checklist {
+  background: rgb(10 14 19 / 60%);
+  padding: 24px 28px 28px;
+}

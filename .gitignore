@@ -31,3 +31,6 @@ Thumbs.db
 
 # Visual companion session state
 .visual-companion/
+
+# Claude Code session state
+.claude/

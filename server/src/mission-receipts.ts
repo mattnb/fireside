@@ -1,4 +1,8 @@
-import { hiddenBlockRegex } from './hidden-blocks.js';
+import {
+  hiddenBlockRegex,
+  parseHiddenBlockFields,
+  stripEmptyHiddenBlockComments,
+} from './hidden-blocks.js';
 
 export type MissionReceiptStatus =
   | 'completed'
@@ -53,21 +57,6 @@ const STATUS_ALIASES = new Map<string, MissionReceiptStatus>([
   ['noop', 'no_update'],
 ]);
 
-function parseFields(block: string): Map<string, string[]> {
-  const fields = new Map<string, string[]>();
-  for (const rawLine of block.split(/\r?\n/)) {
-    const line = rawLine.trim();
-    if (!line) continue;
-    const idx = line.indexOf(':');
-    if (idx < 0) continue;
-    const key = line.slice(0, idx).trim().toLowerCase().replace(/-/g, '_');
-    const value = line.slice(idx + 1).trim();
-    if (!fields.has(key)) fields.set(key, []);
-    fields.get(key)!.push(value);
-  }
-  return fields;
-}
-
 function first(fields: Map<string, string[]>, ...keys: string[]): string {
   for (const key of keys) {
     const value = fields.get(key)?.[0];
@@ -92,7 +81,7 @@ function normalizeStatus(value: string): MissionReceiptStatus {
 }
 
 function parseBlock(block: string): ParsedMissionReceipt | null {
-  const fields = parseFields(block);
+  const fields = parseHiddenBlockFields(block);
   const status = normalizeStatus(first(fields, 'status', 'state', 'outcome'));
   const summary = all(fields, 'summary', 'note', 'body');
   const evidence = all(fields, 'evidence', 'proof', 'verified_by');
@@ -130,7 +119,7 @@ export function extractMissionReceipts(text: string): ExtractedMissionReceipts {
     return prefix === '\n' ? '\n' : '';
   });
   return {
-    visibleText: visibleText.trim(),
+    visibleText: stripEmptyHiddenBlockComments(visibleText).trim(),
     receipts,
   };
 }

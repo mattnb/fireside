@@ -6,18 +6,23 @@ import {
   AgentRunAction,
   AgentRunDetail,
   AgentCatalog,
+  ProviderScoreRequest,
+  ProviderScoreResponse,
   Artifact,
   ArtifactListing,
+  AgentTurnOutcome,
   CollaborationItem,
   ConversationFixture,
   Message,
   MessageRetractionUpdate,
   MissionBriefing,
   MissionBriefingSummary,
+  MissionCommandEvent,
   PermissionRequest,
   PickerResult,
   PostMessageRequest,
   Project,
+  RoutingDecision,
   Room,
   StatusSnapshot,
   Task,
@@ -49,13 +54,17 @@ export class FiresideApi {
   readonly rooms = {
     list: () => this.http.get<Room[]>('/api/rooms'),
     create: (
-      body: Pick<Room, 'name' | 'agents' | 'yoloAgents'> &
-        Partial<Pick<Room, 'agentProfiles'>> & { projectId?: string },
+      body: Pick<Room, 'name' | 'agents' | 'yoloAgents' | 'leadAgentId'> &
+        Partial<Pick<Room, 'agentProfiles'>> & { projectId?: string; humanName?: string },
     ) =>
       this.http.post<Room>('/api/rooms', body),
     update: (
       roomId: string,
-      body: Partial<Pick<Room, 'name' | 'agents' | 'yoloAgents' | 'agentProfiles' | 'projectId'>>,
+      body: Partial<
+        Pick<Room, 'name' | 'agents' | 'yoloAgents' | 'leadAgentId' | 'agentProfiles' | 'projectId'>
+      > & {
+        humanName?: string;
+      },
     ) => this.http.patch<Room>(`/api/rooms/${roomId}`, body),
     delete: (roomId: string) => this.http.delete<void>(`/api/rooms/${roomId}`),
   };
@@ -66,6 +75,11 @@ export class FiresideApi {
       this.http.post<Project>('/api/projects', body),
     update: (projectId: string, body: Partial<Pick<Project, 'name' | 'description'>>) =>
       this.http.patch<Project>(`/api/projects/${projectId}`, body),
+    archive: (projectId: string) =>
+      this.http.patch<Project>(`/api/projects/${projectId}`, { archivedAt: Date.now() }),
+    unarchive: (projectId: string) =>
+      this.http.patch<Project>(`/api/projects/${projectId}`, { archivedAt: null }),
+    delete: (projectId: string) => this.http.delete<void>(`/api/projects/${projectId}`),
   };
 
   readonly state = {
@@ -152,6 +166,8 @@ export class FiresideApi {
 
   readonly agents = {
     catalog: () => this.http.get<AgentCatalog>('/api/agents/catalog'),
+    providerScore: (body: ProviderScoreRequest) =>
+      this.http.post<ProviderScoreResponse>('/api/agents/provider-score', body),
     compact: (roomId: string, agentId: string, authorId: string) =>
       this.http.post<AgentRun>(`/api/rooms/${roomId}/agents/${agentId}/compact`, { authorId }),
   };
@@ -164,12 +180,31 @@ export class FiresideApi {
       this.http.delete<{ ok: boolean }>(`/api/rooms/${roomId}/artifacts`, {
         body: { kind: artifact.kind, path: artifact.path },
       }),
+    open: (roomId: string, artifact: Artifact) =>
+      this.http.post<{ ok: boolean }>(`/api/rooms/${roomId}/artifacts/open`, {
+        path: artifact.path,
+      }),
   };
 
   readonly collaboration = {
     list: (roomId: string, taskId?: string | null) =>
       this.http.get<CollaborationItem[]>(`/api/rooms/${roomId}/collaboration`, {
         params: taskId ? { taskId } : {},
+      }),
+  };
+
+  readonly diagnostics = {
+    routingDecisions: (roomId: string, limit = 50) =>
+      this.http.get<RoutingDecision[]>(`/api/rooms/${roomId}/routing-decisions`, {
+        params: { limit },
+      }),
+    missionCommandEvents: (roomId: string, limit = 50) =>
+      this.http.get<MissionCommandEvent[]>(`/api/rooms/${roomId}/mission-command-events`, {
+        params: { limit },
+      }),
+    turnOutcomes: (roomId: string, limit = 50) =>
+      this.http.get<AgentTurnOutcome[]>(`/api/rooms/${roomId}/turn-outcomes`, {
+        params: { limit },
       }),
   };
 }

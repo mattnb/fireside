@@ -1,0 +1,130 @@
+<div class="modal">
+  <div class="modal__scrim" (click)="closed.emit()"></div>
+  <section
+    class="modal__panel modal__panel--agents"
+    role="dialog"
+    aria-modal="true"
+    aria-labelledby="edit-agents-title"
+  >
+    <header class="modal__head">
+      <h2 id="edit-agents-title">agents in #{{ roomName() }}</h2>
+      <p>
+        Name each participant, choose their provider and persona, then choose who joins
+        autonomous YOLO rounds.
+      </p>
+    </header>
+    <div class="agent-editor">
+      @for (row of agentRows(); track row.clientId) {
+      <article class="agent-toggle">
+        <span [class]="display.draftProviderAvatarClass(row)"></span>
+        <label class="agent-toggle__select agent-toggle__select--name">
+          <span>name</span>
+          <input
+            type="text"
+            autocomplete="off"
+            spellcheck="false"
+            [value]="row.displayName"
+            aria-label="Agent name"
+            placeholder="agent name"
+            (input)="agentNameSet.emit({ clientId: row.clientId, event: $event })"
+          />
+        </label>
+        <label class="agent-toggle__select">
+          <span>provider</span>
+          <select
+            [value]="row.providerId"
+            aria-label="Agent provider"
+            (change)="agentProviderSet.emit({ clientId: row.clientId, event: $event })"
+          >
+            @for (provider of providers(); track provider.id) {
+            <option [value]="provider.id" [selected]="provider.id === row.providerId">
+              {{ provider.displayName }}
+            </option>
+            }
+          </select>
+        </label>
+        <label class="agent-toggle__select agent-toggle__select--persona">
+          <span>persona</span>
+          <select
+            [value]="row.personaId"
+            aria-label="Agent persona"
+            (change)="agentPersonaSet.emit({ clientId: row.clientId, event: $event })"
+          >
+            @for (persona of personas(); track persona.id) {
+            <option [value]="persona.id" [selected]="persona.id === row.personaId">
+              {{ persona.name }}
+            </option>
+            }
+          </select>
+        </label>
+        <label class="agent-toggle__yolo" title="Participates in YOLO rounds">
+          <input
+            type="checkbox"
+            [checked]="row.yolo"
+            (change)="agentYoloToggled.emit({ clientId: row.clientId, event: $event })"
+          />
+          yolo
+        </label>
+        <button
+          class="agent-toggle__lead"
+          type="button"
+          [class.is-active]="leadClientId() === row.clientId"
+          [attr.aria-pressed]="leadClientId() === row.clientId"
+          title="Route broker coordination events to this agent first"
+          (click)="agentLeadSet.emit(row.clientId)"
+        >
+          lead
+        </button>
+        <button
+          class="room-agent-remove"
+          type="button"
+          title="Remove agent"
+          (click)="agentRemoved.emit(row.clientId)"
+        >
+          x
+        </button>
+        @if (recommendationFor(row.clientId); as recommendation) {
+        <div
+          class="provider-rec"
+          [class.provider-rec--match]="recommendation.recommendationMatchesCurrent"
+        >
+          <div class="provider-rec__copy">
+            <strong>{{ recommendationLabel(recommendation) }}</strong>
+            @if (recommendationDetail(recommendation)) {
+            <span>{{ recommendationDetail(recommendation) }}</span>
+            }
+            @if (whyNotCurrent(row, recommendation)) {
+            <span class="provider-rec__why">{{ whyNotCurrent(row, recommendation) }}</span>
+            }
+          </div>
+          @if (recommendation.selectedProviderId && !recommendation.recommendationMatchesCurrent) {
+          <button
+            type="button"
+            class="provider-rec__use"
+            (click)="agentProviderRecommended.emit({ clientId: row.clientId, providerId: recommendation.selectedProviderId })"
+          >
+            use {{ display.draftProviderLabel(recommendation.selectedProviderId) }}
+          </button>
+          }
+        </div>
+        }
+      </article>
+      }
+      @if (agentValidationError()) {
+      <p class="agent-validation">{{ agentValidationError() }}</p>
+      }
+    </div>
+    <footer class="modal__foot">
+      <button type="button" class="control-btn" (click)="agentAdded.emit()">add agent</button>
+      <button type="button" class="control-btn" (click)="closed.emit()">cancel</button>
+      <button
+        type="button"
+        class="control-btn control-btn--primary"
+        [disabled]="!!agentValidationError()"
+        (click)="saved.emit()"
+      >
+        save
+      </button>
+    </footer>
+  </section>
+</div>

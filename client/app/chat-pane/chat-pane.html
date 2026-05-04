@@ -1,0 +1,21 @@
+<section class="chat-pane" aria-label="Chat">
+  <fs-message-list
+    #messageList
+    [items]="timeline()"
+    [authorName]="authorName()"
+    [permissionRequestLabel]="permissionRequestLabel()"
+    [capabilityText]="capabilityText()"
+    [targetStatusText]="targetStatusText()"
+    (permissionDecided)="permissionDecided.emit($event)"
+  ></fs-message-list>
+  <fs-composer
+    [text]="composerText()"
+    [placeholder]="composerPlaceholder()"
+    [isWorking]="isRoomWorking()"
+    [findSuggestions]="findMentionSuggestions"
+    (textChange)="onComposerTextChange($event)"
+    (messageSent)="onMessageSent()"
+    (stopRequested)="stopRequested.emit()"
+    (attachRequested)="attachRequested.emit($event)"
+  ></fs-composer>
+</section>

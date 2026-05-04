@@ -3,7 +3,11 @@ import type {
   TaskChecklistParallelism,
   TaskChecklistStatus,
 } from './repos/task-checklist.js';
-import { hiddenBlockRegex } from './hidden-blocks.js';
+import {
+  hiddenBlockRegex,
+  parseHiddenBlockFields,
+  stripEmptyHiddenBlockComments,
+} from './hidden-blocks.js';
 
 export type MissionTaskAction = 'create' | 'update' | 'note';
 
@@ -73,21 +77,6 @@ const PARALLELISM_ALIASES = new Map<string, TaskChecklistParallelism>([
   ['locked', 'exclusive'],
 ]);
 
-function parseFields(block: string): Map<string, string[]> {
-  const fields = new Map<string, string[]>();
-  for (const rawLine of block.split(/\r?\n/)) {
-    const line = rawLine.trim();
-    if (!line) continue;
-    const idx = line.indexOf(':');
-    if (idx < 0) continue;
-    const key = line.slice(0, idx).trim().toLowerCase().replace(/-/g, '_');
-    const value = line.slice(idx + 1).trim();
-    if (!fields.has(key)) fields.set(key, []);
-    fields.get(key)!.push(value);
-  }
-  return fields;
-}
-
 function first(fields: Map<string, string[]>, ...keys: string[]): string {
   for (const key of keys) {
     const value = fields.get(key)?.[0];
@@ -150,7 +139,7 @@ function parseBoolean(value: string): boolean | null {
 }
 
 function parseBlock(block: string): ParsedMissionTaskUpdate | null {
-  const fields = parseFields(block);
+  const fields = parseHiddenBlockFields(block);
   const action = normalizeAction(first(fields, 'action', 'mode'));
   const id = first(fields, 'id', 'item_id', 'task_id');
   const title = first(fields, 'title', 'task', 'name');
@@ -201,7 +190,7 @@ export function extractMissionTaskUpdates(text: string): ExtractedMissionTaskUpd
     return prefix === '\n' ? '\n' : '';
   });
   return {
-    visibleText: visibleText.trim(),
+    visibleText: stripEmptyHiddenBlockComments(visibleText).trim(),
     updates,
   };
 }

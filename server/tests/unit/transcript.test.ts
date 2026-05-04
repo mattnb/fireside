@@ -58,6 +58,7 @@ describe('buildTurnPrompt', () => {
       },
       roomName: 'general',
       roomAgents: ['claude-security', 'codex-architecture'],
+      roomLeadAgentId: 'codex-architecture',
       roomAgentProfiles: [
         {
           id: 'claude-security',
@@ -81,9 +82,65 @@ describe('buildTurnPrompt', () => {
     });
 
     expect(prompt).toContain('Agent identity: respond as "Claude Security"');
+    expect(prompt).toContain('Use the durable id only in hidden protocol fields');
+    expect(prompt).toContain('use participant display names in visible chat');
     expect(prompt).toContain('Persona: Security Engineer');
     expect(prompt).toContain('Room roster: Claude Security');
     expect(prompt).toContain('codex-architecture');
+    expect(prompt).toContain('Team lead: Codex Architecture (@codex-architecture)');
+    expect(prompt).toContain('Broker/system coordination requests may be routed to this agent first');
+  });
+
+  it('uses display names for transcript labels and handoff instructions when profiles are available', () => {
+    const prompt = buildTurnPrompt({
+      agentId: 'claude-technical-lead',
+      agentProfile: {
+        id: 'claude-technical-lead',
+        providerId: 'claude',
+        displayName: 'Sean',
+        personaId: 'technical-lead',
+        personaName: 'Technical Lead',
+        personaSummary: 'Own technical direction.',
+      },
+      roomName: 'general',
+      roomAgents: ['claude-technical-lead', 'codex-project-manager'],
+      roomAgentProfiles: [
+        {
+          id: 'claude-technical-lead',
+          providerId: 'claude',
+          displayName: 'Sean',
+          personaId: 'technical-lead',
+          personaName: 'Technical Lead',
+          personaSummary: 'Own technical direction.',
+        },
+        {
+          id: 'codex-project-manager',
+          providerId: 'codex',
+          displayName: 'Jimmy',
+          personaId: 'project-manager',
+          personaName: 'Project Manager',
+          personaSummary: 'Plan missions.',
+        },
+      ],
+      history: [
+        {
+          authorId: 'codex-project-manager',
+          authorKind: 'agent',
+          text: 'Sean, please take the implementation review.',
+        },
+        {
+          authorId: 'claude-technical-lead',
+          authorKind: 'agent',
+          text: 'I will take it.',
+        },
+      ],
+      newMessage: { authorId: 'human', authorKind: 'human', text: 'continue' },
+    });
+
+    expect(prompt).toContain('Jimmy: Sean, please take the implementation review.');
+    expect(prompt).toContain('Sean (you): I will take it.');
+    expect(prompt).toContain('tag the exact @handle for one of these recipients: Jimmy (@jimmy)');
+    expect(prompt).toContain('Use stable agent ids only inside hidden protocol fields');
   });
 
   it('does not tell the model to avoid JSON (CLI handles JSON wrapping)', () => {
@@ -180,7 +237,7 @@ describe('buildTurnPrompt', () => {
       newMessage: { authorId: 'human', authorKind: 'human', text: 'coordinate' },
     });
 
-    expect(prompt).toContain('address one of these recipients by name: codex, gemini');
+    expect(prompt).toContain('tag the exact @handle for one of these recipients: codex (@codex), gemini (@gemini)');
     expect(prompt).toContain('Do not end with a bare agent label');
     expect(prompt).not.toContain('or "Claude:"');
   });
@@ -352,6 +409,11 @@ describe('buildTurnPrompt', () => {
     expect(result.prompt).toContain('Q4. consider Krisp-style noise reduction');
     expect(result.prompt).not.toContain('omitted to fit the live prompt budget');
     expect(result.stats.latestMessageTruncated).toBe(false);
+    expect(result.stats.detailLevel).toBe('minimal');
+    expect(result.stats.historyMessagesAvailable).toBe(0);
+    expect(result.stats.historyMessagesDroppedByCount).toBe(0);
+    expect(result.stats.latestMessageOriginalChars).toBe(result.stats.latestMessageChars);
+    expect(result.stats.budgetNotices.length).toBeGreaterThan(0);
   });
 
   it('includes permission request protocol by default and approved grants when supplied', () => {

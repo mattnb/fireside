@@ -95,6 +95,62 @@ export interface AgentCatalog {
   personas: AgentPersona[];
 }
 
+export interface ProviderHealth {
+  available?: boolean;
+  authenticated?: boolean;
+  quota5hPercent?: number;
+  quota5hResetsAt?: number;
+  quota5hWindowMinutes?: number;
+  quota7dPercent?: number;
+  quota7dResetsAt?: number;
+  quota7dWindowMinutes?: number;
+  quotaStatus?: string;
+  contextPercent?: number;
+  recentFailureRate?: number;
+  recentFailures?: number;
+  recentRuns?: number;
+}
+
+export interface ProviderScoreCandidate {
+  providerId: ProviderId;
+  score: number;
+  unavailable: boolean;
+  selected: boolean;
+  reasons: string[];
+  warnings: string[];
+  capabilityScore: number;
+  health: ProviderHealth | null;
+}
+
+export interface ProviderScoreSlotRequest {
+  id: string;
+  personaId?: string;
+  providerId?: ProviderId;
+  preferredProviders?: ProviderId[];
+  fallbackProviders?: ProviderId[];
+  avoidProviders?: ProviderId[];
+  capabilityTags?: string[];
+}
+
+export interface ProviderScoreRequest {
+  slots: ProviderScoreSlotRequest[];
+}
+
+export interface ProviderScoreSlotResult {
+  id: string;
+  currentProviderId: ProviderId | null;
+  recommendationMatchesCurrent: boolean;
+  selectedProviderId: ProviderId | null;
+  candidates: ProviderScoreCandidate[];
+  capabilityTags: string[];
+}
+
+export interface ProviderScoreResponse {
+  generatedAt: number;
+  providerHealth: Partial<Record<ProviderId, ProviderHealth>>;
+  slots: ProviderScoreSlotResult[];
+}
+
 export interface RoomAgentProfile {
   id: AgentId;
   providerId: ProviderId;
@@ -118,6 +174,7 @@ export interface Room {
   name: string;
   agents: AgentId[];
   yoloAgents: AgentId[];
+  leadAgentId: AgentId | null;
   agentProfiles: RoomAgentProfile[];
   createdAt?: number;
   updatedAt?: number;
@@ -129,6 +186,7 @@ export interface Project {
   description: string;
   createdAt: number;
   updatedAt: number;
+  archivedAt: number | null;
 }
 
 export interface StatusSnapshotTaskCounts {
@@ -191,6 +249,7 @@ export interface StatusSnapshotRoom {
   name: string;
   agents: AgentId[];
   yoloAgents: AgentId[];
+  leadAgentId: AgentId | null;
   agentProfiles: RoomAgentProfile[];
   createdAt: number;
   counts: {
@@ -340,6 +399,37 @@ export interface TaskPlan {
   updatedAt: number;
 }
 
+export type TaskParallelismCellStatus =
+  | 'can-run-together'
+  | 'blocked-by-dependency'
+  | 'same-conflict-group'
+  | 'expected-touch-overlap'
+  | 'exclusive-lane'
+  | 'not-ready';
+
+export interface TaskParallelismCell {
+  leftId: string;
+  rightId: string;
+  status: TaskParallelismCellStatus;
+  reason: string;
+}
+
+export interface TaskParallelismBatchItem {
+  itemId: string;
+  title: string;
+  ownerAgentId: string;
+  reason: string;
+}
+
+export interface TaskParallelismSummary {
+  phaseId: string | null;
+  phaseTitle: string;
+  candidateCount: number;
+  readyCount: number;
+  nextBatch: TaskParallelismBatchItem[];
+  cells: TaskParallelismCell[];
+}
+
 export interface TaskControl {
   task: Task;
   phases: TaskPhase[];
@@ -350,6 +440,7 @@ export interface TaskControl {
   openChecklistItems: TaskChecklistItem[];
   blockedChecklistItems: TaskChecklistItem[];
   activePlan: TaskPlan | null;
+  parallelism: TaskParallelismSummary;
 }
 
 export interface MissionBriefingPayload {
@@ -495,10 +586,138 @@ export interface RunDiagnostics {
 
 export interface AgentRunDetail {
   run: AgentRun;
+  execution?: {
+    state: string;
+    reason: string;
+    jobStatus: string | null;
+    runStatus: string | null;
+    lifecycleState: string | null;
+    attempt: number;
+    maxAttempts: number;
+    retryAfter: number | null;
+    terminal: boolean;
+  };
+  outcome?: {
+    id: string;
+    roomId: string;
+    taskId: string | null;
+    runId: string;
+    agentId: string;
+    visibleMessageId: string | null;
+    visibleMessageEmitted: boolean;
+    status: string;
+    progressed: boolean;
+    failed: boolean;
+    error: string;
+    missionUpdates: number;
+    missionReceipts: number;
+    missionReconciliations: number;
+    collaborationNotes: number;
+    draftArtifacts: number;
+    permissionRequestId: string | null;
+    permissionAutoApproved: boolean;
+    workDispatches: Array<{
+      agentId: string;
+      itemId: string;
+      title: string;
+      reason: string;
+    }>;
+    nextAgents: string[];
+    summary: string;
+    createdAt: number;
+  } | null;
   triggerMessage: Message | null;
   replyMessage: Message | null;
   diagnostics: RunDiagnostics;
   actions: AgentRunAction[];
+}
+
+export interface RoutingRuleTrace {
+  id: string;
+  result: 'matched' | 'skipped' | 'blocked' | string;
+  reason: string;
+  agents?: AgentId[];
+  aliases?: string[];
+}
+
+export type RoutingDecisionKind = 'human-message' | 'agent-message' | 'mission-work';
+
+export interface RoutingDecision {
+  id: string;
+  roomId: string;
+  taskId: string | null;
+  runId: string | null;
+  messageId: string | null;
+  authorId: string;
+  kind: RoutingDecisionKind;
+  action: string;
+  reason: string;
+  responders: AgentId[];
+  trace: RoutingRuleTrace[];
+  createdAt: number;
+}
+
+export type MissionCommandKind =
+  | 'mission-create'
+  | 'mission-plan'
+  | 'mission-phase'
+  | 'mission-task'
+  | 'mission-receipt'
+  | 'agent-roster';
+
+export type MissionCommandStatus = 'parsed' | 'applied' | 'rejected' | 'reconciled';
+
+export interface MissionCommandEvent {
+  id: string;
+  roomId: string;
+  taskId: string | null;
+  runId: string | null;
+  agentId: AgentId;
+  commandKind: MissionCommandKind;
+  action: string;
+  targetRef: string;
+  status: MissionCommandStatus;
+  summary: string;
+  payload: unknown;
+  createdAt: number;
+}
+
+export type AgentTurnOutcomeStatus =
+  | 'completed'
+  | 'failed'
+  | 'canceled'
+  | 'empty'
+  | 'permission-requested'
+  | 'retry-scheduled';
+
+export interface AgentTurnOutcome {
+  id: string;
+  roomId: string;
+  taskId: string | null;
+  runId: string;
+  agentId: AgentId;
+  visibleMessageId: string | null;
+  visibleMessageEmitted: boolean;
+  status: AgentTurnOutcomeStatus;
+  progressed: boolean;
+  failed: boolean;
+  error: string;
+  missionUpdates: number;
+  missionReceipts: number;
+  missionReconciliations: number;
+  collaborationNotes: number;
+  draftArtifacts: number;
+  permissionRequestId: string | null;
+  permissionAutoApproved: boolean;
+  workDispatches: Array<{
+    agentId: AgentId;
+    itemId: string;
+    title: string;
+    reason: string;
+  }>;
+  nextAgents: AgentId[];
+  summary: string;
+  createdAt: number;
 }
 
 export interface Artifact {
@@ -575,6 +794,8 @@ export type FiresideWsEvent =
   | { type: 'permissionRequestUpdated'; request: PermissionRequest }
   | { type: 'roomUpdated'; room: Room }
   | { type: 'roomDeleted'; roomId: string }
+  | { type: 'projectUpdated'; project: Project }
+  | { type: 'projectDeleted'; projectId: string }
   | { type: 'taskUpdated'; task: Task }
   | { type: 'agentRunUpdated'; run: AgentRun }
   | { type: 'agentRunActionCreated'; action: AgentRunAction }

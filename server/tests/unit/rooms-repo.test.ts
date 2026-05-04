@@ -6,6 +6,7 @@ import {
   deleteRoom,
   getRoom,
   listRooms,
+  setRoomLeadAgent,
   setRoomAgents,
 } from '../../src/repos/rooms.js';
 import { addMessage, listMessages } from '../../src/repos/messages.js';
@@ -17,6 +18,7 @@ import { createAgentRun, listAgentRuns } from '../../src/repos/agent-runs.js';
 import { getCliSessionId, upsertCliSessionId } from '../../src/repos/sessions.js';
 import { createTask, listTasks, updateTask } from '../../src/repos/tasks.js';
 import { createProject, listProjects } from '../../src/repos/projects.js';
+import { validateRoomParticipantNames } from '../../src/agents/profiles.js';
 
 describe('rooms repo', () => {
   let db: ReturnType<typeof openDatabase>;
@@ -102,6 +104,23 @@ describe('rooms repo', () => {
     ]);
   });
 
+  it('persists and clears a room team lead', () => {
+    const room = createRoom(db, {
+      name: 'lead room',
+      agents: ['claude', 'codex'],
+      leadAgentId: 'codex',
+    });
+
+    expect(room.leadAgentId).toBe('codex');
+    expect(getRoom(db, room.id)?.leadAgentId).toBe('codex');
+
+    setRoomAgents(db, room.id, ['claude']);
+    expect(getRoom(db, room.id)?.leadAgentId).toBeNull();
+
+    expect(setRoomLeadAgent(db, room.id, 'claude')?.leadAgentId).toBe('claude');
+    expect(setRoomLeadAgent(db, room.id, 'codex')?.leadAgentId).toBeNull();
+  });
+
   it('deduplicates room display names without collapsing provider instances', () => {
     const room = createRoom(db, {
       name: 'named specialists',
@@ -128,8 +147,24 @@ describe('rooms repo', () => {
     expect(room.agents).toEqual(['claude-a', 'claude-b']);
     expect(room.agentProfiles.map((profile) => profile.displayName)).toEqual([
       'Claude',
-      'Claude 2',
+      'Claude Jr.',
     ]);
+  });
+
+  it('flags participant name and handle conflicts against the human', () => {
+    const errors = validateRoomParticipantNames({
+      humanName: 'Matt',
+      agentProfiles: [
+        {
+          id: 'claude-project-manager',
+          providerId: 'claude',
+          displayName: 'Matt',
+        },
+      ],
+    });
+
+    expect(errors).toContain('agent "Matt" name "Matt" conflicts with human "Matt"');
+    expect(errors).toContain('agent "Matt" handle @matt conflicts with human "Matt"');
   });
 
   it('preserves explicit provider overrides when the agent id has a different provider prefix', () => {

@@ -1,0 +1,118 @@
+/* client/app/archives-view/archives-view.css */
+
+:host {
+  display: contents;
+}
+
+.archives-view {
+  display: grid;
+  gap: 18px;
+  padding: 22px 26px 32px;
+  overflow: auto;
+  height: 100%;
+}
+
+.archives-view__head h2 {
+  margin: 0 0 6px;
+  font-family: var(--font-display);
+  font-weight: 500;
+  font-size: 22px;
+  letter-spacing: 0.01em;
+  color: var(--text-primary);
+}
+
+.archives-view__head p {
+  margin: 0;
+  max-width: 640px;
+  color: var(--text-secondary);
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.archives-view__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 12px;
+}
+
+.archive-card {
+  display: grid;
+  gap: 8px;
+  padding: 14px 16px;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-sm);
+  background: var(--bg-panel);
+}
+
+.archive-card__head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.archive-card__title {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.archive-card__title strong {
+  font-size: 15px;
+  color: var(--text-primary);
+}
+
+.archive-card__meta {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-faint);
+}
+
+.archive-card__actions {
+  flex: none;
+  display: flex;
+  gap: 8px;
+}
+
+.archive-card__description {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.archive-card__rooms {
+  list-style: none;
+  margin: 4px 0 0;
+  padding: 0;
+  display: grid;
+  gap: 4px;
+}
+
+.archive-card__rooms li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.archive-card__room-hash {
+  color: var(--text-faint);
+  font-family: var(--font-mono);
+}
+
+.archive-card__room-count {
+  margin-left: auto;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-faint);
+}
+
+.archive-card__empty {
+  margin: 4px 0 0;
+  color: var(--text-faint);
+  font-size: 12px;
+}

@@ -1,0 +1,35 @@
+<div class="modal">
+  <div class="modal__scrim" (click)="closed.emit()"></div>
+  <section
+    class="modal__panel"
+    role="dialog"
+    aria-modal="true"
+    aria-labelledby="delete-project-title"
+  >
+    <header class="modal__head">
+      <h2 id="delete-project-title">delete {{ project().name }}?</h2>
+      <p>this cannot be undone.</p>
+    </header>
+    <div class="delete-project">
+      <p>
+        deleting this project will also remove
+        <strong>{{ roomCount() }}</strong>
+        @if (roomCount() === 1) { mission } @else { missions }
+        and every message, run, task, and artifact attached to them.
+      </p>
+      <p class="delete-project__hint">
+        prefer keeping it around? close this and use the archive button instead.
+      </p>
+    </div>
+    <footer class="modal__foot">
+      <button type="button" class="control-btn" (click)="closed.emit()">cancel</button>
+      <button
+        type="button"
+        class="control-btn control-btn--danger"
+        (click)="confirmed.emit(project())"
+      >
+        delete project
+      </button>
+    </footer>
+  </section>
+</div>

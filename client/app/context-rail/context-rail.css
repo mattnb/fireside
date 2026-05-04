@@ -1,0 +1,9 @@
+/* client/app/context-rail/context-rail.css
+ * Outer host placement only. Reuses `.context-rail*`, `.context-group*`,
+ * `.artifact-list`, `.artifact-row*`, `.run-list`, and `.run-row`
+ * selectors that stay global in app.css.
+ */
+
+:host {
+  display: contents;
+}

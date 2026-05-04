@@ -1,0 +1,278 @@
+/* client/app/briefings-tab/briefings-tab.css
+ * The briefing-* CSS classes are still defined globally in app.css. They are
+ * referenced in many places (mission-card, panel, briefing-list-panel share
+ * group selectors) so wholesale migration would risk breakage. Leaving the
+ * styles global keeps render parity intact while the template lives here.
+ *
+ * The host needs to display: contents so the .briefings-pane grid layout
+ * applies as it did when the section was a direct child of <main>.
+ */
+
+:host {
+  display: contents;
+}
+
+/* === migrated from app-mission.css === */
+
+
+
+.mission-card,
+.panel,
+.briefing-list-panel,
+.briefing-detail-panel,
+.briefing-section {
+  align-self: start;
+  align-content: start;
+  padding: 13px;
+}
+
+.mission-card__head,
+.briefing-panel-head,
+.briefing-detail-head,
+.briefing-plan header,
+.briefing-message header {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.briefing-list-panel,
+.briefing-detail-panel {
+  align-self: stretch;
+  display: grid;
+  gap: 12px;
+  max-height: 100%;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.briefing-list-panel {
+  grid-template-rows: auto minmax(0, 1fr);
+}
+
+.briefing-detail-panel {
+  align-content: start;
+  overflow-y: auto;
+}
+
+.briefing-panel-head h2,
+.briefing-detail-head h2 {
+  margin: 3px 0 0;
+  color: var(--text-primary);
+  font-family: var(--font-display);
+  font-size: 20px;
+  font-weight: 600;
+}
+
+.briefing-detail-head {
+  align-items: stretch;
+  border-bottom: 1px solid var(--border-soft);
+  padding-bottom: 12px;
+}
+
+.briefing-detail-head p {
+  max-width: 760px;
+  margin: 6px 0 0;
+  color: var(--text-secondary);
+  font-size: 12.5px;
+  line-height: 1.45;
+}
+
+.briefing-list {
+  display: grid;
+  align-content: start;
+  gap: 7px;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.briefing-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 4px 8px;
+  width: 100%;
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+  padding: 9px;
+  text-align: left;
+}
+
+.briefing-row:hover,
+.briefing-row.is-active {
+  border-color: rgba(94, 196, 144, 0.32);
+  background: rgba(94, 196, 144, 0.07);
+}
+
+.briefing-row span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-primary);
+  font-size: 12.5px;
+  font-weight: 800;
+}
+
+.briefing-row strong,
+.briefing-row small,
+.briefing-facts dt,
+.briefing-facts dd,
+.briefing-message strong {
+  font-family: var(--font-mono);
+  font-size: 10px;
+}
+
+.briefing-row strong,
+.briefing-message strong {
+  color: var(--text-faint);
+  font-weight: 700;
+}
+
+.briefing-row p {
+  grid-column: 1 / -1;
+  margin: 1px 0 0;
+  color: var(--text-secondary);
+  font-size: 11.5px;
+  line-height: 1.35;
+}
+
+.briefing-row small {
+  grid-column: 1 / -1;
+  color: var(--text-muted);
+}
+
+.briefing-facts {
+  flex: 0 0 min(360px, 42%);
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 7px;
+  margin: 0;
+}
+
+.briefing-facts div {
+  min-width: 0;
+  border: 1px solid var(--border-soft);
+  border-radius: 6px;
+  background: rgba(13, 17, 23, 0.28);
+  padding: 6px 7px;
+}
+
+.briefing-facts dt {
+  color: var(--text-muted);
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.briefing-facts dd {
+  margin: 2px 0 0;
+  color: var(--text-secondary);
+  overflow-wrap: anywhere;
+}
+
+.briefing-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.briefing-section {
+  align-self: stretch;
+  display: grid;
+  gap: 8px;
+  min-height: 0;
+}
+
+.briefing-section--wide {
+  grid-column: 1 / -1;
+}
+
+.briefing-section--paired {
+  grid-template-rows: auto minmax(0, 1fr);
+  min-height: 340px;
+  max-height: 520px;
+  overflow: hidden;
+}
+
+.briefing-section--conversation {
+  grid-template-rows: auto auto minmax(0, 1fr);
+}
+
+.briefing-section h3,
+.briefing-plan h3 {
+  margin: 0;
+  color: var(--text-primary);
+  font-size: 14px;
+}
+
+.briefing-section p,
+.briefing-message p {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.briefing-section small {
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  overflow-wrap: anywhere;
+}
+
+.briefing-plan-list,
+.briefing-ledger,
+.briefing-transcript {
+  display: grid;
+  gap: 8px;
+}
+
+.briefing-plan-list {
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+}
+
+.briefing-section--paired
+  :is(.phase-grid--briefing, .checklist, .briefing-ledger, .briefing-transcript) {
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.briefing-plan {
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+}
+
+.briefing-plan strong,
+.briefing-message span {
+  color: var(--text-primary);
+  font-size: 11.5px;
+  font-weight: 800;
+}
+
+.briefing-plan header strong {
+  color: var(--accent-warning);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  text-transform: uppercase;
+}
+
+.briefing-message {
+  display: grid;
+  gap: 5px;
+  padding: 8px 9px;
+}
+.briefings-pane {
+  display: grid;
+  grid-template-columns: minmax(260px, 0.34fr) minmax(0, 1fr);
+  align-items: stretch;
+  gap: 14px;
+  padding: 18px 22px 24px;
+  overflow: hidden;
+}
+
+.briefings-pane {
+  min-height: 0;
+}

@@ -1,0 +1,9 @@
+/* client/app/run-detail-modal/run-detail-modal.css
+ * Outer host placement only. The dialog reuses `.modal*` and
+ * `.run-detail*` selectors that stay global in app.css alongside other
+ * dialogs.
+ */
+
+:host {
+  display: contents;
+}

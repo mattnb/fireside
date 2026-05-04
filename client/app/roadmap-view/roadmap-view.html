@@ -1,0 +1,237 @@
+<section class="panel panel--wide mission-roadmap">
+  <header class="mission-roadmap__head">
+    <div>
+      <div class="section-label">mission graph</div>
+      <h2>Phase lanes &amp; work dependencies</h2>
+    </div>
+  </header>
+
+  @if (hasTaskControl()) { @if (summary(); as graph) {
+  <div class="mission-roadmap__rollup">
+    <span class="mission-roadmap__rollup-lbl">mission rollup</span>
+    <span class="mission-roadmap__rollup-stat"
+      ><strong>{{ graph.itemsDone }}</strong>/{{ graph.itemsTotal }} items</span
+    >
+    <span class="mission-roadmap__rollup-divider"></span>
+    <span class="mission-roadmap__rollup-stat"
+      ><strong>{{ graph.phasesDone }}</strong>/{{ graph.phasesTotal }} gates</span
+    >
+    <span class="mission-roadmap__rollup-divider"></span>
+    <span class="mission-roadmap__rollup-stat"><strong>{{ graph.ready }}</strong> ready</span>
+    <span class="mission-roadmap__rollup-divider"></span>
+    <span class="mission-roadmap__rollup-stat" [class.is-warn]="graph.blocked > 0"
+      ><strong>{{ graph.blocked }}</strong> blocked</span
+    >
+    <span class="mission-roadmap__rollup-divider"></span>
+    <span class="mission-roadmap__rollup-stat"
+      ><strong>{{ graph.evidence }}</strong> evidence</span
+    >
+    <span class="mission-roadmap__rollup-divider"></span>
+    <span class="mission-roadmap__rollup-stat"
+      ><strong>{{ graph.artifacts }}</strong> artifacts</span
+    >
+    <span class="mission-roadmap__rollup-divider"></span>
+    <span class="mission-roadmap__rollup-stat"
+      ><strong>{{ graph.collaboration }}</strong> collab</span
+    >
+  </div>
+  }
+
+  <div class="mission-roadmap__body">
+    <nav class="mission-roadmap__nav" aria-label="Phases">
+      <div class="mission-roadmap__nav-head">phases</div>
+      @for (lane of lanes(); track lane.id; let i = $index) {
+      <button
+        type="button"
+        class="mission-roadmap__phase-row"
+        [class.is-active]="selectedLane()?.id === lane.id"
+        (click)="selectPhase(lane.id)"
+      >
+        <span class="mission-roadmap__phase-num">{{ pad2(i + 1) }}</span>
+        <span class="mission-roadmap__phase-name"
+          >{{ lane.title }}<small>{{ phaseSubline(lane) }}</small></span
+        >
+        <span class="mission-roadmap__phase-progress">
+          <span class="mission-roadmap__phase-bar">
+            <span [style.width.%]="phaseProgressPercent(lane)"></span>
+          </span>
+          <span class="mission-roadmap__phase-pct">{{ phaseProgressPercent(lane) }}</span>
+        </span>
+      </button>
+      } @empty {
+      <p class="empty-copy">no phases yet</p>
+      } @if (hasActiveTask()) {
+      <form
+        class="mission-roadmap__add-phase"
+        (submit)="$event.preventDefault(); submitPhase(phaseTitle, phaseGate, phaseStatus)"
+      >
+        <div class="mission-roadmap__nav-head">add phase</div>
+        <input #phaseTitle type="text" placeholder="phase title" />
+        <textarea #phaseGate rows="2" placeholder="gate criteria"></textarea>
+        <select #phaseStatus>
+          <option value="planned">planned</option>
+          <option value="active">active</option>
+          <option value="blocked">blocked</option>
+          <option value="done">done</option>
+        </select>
+        <button class="control-btn" type="submit">add phase</button>
+      </form>
+      }
+    </nav>
+
+    <div class="mission-roadmap__pane">
+      @if (selectedLane(); as lane) {
+      <div class="mission-roadmap__pane-head">
+        <h5>{{ lane.title }}</h5>
+        @if (lane.gate) {
+        <span class="mission-roadmap__pane-gate">gate: {{ lane.gate }}</span>
+        } @if (lane.planLabel) {
+        <span class="mission-roadmap__pane-plan">plan {{ lane.planLabel }}</span>
+        }
+      </div>
+      <div class="mission-roadmap__filters" role="toolbar" aria-label="Filter by status">
+        <button
+          type="button"
+          [class.is-active]="statusFilter() === 'ready'"
+          (click)="toggleStatusFilter('ready')"
+        >
+          <strong>{{ statusBucketCount(lane, 'ready') }}</strong>ready
+        </button>
+        <button
+          type="button"
+          [class.is-active]="statusFilter() === 'in-progress'"
+          (click)="toggleStatusFilter('in-progress')"
+        >
+          <strong>{{ statusBucketCount(lane, 'in-progress') }}</strong>in progress
+        </button>
+        <button
+          type="button"
+          [class.is-active]="statusFilter() === 'blocked'"
+          (click)="toggleStatusFilter('blocked')"
+        >
+          <strong>{{ statusBucketCount(lane, 'blocked') }}</strong>blocked
+        </button>
+        <button
+          type="button"
+          [class.is-active]="statusFilter() === 'done'"
+          (click)="toggleStatusFilter('done')"
+        >
+          <strong>{{ statusBucketCount(lane, 'done') }}</strong>done
+        </button>
+        @if (statusFilter()) {
+        <button
+          type="button"
+          class="mission-roadmap__filters-clear"
+          (click)="clearStatusFilter()"
+        >
+          clear filter
+        </button>
+        }
+      </div>
+
+      <div class="mission-roadmap__feed">
+        @for (card of filteredCards(); track card.item.id) {
+        <article
+          [class]="'mission-roadmap-item ' + cardClass(card)"
+          [class.is-selected]="selectedItemId() === card.item.id"
+          tabindex="0"
+          (click)="focusItem(card.item)"
+          (keydown.enter)="focusItem(card.item)"
+          (keydown.space)="focusItem(card.item); $event.preventDefault()"
+        >
+          <span class="mission-roadmap-item__stripe" aria-hidden="true"></span>
+          <div class="mission-roadmap-item__body">
+            <header class="mission-roadmap-item__head">
+              <h6>{{ card.item.title }}</h6>
+              <em>{{ card.item.status }}</em>
+            </header>
+            @if (card.item.detail) {
+            <p>{{ card.item.detail }}</p>
+            } @if (card.dependencies.length) {
+            <div class="mission-roadmap-item__links">
+              <span>after</span>
+              <div class="mission-roadmap-item__targets">
+                @for (dependency of card.dependencies; track dependency.id) {
+                <em [class.is-done]="dependency.done"
+                  >{{ dependency.title }} / {{ dependency.status }}</em
+                >
+                }
+              </div>
+            </div>
+            } @if (card.dependents.length) {
+            <div class="mission-roadmap-item__links">
+              <span>unblocks</span>
+              <div class="mission-roadmap-item__targets">
+                @for (dependent of card.dependents; track dependent.id) {
+                <em [class.is-done]="dependent.done"
+                  >{{ dependent.title }} / {{ dependent.status }}</em
+                >
+                }
+              </div>
+            </div>
+            } @if (card.activeRun || card.latestRun) {
+            <button
+              type="button"
+              class="mission-roadmap-item__run"
+              [class.is-active]="card.activeRun"
+              (click)="openRun(card, $event)"
+            >
+              {{ runLabel()(card) }}
+            </button>
+            } @if (notePreview()(card)) {
+            <small class="mission-roadmap-item__note">{{ notePreview()(card) }}</small>
+            }
+
+            <div class="mission-roadmap-item__meta">
+              @if (card.item.ownerAgentId) {
+              <span [title]="'Owner: ' + display.name(card.item.ownerAgentId)">
+                <span class="avatar avatar--sm" [class]="display.avatarClass(card.item.ownerAgentId, 'sm')">
+                  @if (!display.isAgentOwner(card.item.ownerAgentId)) { {{
+                  card.item.ownerAgentId.slice(0, 1).toUpperCase() }} }
+                </span>
+                {{ display.name(card.item.ownerAgentId) }}
+              </span>
+              } @else {
+              <span>unassigned</span>
+              }
+              <span
+                class="mission-roadmap-item__id-copy"
+                title="Click to copy id"
+                (click)="copyId(card.item.id, $event)"
+                >id {{ shortTaskId(card.item.id) }}</span
+              >
+              @if (card.waiting) {
+              <span>waiting</span>
+              } @if (card.ready) {
+              <span>parallel ready</span>
+              } @if (card.item.parallelism) {
+              <span [class]="'mission-scope-chip is-' + card.item.parallelism">
+                {{ card.item.parallelism }}
+              </span>
+              } @if (card.item.expectedTouches?.length) {
+              <span>{{ card.item.expectedTouches.length }} touch(es)</span>
+              } @if (card.item.conflictGroup) {
+              <span>group {{ card.item.conflictGroup }}</span>
+              } @if (card.notesCount) {
+              <span>{{ card.notesCount }} notes</span>
+              } @if (card.evidenceCount) {
+              <span>{{ card.evidenceCount }} evidence</span>
+              }
+            </div>
+          </div>
+        </article>
+        } @empty {
+        <p class="empty-copy">
+          @if (statusFilter()) { no items match this filter } @else { no work items in this phase }
+        </p>
+        }
+      </div>
+      } @else {
+      <p class="empty-copy">select a phase</p>
+      }
+    </div>
+  </div>
+  } @else {
+  <p class="empty-copy">mission graph is waiting on an active mission</p>
+  }
+</section>

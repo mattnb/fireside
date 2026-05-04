@@ -1,0 +1,8 @@
+/* client/app/edit-agents-modal/edit-agents-modal.css
+ * Outer host placement only. Reuses `.modal*` and `.agent-editor*`
+ * selectors that stay global in app.css.
+ */
+
+:host {
+  display: contents;
+}

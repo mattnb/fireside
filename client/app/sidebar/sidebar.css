@@ -1,0 +1,9 @@
+/* client/app/sidebar/sidebar.css
+ * Outer host placement only. Reuses `.sidebar`, `.primary-nav*`,
+ * `.rooms*`, `.project-*`, `.room-*`, and `.me*` selectors that stay
+ * global in app.css.
+ */
+
+:host {
+  display: contents;
+}

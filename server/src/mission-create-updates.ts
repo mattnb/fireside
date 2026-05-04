@@ -1,5 +1,9 @@
 import type { AgentId } from './agents/types.js';
-import { hiddenBlockRegex } from './hidden-blocks.js';
+import {
+  hiddenBlockRegex,
+  parseHiddenBlockFields,
+  stripEmptyHiddenBlockComments,
+} from './hidden-blocks.js';
 import { normalizePermissionMode, type PermissionMode } from './permissions.js';
 
 export interface ParsedMissionCreateUpdate {
@@ -18,21 +22,6 @@ export interface ExtractedMissionCreateUpdates {
 }
 
 const CREATE_RE = hiddenBlockRegex('mission-create', ['mission-create', 'collab-note']);
-
-function parseFields(block: string): Map<string, string[]> {
-  const fields = new Map<string, string[]>();
-  for (const rawLine of block.split(/\r?\n/)) {
-    const line = rawLine.trim();
-    if (!line) continue;
-    const idx = line.indexOf(':');
-    if (idx < 0) continue;
-    const key = line.slice(0, idx).trim().toLowerCase().replace(/-/g, '_');
-    const value = line.slice(idx + 1).trim();
-    if (!fields.has(key)) fields.set(key, []);
-    fields.get(key)!.push(value);
-  }
-  return fields;
-}
 
 function first(fields: Map<string, string[]>, ...keys: string[]): string {
   for (const key of keys) {
@@ -64,7 +53,7 @@ function splitAgents(value: string): AgentId[] | null {
 }
 
 function parseCreateBlock(block: string): ParsedMissionCreateUpdate | null {
-  const fields = parseFields(block);
+  const fields = parseHiddenBlockFields(block);
   const title = first(fields, 'title', 'mission', 'name');
   if (!title) return null;
   const capabilityProfile = normalizePermissionMode(
@@ -91,7 +80,7 @@ export function extractMissionCreateUpdates(text: string): ExtractedMissionCreat
     return prefix === '\n' ? '\n' : '';
   });
   return {
-    visibleText: visibleText.trim(),
+    visibleText: stripEmptyHiddenBlockComments(visibleText).trim(),
     updates,
   };
 }

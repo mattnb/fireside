@@ -688,6 +688,59 @@ export function claudeDebugQuotaUsage(raw: string, model = 'claude'): AgentConte
   };
 }
 
+export function geminiContextUsage(obj: Record<string, unknown>): AgentContextUsage | null {
+  const stats = asRecord(obj.stats) ?? obj;
+  const usage = asRecord(stats.usage_metadata) ?? asRecord(stats.usageMetadata);
+  if (usage) {
+    const inputTokens =
+      numberFromRecord(usage, 'input_token_count') ?? numberFromRecord(usage, 'inputTokenCount');
+    const outputTokens =
+      numberFromRecord(usage, 'output_token_count') ?? numberFromRecord(usage, 'outputTokenCount');
+    const cachedInputTokens =
+      numberFromRecord(usage, 'cached_content_token_count') ??
+      numberFromRecord(usage, 'cachedContentTokenCount');
+    const usedTokens =
+      numberFromRecord(usage, 'total_token_count') ??
+      numberFromRecord(usage, 'totalTokenCount') ??
+      Math.max(0, (inputTokens ?? 0) + (outputTokens ?? 0));
+    if (usedTokens > 0) {
+      return addWindowFields({
+        provider: 'gemini',
+        model: stringValue(stats.model) ?? stringValue(obj.model) ?? 'gemini',
+        usedTokens,
+        ...(inputTokens !== undefined ? { inputTokens } : {}),
+        ...(cachedInputTokens !== undefined ? { cachedInputTokens } : {}),
+        ...(outputTokens !== undefined ? { outputTokens } : {}),
+        source: 'gemini:stats.usage_metadata',
+      });
+    }
+  }
+
+  const models = asRecord(stats.models);
+  if (!models) return null;
+  for (const [model, rawModelStats] of Object.entries(models)) {
+    const modelStats = asRecord(rawModelStats);
+    const tokens = asRecord(modelStats?.tokens);
+    if (!tokens) continue;
+    const inputTokens = numberFromRecord(tokens, 'input');
+    const outputTokens = numberFromRecord(tokens, 'output');
+    const cachedInputTokens = numberFromRecord(tokens, 'cached');
+    const usedTokens =
+      numberFromRecord(tokens, 'total') ?? Math.max(0, (inputTokens ?? 0) + (outputTokens ?? 0));
+    if (usedTokens <= 0) continue;
+    return addWindowFields({
+      provider: 'gemini',
+      model,
+      usedTokens,
+      ...(inputTokens !== undefined ? { inputTokens } : {}),
+      ...(cachedInputTokens !== undefined ? { cachedInputTokens } : {}),
+      ...(outputTokens !== undefined ? { outputTokens } : {}),
+      source: 'gemini:stats.models.tokens',
+    });
+  }
+  return null;
+}
+
 export function formatContextUsage(usage: AgentContextUsage): string {
   const quota = usage.quota ? formatQuotaUsage(usage.quota) : '';
   if (usage.quotaOnly) return quota || `${usage.model}: quota update`;

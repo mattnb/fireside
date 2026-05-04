@@ -1,0 +1,20 @@
+<section class="panel panel--plan">
+  <div class="section-label">active plan</div>
+  @if (activePlan(); as plan) {
+  <h3>{{ plan.title }}</h3>
+  <p class="panel-note">
+    Team agreement and rationale. Phase gates and checklist items track execution.
+  </p>
+  }
+  <div class="markdown-body" [innerHTML]="activePlanHtml()"></div>
+  @if (task()) {
+  <form
+    class="inline-form"
+    (submit)="$event.preventDefault(); submitPlan(planTitle, planBody)"
+  >
+    <input #planTitle type="text" placeholder="plan title" />
+    <textarea #planBody rows="8" placeholder="markdown plan"></textarea>
+    <button class="control-btn" type="submit">publish plan</button>
+  </form>
+  }
+</section>

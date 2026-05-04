@@ -1,0 +1,237 @@
+<section class="ov-pane" aria-label="Mission overview">
+  <div class="ov-body">
+    <canvas class="ov-rays-canvas" #overviewRaysCanvas aria-hidden="true"></canvas>
+
+    <section class="ov-main" [attr.data-active-tab]="missionTab()">
+      <div
+        class="ov-mission-tabs"
+        [attr.data-active]="missionTab()"
+        role="tablist"
+        aria-label="Mission view"
+      >
+        <button
+          type="button"
+          class="ov-mtab"
+          [class.is-active]="missionTab() === 'brief'"
+          [attr.aria-selected]="missionTab() === 'brief'"
+          role="tab"
+          (click)="selectMissionTab('brief')"
+        >
+          Mission brief
+        </button>
+        <button
+          type="button"
+          class="ov-mtab"
+          [class.is-active]="missionTab() === 'active'"
+          [attr.aria-selected]="missionTab() === 'active'"
+          role="tab"
+          (click)="selectMissionTab('active')"
+        >
+          <span class="ov-mtab__label">Active phase</span>
+          <span class="ov-mtab__phase" aria-hidden="true">
+            <span class="ov-mtab__mark">∗</span>
+            <span>{{ phaseProgressLabel() }}</span>
+          </span>
+        </button>
+      </div>
+
+      <div class="ov-facts">
+        <div class="ov-fact">
+          <span class="ov-fact__label">status</span>
+          <span class="ov-fact__value">{{ activeTask()?.status ?? '—' }}</span>
+        </div>
+        <div class="ov-fact">
+          <span class="ov-fact__label">profile</span>
+          <span class="ov-fact__value">{{ activeTask()?.capabilityProfile ?? '—' }}</span>
+        </div>
+        <div class="ov-fact">
+          <span class="ov-fact__label">started</span>
+          <span class="ov-fact__value">{{ activeTaskStartedLabel() }}</span>
+        </div>
+        <div class="ov-fact">
+          <span class="ov-fact__label">repo path</span>
+          <span class="ov-fact__value">{{ activeTaskRepoPath() }}</span>
+        </div>
+      </div>
+
+      <div class="ov-mission-pane" role="tabpanel">
+        <section
+          class="ov-mission-view ov-mission-view--brief"
+          [hidden]="missionTab() !== 'brief'"
+        >
+          @if (activeTask(); as task) {
+          <h1 class="ov-title">{{ task.title }}</h1>
+          <p class="ov-lede">{{ task.goal || 'No goal written yet.' }}</p>
+          @if (task.acceptanceCriteria) {
+          <p class="ov-accept">{{ task.acceptanceCriteria }}</p>
+          } } @else {
+          <h1 class="ov-title">No active mission</h1>
+          <p class="ov-lede">
+            Create the mission brief in Setup; agents will receive it in future turns.
+          </p>
+          }
+        </section>
+
+        <section
+          class="ov-mission-view ov-mission-view--active"
+          [hidden]="missionTab() !== 'active'"
+        >
+          @if (taskControl()?.currentPhase; as phase) {
+          <h1 class="ov-title">{{ phase.title }}</h1>
+          @if (phase.description) {
+          <p class="ov-lede">{{ phase.description }}</p>
+          } @if (currentWorkItem(); as item) {
+          <div class="ov-current-item">
+            <div class="ov-current-item__head">
+              <span class="ov-current-item__pulse"></span>
+              <span>working on now</span>
+            </div>
+            <h3>{{ item.title }}</h3>
+            @if (item.detail || item.statusNote) {
+            <p>{{ oneLine(item.detail || item.statusNote, 200) }}</p>
+            }
+          </div>
+          } @if (phase.gate) {
+          <p class="ov-accept">Phase gate: {{ phase.gate }}</p>
+          } } @else if (activeTask(); as task) {
+          <h1 class="ov-title">{{ task.title }}</h1>
+          <p class="ov-lede">No phase set yet for this mission.</p>
+          } @else {
+          <h1 class="ov-title">No active phase</h1>
+          <p class="ov-lede">Configure phases in the plan tab.</p>
+          }
+        </section>
+      </div>
+    </section>
+
+    <div class="ov-attn-frame">
+      <aside class="ov-card-shell ov-attn-card" #overviewAttnCard>
+        <div class="ov-attn-section">
+          <header class="ov-attn-head is-primary">
+            <strong>Attention</strong>
+            <small>{{ pad2(blockerItems().length) }}</small>
+          </header>
+          @for (item of blockerItems(); track item.id) {
+          <button
+            type="button"
+            [class]="'ov-card ov-card--' + (item.tone === 'danger' ? 'block' : 'warn')"
+            [disabled]="!item.runId"
+            (click)="emitAttentionOpened(item)"
+          >
+            <span class="ov-card__bar"></span>
+            <div>
+              <div class="ov-card__title">{{ item.label }} · {{ item.title }}</div>
+              <span class="ov-card__detail">{{ item.detail }}</span>
+            </div>
+          </button>
+          } @empty {
+          <p class="empty-copy">nothing blocking</p>
+          }
+        </div>
+
+        <div class="ov-attn-section">
+          <header class="ov-attn-head">
+            <strong>Up next</strong>
+            <small>{{ pad2(upNextItems().length) }}</small>
+          </header>
+          @for (item of upNextItems(); track item.id) {
+          <div class="ov-card ov-card--info">
+            <span class="ov-card__bar"></span>
+            <div>
+              <div class="ov-card__title">{{ item.title }}</div>
+              <span class="ov-card__detail">{{
+                item.detail ? oneLine(item.detail, 80) : item.status
+              }}</span>
+            </div>
+          </div>
+          } @empty {
+          <p class="empty-copy">queue is clear</p>
+          }
+        </div>
+      </aside>
+    </div>
+
+    <section class="ov-stats" aria-label="Mission telemetry">
+      <article class="ov-stat ov-stat--agents">
+        <header class="ov-stat__head">
+          <span class="ov-stat__label">Active agents</span>
+          <span class="ov-stat__count"
+            >{{ pad2(workingCount()) }} working / {{ pad2(idleCount()) }} idle</span
+          >
+        </header>
+        <div class="ov-stat__agents">
+          @for (row of agentRows(); track row.agentId) {
+          <div
+            [class]="'ov-stat__agent ov-stat__agent--' + (row.working ? 'working' : 'idle')"
+          >
+            <span
+              [class]="display.avatarClass(row.agentId, 'sm') + ' ov-stat__agent__glyph'"
+            ></span>
+            <strong>{{ display.name(row.agentId) }}</strong>
+            <em>{{ row.status }}</em>
+          </div>
+          } @empty {
+          <p class="empty-copy">no agents in this room</p>
+          }
+        </div>
+      </article>
+
+      <article class="ov-stat ov-stat--telemetry">
+        <header class="ov-stat__head">
+          <span class="ov-stat__label">Runtime / tokens</span>
+          <span class="ov-stat__count">live</span>
+        </header>
+        <div class="ov-stat__metrics">
+          <div class="ov-stat__metric">
+            <strong>{{ runtimeLabel() }}</strong>
+            <span>runtime</span>
+          </div>
+          <div class="ov-stat__metric">
+            <strong>{{ tokensLabel() }}</strong>
+            <span>tokens</span>
+          </div>
+        </div>
+        <svg
+          class="ov-stat__spark"
+          viewBox="0 0 120 24"
+          preserveAspectRatio="none"
+          aria-hidden="true"
+        >
+          <polyline
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.4"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            points="0,18 6,16 12,17 18,12 24,14 30,9 36,11 42,7 48,10 54,4 60,7 66,3 72,5 78,8 84,5 90,3 96,6 102,2 108,4 114,3 120,2"
+          />
+        </svg>
+      </article>
+
+      <article class="ov-stat ov-stat--progress">
+        <header class="ov-stat__head">
+          <span class="ov-stat__label">Mission progress</span>
+          <span class="ov-stat__count">{{ progressDoneLabel() }}</span>
+        </header>
+        <div class="ov-stat__progress">
+          <div class="ov-stat__bar">
+            <span [style.width.%]="progressPercent()"></span>
+          </div>
+          <strong class="ov-stat__pct">{{ progressPercent() }}<small>%</small></strong>
+        </div>
+        <div class="ov-stat__phases">
+          @for (marker of phaseMarkers(); track marker.id) {
+          <span
+            class="ov-phase-marker"
+            [class.is-done]="marker.isDone"
+            [class.is-current]="marker.isCurrent"
+            >{{ marker.title }}</span
+          >
+          } @empty {
+          <span class="ov-phase-marker">no phases yet</span>
+          }
+        </div>
+      </article>
+    </section>
+  </div>
+</section>

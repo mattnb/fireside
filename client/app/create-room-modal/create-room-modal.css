@@ -1,0 +1,8 @@
+/* client/app/create-room-modal/create-room-modal.css
+ * Outer host placement only. Reuses `.modal*` and `.mission-create-modal*`
+ * selectors that stay global in app.css.
+ */
+
+:host {
+  display: contents;
+}

@@ -6,6 +6,7 @@ import type { AgentReply, AgentRunContext, AgentSpec, AgentStreamEvent } from '.
 import { AgentParseError } from './types.js';
 import { extractTopLevelJsonObject } from './json-extract.js';
 import { permissionTargetDirectory } from '../permissions.js';
+import { formatContextUsage, geminiContextUsage } from '../context-usage.js';
 
 // Field names captured from Phase 2 fixture (gemini-headless.json):
 //   top-level `response` carries the assistant text
@@ -107,12 +108,14 @@ function geminiStreamEvents(line: string): AgentStreamEvent[] {
   }
   if (type === 'result') {
     const failed = obj.status === 'error' || obj.status === 'failed';
+    const contextUsage = geminiContextUsage(obj);
     return [
       {
         kind: 'usage',
         status: failed ? 'failed' : 'completed',
         label: 'gemini result received',
-        detail: geminiStatsDetail(obj.stats),
+        detail: contextUsage ? formatContextUsage(contextUsage) : geminiStatsDetail(obj.stats),
+        ...(contextUsage ? { contextUsage } : {}),
       },
     ];
   }

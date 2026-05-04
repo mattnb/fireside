@@ -218,6 +218,7 @@ export interface StatusSnapshotRoom {
   name: string;
   agents: AgentId[];
   yoloAgents: AgentId[];
+  leadAgentId: AgentId | null;
   agentProfiles: RoomAgentProfile[];
   createdAt: number;
   counts: StatusSnapshotRoomCounts;
@@ -883,6 +884,7 @@ export function buildStatusSnapshot(input: BuildStatusSnapshotInput): StatusSnap
       name: room.name,
       agents: room.agents,
       yoloAgents: room.yoloAgents,
+      leadAgentId: room.leadAgentId,
       agentProfiles: room.agentProfiles,
       createdAt: room.createdAt,
       counts,

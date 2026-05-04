@@ -1,0 +1,60 @@
+<section class="archives-view" aria-label="Archived projects">
+  <header class="archives-view__head">
+    <h2>archived projects</h2>
+    <p>
+      restored projects return to the project list with all their missions and
+      history intact. deletions are permanent and cascade through every mission
+      under the project.
+    </p>
+  </header>
+  @if (archivedProjects().length === 0) {
+  <p class="empty-copy">no archived projects yet</p>
+  } @else {
+  <ul class="archives-view__list">
+    @for (project of archivedProjects(); track project.id) {
+    <li class="archive-card">
+      <header class="archive-card__head">
+        <div class="archive-card__title">
+          <strong>{{ project.name }}</strong>
+          <span class="archive-card__meta">
+            archived {{ formatArchivedAt(project.archivedAt) }}
+          </span>
+        </div>
+        <div class="archive-card__actions">
+          <button
+            type="button"
+            class="control-btn"
+            (click)="restoreRequested.emit(project)"
+          >
+            restore
+          </button>
+          <button
+            type="button"
+            class="control-btn control-btn--danger"
+            (click)="deleteRequested.emit(project)"
+          >
+            delete permanently
+          </button>
+        </div>
+      </header>
+      @if (project.description) {
+      <p class="archive-card__description">{{ project.description }}</p>
+      }
+      @if (roomsForProject(project.id); as rooms) { @if (rooms.length > 0) {
+      <ul class="archive-card__rooms">
+        @for (room of rooms; track room.id) {
+        <li>
+          <span class="archive-card__room-hash">#</span>
+          <span>{{ room.name }}</span>
+          <span class="archive-card__room-count">{{ room.agents.length }} agents</span>
+        </li>
+        }
+      </ul>
+      } @else {
+      <p class="archive-card__empty">no missions remained under this project</p>
+      } }
+    </li>
+    }
+  </ul>
+  }
+</section>

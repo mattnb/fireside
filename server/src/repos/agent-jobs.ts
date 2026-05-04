@@ -135,6 +135,13 @@ export function getAgentJob(db: Database, id: string): AgentJob | null {
   return row ? rowToAgentJob(row) : null;
 }
 
+export function getAgentJobByRunId(db: Database, runId: string): AgentJob | null {
+  const row = db.prepare(`SELECT * FROM agent_jobs WHERE run_id = ?`).get(runId) as
+    | AgentJobRow
+    | undefined;
+  return row ? rowToAgentJob(row) : null;
+}
+
 export function leaseAgentJob(
   db: Database,
   id: string,
