@@ -233,6 +233,82 @@ describe('autonomous mission scenarios', () => {
     ).toBe(false);
   });
 
+  it('does not immediately reassign the same open YOLO lane after the agent updates it', async () => {
+    let checklistItemId = '';
+    const runs: Array<{ agentId: AgentId; prompt: string }> = [];
+    const broker = new Broker({
+      db,
+      runAgent: async (spec, prompt): Promise<AgentReply> => {
+        const roomAgentId = roomAgentFromPrompt(prompt, spec.id);
+        runs.push({ agentId: roomAgentId, prompt });
+        if (prompt.includes('YOLO work lane')) {
+          return {
+            text: [
+              'Regression pass is current; waiting for the next surface commit.',
+              '',
+              '/mission-task',
+              'action: update',
+              `id: ${checklistItemId}`,
+              'status: open',
+              'blocked_reason: waiting for the next rebuilt surface before another regression pass',
+              'note: Verified the current surface; keep the recurring QA lane open for future surfaces.',
+              '/end-mission-task',
+            ].join('\n'),
+            sessionId: 'nat-session',
+            raw: { stdout: '', stderr: '' },
+          };
+        }
+        return {
+          text: '',
+          sessionId: 'nat-session',
+          raw: { stdout: '', stderr: '' },
+        };
+      },
+      getSpec: (id) => {
+        const map: Record<string, AgentSpec> = {
+          claude: fakeSpec('claude'),
+          codex: fakeSpec('codex'),
+          gemini: fakeSpec('gemini'),
+          echo: fakeSpec('echo'),
+        };
+        return map[id];
+      },
+    });
+    const room = createRoom(db, {
+      name: 'recurring-qa-room',
+      yoloAgents: ['claude-qa-lead'],
+      agentProfiles: [
+        {
+          id: 'claude-qa-lead',
+          providerId: 'claude',
+          displayName: 'Nat',
+          personaId: 'qa-lead',
+          personaName: 'QA Lead',
+          personaSummary: '',
+        },
+      ],
+    });
+    const task = broker.createTask(room.id, { title: 'Recurring QA mission' })!;
+    const item = createTaskChecklistItem(db, {
+      taskId: task.id,
+      title: 'Regression coverage',
+      ownerAgentId: 'claude-qa-lead',
+      status: 'open',
+    });
+    checklistItemId = item.id;
+
+    await broker.startYoloDiscussion(room.id, 'human');
+
+    const laneRuns = runs.filter((run) => run.prompt.includes('YOLO work lane'));
+    expect(laneRuns).toHaveLength(1);
+    expect(runs).toHaveLength(2);
+    expect(runs[1]!.prompt).not.toContain('Assigned item: - open: Regression coverage');
+    expect(listTaskChecklistItems(db, task.id)[0]).toMatchObject({
+      status: 'open',
+      blockedReason: 'waiting for the next rebuilt surface before another regression pass',
+    });
+  });
+
   it('stops a YOLO work-lane pulse when the agent only emits visible status chatter', async () => {
     const runs: Array<{ agentId: AgentId; prompt: string }> = [];
     const broker = new Broker({

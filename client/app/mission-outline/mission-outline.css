@@ -1,0 +1,396 @@
+/* client/app/mission-outline/mission-outline.css
+ * Right-side rail in the chat tab. Floating glass panel matching the old
+ * runs-rail dimensions (340px min-width, 24px bottom margin) so it slots
+ * into the same `.chat-with-rail` flex slot.
+ */
+
+:host {
+  display: contents;
+}
+
+.mission-outline {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  min-width: 340px;
+  min-height: 0;
+  margin-bottom: 24px;
+  background: rgba(20, 16, 20, 0.62);
+  border: 1px solid var(--border-soft);
+  border-radius: 14px;
+  box-shadow:
+    0 24px 60px rgba(0, 0, 0, 0.5),
+    0 1px 0 rgba(255, 255, 255, 0.04) inset;
+  backdrop-filter: blur(18px);
+  overflow: hidden;
+}
+
+.mission-outline__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 12px 14px 8px;
+}
+
+.mission-outline__title {
+  margin: 0;
+  color: var(--ember);
+}
+
+.mission-outline__head-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.mission-outline__counter {
+  color: var(--text-muted);
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.mission-outline__history svg {
+  width: 14px;
+  height: 14px;
+}
+
+.mission-outline__body {
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 4px 14px 14px;
+}
+
+/* === Goal banner === */
+.mission-outline__goal {
+  background: linear-gradient(180deg, rgba(40, 33, 38, 0.6) 0%, rgba(28, 23, 27, 0.4) 100%);
+  border: 1px solid var(--border-soft);
+  border-radius: 8px;
+  padding: 10px 12px;
+}
+
+.mission-outline__goal-label {
+  display: block;
+  font-size: 9.5px;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+
+.mission-outline__goal-text {
+  margin: 0 0 8px 0;
+  color: var(--text-primary);
+  font-weight: 500;
+  font-size: 13px;
+  line-height: 1.35;
+}
+
+.mission-outline__goal-progress {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.mission-outline__goal-bar {
+  flex: 1;
+  height: 4px;
+  background: rgba(0, 0, 0, 0.4);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.mission-outline__goal-fill {
+  height: 100%;
+  background: linear-gradient(90deg, #55ae80, #2e7150);
+  border-radius: 2px;
+  transition: width 200ms ease;
+}
+
+.mission-outline__goal-pct {
+  font-size: 10.5px;
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+
+/* === Empty state === */
+.mission-outline__empty {
+  text-align: center;
+  padding: 16px 12px;
+  color: var(--text-muted);
+}
+
+.mission-outline__empty p {
+  margin: 0 0 4px 0;
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+
+.mission-outline__empty small {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+/* === Lane group === */
+.mission-outline__lane {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.mission-outline__lane-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: var(--text-secondary);
+  padding: 0 0 6px 0;
+  margin-bottom: 4px;
+  border: none;
+  border-bottom: 1px dashed var(--border-soft);
+  background: transparent;
+  font-family: var(--font-sans);
+  font-weight: 700;
+  width: 100%;
+  text-align: left;
+  border-radius: 0;
+  transition: color 120ms ease, border-color 120ms ease;
+}
+
+button.mission-outline__lane-head {
+  cursor: pointer;
+}
+
+button.mission-outline__lane-head:hover {
+  color: var(--text-primary);
+  border-bottom-color: var(--border-medium);
+}
+
+button.mission-outline__lane-head:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+.mission-outline__lane-chevron {
+  flex-shrink: 0;
+  color: var(--text-muted);
+  transition: transform 160ms ease, color 120ms ease;
+}
+
+.mission-outline__lane.is-collapsed .mission-outline__lane-chevron {
+  transform: rotate(-90deg);
+}
+
+button.mission-outline__lane-head:hover .mission-outline__lane-chevron {
+  color: var(--text-primary);
+}
+
+.mission-outline__lane-title {
+  flex: 1;
+  color: inherit;
+}
+
+.mission-outline__lane-count {
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text-muted);
+  padding: 1px 7px;
+  border-radius: 8px;
+  font-size: 9.5px;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.04em;
+  flex-shrink: 0;
+}
+
+.mission-outline__lane.is-collapsed .mission-outline__lane-head {
+  margin-bottom: 0;
+}
+
+.mission-outline__lane--orphan .mission-outline__lane-title {
+  color: var(--ember);
+}
+
+/* === Row === */
+.mo-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 6px 4px;
+  border-radius: 4px;
+  margin: 0;
+}
+
+.mo-row__icon {
+  width: 12px;
+  text-align: center;
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 18px;
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.mo-row__bullet {
+  color: var(--text-muted);
+}
+
+.mo-row__check {
+  color: var(--accent);
+  font-weight: 700;
+}
+
+.mo-row__spinner {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  border: 1.5px solid rgba(229, 169, 26, 0.25);
+  border-top-color: var(--ember);
+  display: inline-block;
+  animation: mo-spin 1.1s linear infinite;
+}
+
+@keyframes mo-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.mo-row__body {
+  flex: 1;
+  min-width: 0;
+}
+
+.mo-row__title {
+  margin: 0 0 4px 0;
+  color: var(--text-primary);
+  font-size: 12px;
+  line-height: 1.35;
+  word-break: break-word;
+}
+
+.mo-row.is-done .mo-row__title {
+  color: var(--text-muted);
+  text-decoration: line-through;
+  text-decoration-color: var(--border-soft);
+}
+
+.mo-row.is-active .mo-row__title {
+  color: #fff8e0;
+}
+
+.mo-row.is-skipped .mo-row__title {
+  color: var(--text-muted);
+}
+
+.mo-row__meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  align-items: center;
+}
+
+/* === Pills === */
+.mo-row__pill {
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  padding: 2px 7px;
+  border-radius: 9px;
+  font-weight: 600;
+  border: 1px solid transparent;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-family: var(--font-sans);
+}
+
+.mo-row__pill--running {
+  background: rgba(94, 196, 144, 0.16);
+  color: var(--accent-hover);
+  border-color: rgba(94, 196, 144, 0.3);
+  cursor: pointer;
+  transition: background 120ms ease, color 120ms ease;
+}
+
+.mo-row__pill--running:hover {
+  background: rgba(94, 196, 144, 0.28);
+  color: #a5e3c1;
+}
+
+.mo-row__pill--running:hover svg {
+  transform: translateX(1px);
+}
+
+.mo-row__pill--running svg {
+  opacity: 0.75;
+  transition: transform 120ms ease;
+}
+
+.mo-row__pill--blocked {
+  background: rgba(248, 81, 73, 0.14);
+  color: #ffb4ae;
+  border-color: rgba(248, 81, 73, 0.3);
+}
+
+.mo-row__pill--waiting,
+.mo-row__pill--ready,
+.mo-row__pill--skipped {
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text-muted);
+  border-color: var(--border-soft);
+}
+
+.mo-row__pill--ready {
+  color: var(--accent);
+  border-color: rgba(94, 196, 144, 0.22);
+  background: rgba(94, 196, 144, 0.06);
+}
+
+/* === Stop button === */
+.mo-row__stop {
+  width: 18px;
+  height: 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 4px;
+  background: transparent;
+  border: 1px solid var(--border-soft);
+  color: var(--text-muted);
+  cursor: pointer;
+  padding: 0;
+  margin-left: 2px;
+  transition: background 120ms ease, color 120ms ease, border-color 120ms ease;
+}
+
+.mo-row__stop:hover {
+  background: rgba(248, 81, 73, 0.16);
+  border-color: rgba(248, 81, 73, 0.4);
+  color: var(--accent-danger);
+}
+
+.mo-row__stop svg {
+  width: 10px;
+  height: 10px;
+}
+
+.mo-row__stop:focus-visible {
+  outline: 2px solid var(--accent-danger);
+  outline-offset: 1px;
+}
+
+.mo-row__pill--running:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}

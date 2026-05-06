@@ -2,6 +2,7 @@ import type { Database } from 'better-sqlite3';
 import { nanoid } from 'nanoid';
 import type { AgentId } from '../agents/types.js';
 import type { AgentContextUsage } from '../context-usage.js';
+import { capacityBlockFromContextUsage } from '../provider-capacity.js';
 
 export type AgentRunActionKind =
   | 'prompt'
@@ -216,6 +217,51 @@ export function listAgentRunActionsForRoom(db: Database, roomId: string): AgentR
     )
     .all(roomId) as AgentRunActionRow[];
   return rows.map(rowToAgentRunAction);
+}
+
+/**
+ * Clear every recent context-usage row that currently represents an active
+ * provider-capacity block for `providerId`. Walks the most recent 1000 rows
+ * (DESC), JS-parses each `context_usage_json`, and identifies real blocks
+ * via `capacityBlockFromContextUsage` (same logic the dispatch path uses to
+ * decide whether to refuse). Clears `context_usage_json` to '' on those rows
+ * — the SQL filter `context_usage_json <> ''` then skips them on the next
+ * walk, so the block evaporates without destroying audit metadata (id, run,
+ * label, detail all stay intact).
+ *
+ * Safe to call when there are no blocks: returns `{ cleared: 0 }`.
+ */
+export function clearProviderQuotaBlocks(
+  db: Database,
+  providerId: string,
+  now = Date.now(),
+): { cleared: number } {
+  const rows = db
+    .prepare(
+      `SELECT id, context_usage_json, created_at FROM agent_run_actions
+       WHERE context_usage_json <> ''
+       ORDER BY created_at DESC, id DESC
+       LIMIT 1000`,
+    )
+    .all() as Array<{ id: string; context_usage_json: string; created_at: number }>;
+
+  const idsToClear: string[] = [];
+  for (const row of rows) {
+    const usage = parseContextUsage(row.context_usage_json);
+    if (!usage || usage.provider !== providerId) continue;
+    const block = capacityBlockFromContextUsage(usage, now, row.created_at);
+    if (block) idsToClear.push(row.id);
+  }
+
+  if (idsToClear.length === 0) return { cleared: 0 };
+
+  const stmt = db.prepare(`UPDATE agent_run_actions SET context_usage_json = '' WHERE id = ?`);
+  const tx = db.transaction((ids: string[]) => {
+    for (const id of ids) stmt.run(id);
+  });
+  tx(idsToClear);
+
+  return { cleared: idsToClear.length };
 }
 
 export function listAgentRunActions(db: Database, runId: string): AgentRunAction[] {

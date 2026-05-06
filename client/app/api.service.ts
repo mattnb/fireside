@@ -174,6 +174,17 @@ export class FiresideApi {
       this.http.post<AgentRun>(`/api/rooms/${roomId}/agents/${agentId}/compact`, { authorId }),
   };
 
+  readonly providers = {
+    recheckQuota: (providerId: string) =>
+      this.http.post<{
+        ok: boolean;
+        cleared: number;
+        status?: string;
+        resetsAt?: number | null;
+        detail?: string;
+      }>(`/api/providers/${providerId}/recheck-quota`, {}),
+  };
+
   readonly artifacts = {
     list: (roomId: string) => this.http.get<ArtifactListing>(`/api/rooms/${roomId}/artifacts`),
     attachFixture: (roomId: string, sourcePath: string) =>

@@ -53,6 +53,7 @@ export interface PlanWorkLanesInput {
   activeItemIds: Set<string>;
   activeContracts: WorkLaneScopeContract[];
   busyAgents: Set<AgentId>;
+  suppressedItemIdsByAgent?: Map<AgentId, Set<string>>;
 }
 
 export interface WorkLaneOwnerUpdate {
@@ -327,11 +328,14 @@ export function planWorkLanes(input: PlanWorkLanesInput): PlanWorkLanesResult {
       (!item.ownerAgentId || agentSet.has(item.ownerAgentId as AgentId)),
   );
   const assignedItemIds = new Set<string>();
+  const suppressedForAgent = (agentId: AgentId, itemId: string): boolean =>
+    input.suppressedItemIdsByAgent?.get(agentId)?.has(itemId) === true;
 
   for (const agentId of assignableAgents) {
     const owned = eligibleItems.find(
       (item) =>
         item.ownerAgentId === agentId &&
+        !suppressedForAgent(agentId, item.id) &&
         !assignedItemIds.has(item.id) &&
         !workLaneConflictReason(item, reservedContracts),
     );
@@ -346,6 +350,7 @@ export function planWorkLanes(input: PlanWorkLanesInput): PlanWorkLanesResult {
   for (const agentId of availableAgents) {
     const itemIndex = unownedItems.findIndex(
       (candidate) =>
+        !suppressedForAgent(agentId, candidate.id) &&
         !assignedItemIds.has(candidate.id) &&
         !workLaneConflictReason(candidate, reservedContracts),
     );

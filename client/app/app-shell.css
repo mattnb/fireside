@@ -651,31 +651,8 @@ fs-root {
   gap: 6px;
 }
 
-.room-create__submit,
-.room-create__cancel {
-  min-height: 28px;
-  border: 1px solid var(--border-medium);
-  border-radius: 6px;
-  background: rgba(255, 255, 255, 0.025);
-  color: var(--text-secondary);
-  cursor: pointer;
-  font: inherit;
-  font-size: 11.5px;
-  font-weight: 700;
-  padding: 5px 9px;
-}
-
-.room-create__submit {
-  color: var(--accent-hover);
-  border-color: rgba(94, 196, 144, 0.34);
-  background: rgba(94, 196, 144, 0.12);
-}
-
-.room-create__cancel:hover {
-  color: var(--text-primary);
-  border-color: rgba(142, 160, 232, 0.28);
-  background: rgba(142, 160, 232, 0.07);
-}
+/* Project-create form actions use .control-btn (cancel) and
+   .control-btn--primary (submit) from the global token sheet. */
 
 .room-row {
   display: grid;
@@ -792,7 +769,7 @@ fs-root {
   /* background: rgba(23, 29, 38, 0.42); */
 }
 
-/* Chat tab splits the workspace content row into chat + runs-rail. The
+/* Chat tab splits the workspace content row into chat + mission-outline. The
  * chat-pane is capped at 124ch (see app-chat.css), so flex lets the rail
  * sit directly adjacent to the chat with a fixed 32px gap rather than
  * floating against the workspace's right edge. Other tabs (mission control,
@@ -812,7 +789,7 @@ fs-root {
   min-width: 0;
 }
 
-.chat-with-rail > .runs-rail {
+.chat-with-rail > .mission-outline {
   flex: 0 0 340px;
 }
 

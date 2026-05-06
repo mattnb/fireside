@@ -53,11 +53,12 @@
       <fs-rail-agent
         [agentId]="agent"
         (compactRequested)="compactRequested.emit($event)"
+        (recheckRequested)="recheckQuotaRequested.emit($event)"
       ></fs-rail-agent>
       } @empty {
       <p class="empty-copy">no agents in this room</p>
       }
-      <button class="agent-manage-btn" type="button" (click)="manageAgentsRequested.emit()">
+      <button class="control-btn" type="button" (click)="manageAgentsRequested.emit()">
         Manage Agents
       </button>
       }

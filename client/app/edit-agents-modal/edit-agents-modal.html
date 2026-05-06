@@ -6,175 +6,317 @@
     aria-modal="true"
     aria-labelledby="edit-agents-title"
   >
-    <header class="modal__head">
-      <h2 id="edit-agents-title">agents in #{{ roomName() }}</h2>
-      <p>
-        Name each participant, choose their provider and persona, then choose who joins autonomous
-        YOLO rounds.
-      </p>
+    <header class="modal__head agent-roster__head">
+      <div>
+        <h2 id="edit-agents-title">agents in #{{ roomName() }}</h2>
+        <p>Pick an agent on the left to edit. Bars show YOLO / lead / pending recommendation.</p>
+      </div>
+      <div class="agent-roster__head-aside">
+        <strong>{{ agentRows().length }}</strong> in room
+      </div>
     </header>
-    <div class="agent-editor">
-      @for (row of agentRows(); track row.clientId) {
-      <article class="agent-toggle">
-        <span [class]="display.draftProviderAvatarClass(row) + ' agent-toggle__avatar'"></span>
-        <label class="agent-toggle__select agent-toggle__select--name">
-          <span>name</span>
-          <input
-            type="text"
-            autocomplete="off"
-            spellcheck="false"
-            [value]="row.displayName"
-            aria-label="Agent name"
-            placeholder="agent name"
-            (input)="agentNameSet.emit({ clientId: row.clientId, event: $event })"
-          />
-        </label>
-        <label class="agent-toggle__select agent-toggle__select--provider">
-          <span>provider</span>
-          <select
-            [value]="row.providerId"
-            aria-label="Agent provider"
-            (change)="agentProviderSet.emit({ clientId: row.clientId, event: $event })"
-          >
-            @for (provider of providers(); track provider.id) {
-            <option [value]="provider.id" [selected]="provider.id === row.providerId">
-              {{ provider.displayName }}
-            </option>
-            }
-          </select>
-        </label>
-        <label class="agent-toggle__select agent-toggle__select--persona">
-          <span>persona</span>
-          <select
-            [value]="row.personaId"
-            aria-label="Agent persona"
-            (change)="agentPersonaSet.emit({ clientId: row.clientId, event: $event })"
-          >
-            @for (persona of personas(); track persona.id) {
-            <option [value]="persona.id" [selected]="persona.id === row.personaId">
-              {{ persona.name }}
-            </option>
-            }
-          </select>
-        </label>
-        <label class="agent-toggle__select agent-toggle__select--model">
-          <span>model</span>
-          <input
-            type="text"
-            autocomplete="off"
-            spellcheck="false"
-            [attr.list]="'edit-agent-model-presets-' + row.clientId"
-            [value]="row.modelId ?? ''"
-            aria-label="Agent model"
-            [placeholder]="display.draftModelPlaceholder(row)"
-            (input)="agentModelSet.emit({ clientId: row.clientId, event: $event })"
-          />
-          <datalist [id]="'edit-agent-model-presets-' + row.clientId">
-            @for (model of display.draftModelPresets(row); track model) { @if (model) {
-            <option [value]="model"></option>
-            } }
-          </datalist>
-        </label>
-        <label
-          class="agent-toggle__select agent-toggle__select--effort"
-          [class.is-disabled]="!display.draftSupportsReasoningEffort(row)"
-        >
-          <span>effort</span>
-          <select
-            [value]="row.reasoningEffort ?? ''"
-            [disabled]="!display.draftSupportsReasoningEffort(row)"
-            aria-label="Agent reasoning effort"
-            (change)="agentReasoningSet.emit({ clientId: row.clientId, event: $event })"
-          >
-            @for (effort of display.draftReasoningEfforts(row); track effort) {
-            <option [value]="effort" [selected]="effort === (row.reasoningEffort ?? '')">
-              {{ effort || 'default' }}
-            </option>
-            }
-          </select>
-        </label>
-        <label
-          class="agent-toggle__compact"
-          title="Automatically compact this agent's provider context at this percentage"
-        >
-          <span>compact</span>
-          <span class="agent-toggle__compact-row">
-            <input
-              type="checkbox"
-              [checked]="row.autoCompactEnabled"
-              aria-label="Enable automatic context compaction"
-              (change)="agentAutoCompactToggled.emit({ clientId: row.clientId, event: $event })"
-            />
-            <input
-              type="number"
-              min="1"
-              max="100"
-              step="1"
-              [value]="row.autoCompactPercent"
-              [disabled]="!row.autoCompactEnabled"
-              aria-label="Auto compact percent"
-              (input)="agentAutoCompactPercentSet.emit({ clientId: row.clientId, event: $event })"
-            />
-            <span>%</span>
-          </span>
-        </label>
-        <label class="agent-toggle__yolo" title="Participates in YOLO rounds">
-          <input
-            type="checkbox"
-            [checked]="row.yolo"
-            (change)="agentYoloToggled.emit({ clientId: row.clientId, event: $event })"
-          />
-          yolo
-        </label>
-        <button
-          class="agent-toggle__lead"
-          type="button"
-          [class.is-active]="leadClientId() === row.clientId"
-          [attr.aria-pressed]="leadClientId() === row.clientId"
-          title="Route broker coordination events to this agent first"
-          (click)="agentLeadSet.emit(row.clientId)"
-        >
-          lead
-        </button>
-        <button
-          class="room-agent-remove"
-          type="button"
-          title="Remove agent"
-          (click)="agentRemoved.emit(row.clientId)"
-        >
-          x
-        </button>
-        @if (recommendationFor(row.clientId); as recommendation) {
-        <div
-          class="provider-rec"
-          [class.provider-rec--match]="recommendation.recommendationMatchesCurrent"
-        >
-          <div class="provider-rec__copy">
-            <strong>{{ recommendationLabel(recommendation) }}</strong>
-            @if (recommendationDetail(recommendation)) {
-            <span>{{ recommendationDetail(recommendation) }}</span>
-            } @if (whyNotCurrent(row, recommendation)) {
-            <span class="provider-rec__why">{{ whyNotCurrent(row, recommendation) }}</span>
-            }
+
+    <div class="agent-roster">
+      <!-- ROSTER (left rail) -->
+      <aside class="roster" aria-label="Agents in this room">
+        <div class="roster__head">
+          <span class="roster__label">roster</span>
+          <div class="roster__title">
+            <strong>{{ agentRows().length }} agent{{ agentRows().length === 1 ? '' : 's' }}</strong>
+            <em>· in this room</em>
           </div>
-          @if (recommendation.selectedProviderId && !recommendation.recommendationMatchesCurrent) {
+          <p class="roster__caption">Click any agent to edit, or add a new one below.</p>
+        </div>
+
+        <div class="roster__list" role="list">
+          @for (row of agentRows(); track row.clientId) {
           <button
             type="button"
-            class="provider-rec__use"
-            (click)="agentProviderRecommended.emit({ clientId: row.clientId, providerId: recommendation.selectedProviderId })"
+            role="listitem"
+            class="roster__item"
+            [class.is-active]="isSelected(row.clientId)"
+            [attr.aria-pressed]="isSelected(row.clientId)"
+            (click)="selectAgent(row.clientId)"
           >
-            use {{ display.draftProviderLabel(recommendation.selectedProviderId) }}
+            <span [class]="display.draftProviderAvatarClass(row)"></span>
+            <span class="roster__name">{{ row.displayName?.trim() || 'unnamed agent' }}</span>
+            <span class="roster__provider"
+              >{{ display.draftProviderLabel(row.providerId) }} · {{ row.personaId || 'no persona' }}</span
+            >
+            <span class="roster__dots" aria-hidden="true">
+              <span class="roster__dot" [class.is-yolo]="row.yolo" title="YOLO rounds"></span>
+              <span
+                class="roster__dot"
+                [class.is-lead]="isLead(row.clientId)"
+                title="Lead"
+              ></span>
+              @if (hasOpenRecommendation(row.clientId)) {
+              <span class="roster__dot is-rec" title="Provider recommendation available"></span>
+              } @else {
+              <span class="roster__dot" aria-hidden="true"></span>
+              }
+            </span>
           </button>
+          } @empty {
+          <p class="roster__empty">No agents yet. Add one to get started.</p>
           }
         </div>
+
+        <div class="roster__legend" aria-hidden="true">
+          <span><i class="l-yolo"></i> yolo</span>
+          <span><i class="l-lead"></i> lead</span>
+          <span><i class="l-rec"></i> rec</span>
+        </div>
+
+        <div class="roster__foot">
+          <button
+            type="button"
+            class="control-btn control-btn--briefing roster__add"
+            (click)="agentAdded.emit()"
+          >
+            <svg viewBox="0 0 14 14" aria-hidden="true">
+              <path
+                d="M7 1v12M1 7h12"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2.2"
+                stroke-linecap="round"
+              />
+            </svg>
+            add agent
+          </button>
+        </div>
+      </aside>
+
+      <!-- DETAIL (right pane) -->
+      <div class="detail">
+        @if (selectedRow(); as row) {
+        <div class="detail__hero">
+          <span [class]="display.draftProviderAvatarClass(row)"></span>
+          <div class="detail__hero-text">
+            <h3 class="detail__name">{{ row.displayName?.trim() || 'unnamed agent' }}</h3>
+            <div class="detail__meta">
+              <span class="meta-pill is-prov">{{ display.draftProviderLabel(row.providerId) }}</span>
+              @if (row.personaId) {
+              <span class="meta-pill">{{ row.personaId }}</span>
+              } @if (row.yolo) {
+              <span class="meta-pill is-yolo">yolo</span>
+              } @if (isLead(row.clientId)) {
+              <span class="meta-pill is-lead">lead</span>
+              }
+            </div>
+          </div>
+          <button
+            class="detail__remove"
+            type="button"
+            (click)="agentRemoved.emit(row.clientId)"
+            title="Remove agent from this room"
+          >
+            remove
+          </button>
+        </div>
+
+        <section class="detail__section">
+          <p class="detail__section-title">identity</p>
+          <div class="detail__grid detail__grid--2">
+            <label>
+              <span class="field-label">name</span>
+              <input
+                class="field-input"
+                type="text"
+                autocomplete="off"
+                spellcheck="false"
+                [value]="row.displayName"
+                aria-label="Agent name"
+                placeholder="agent name"
+                (input)="agentNameSet.emit({ clientId: row.clientId, event: $event })"
+              />
+            </label>
+            <label>
+              <span class="field-label">persona</span>
+              <select
+                class="field-select"
+                [value]="row.personaId"
+                aria-label="Agent persona"
+                (change)="agentPersonaSet.emit({ clientId: row.clientId, event: $event })"
+              >
+                @for (persona of personas(); track persona.id) {
+                <option [value]="persona.id" [selected]="persona.id === row.personaId">
+                  {{ persona.name }}
+                </option>
+                }
+              </select>
+            </label>
+          </div>
+        </section>
+
+        <section class="detail__section">
+          <p class="detail__section-title">provider · model</p>
+          <div class="detail__grid detail__grid--3">
+            <label>
+              <span class="field-label">provider</span>
+              <select
+                class="field-select"
+                [value]="row.providerId"
+                aria-label="Agent provider"
+                (change)="agentProviderSet.emit({ clientId: row.clientId, event: $event })"
+              >
+                @for (provider of providers(); track provider.id) {
+                <option [value]="provider.id" [selected]="provider.id === row.providerId">
+                  {{ provider.displayName }}
+                </option>
+                }
+              </select>
+            </label>
+            <label>
+              <span class="field-label">model</span>
+              <input
+                class="field-input field-mono"
+                type="text"
+                autocomplete="off"
+                spellcheck="false"
+                [attr.list]="'edit-agent-model-presets-' + row.clientId"
+                [value]="row.modelId ?? ''"
+                aria-label="Agent model"
+                [placeholder]="display.draftModelPlaceholder(row)"
+                (input)="agentModelSet.emit({ clientId: row.clientId, event: $event })"
+              />
+              <datalist [id]="'edit-agent-model-presets-' + row.clientId">
+                @for (model of display.draftModelPresets(row); track model) { @if (model) {
+                <option [value]="model"></option>
+                } }
+              </datalist>
+            </label>
+            <label [class.is-disabled]="!display.draftSupportsReasoningEffort(row)">
+              <span class="field-label">reasoning effort</span>
+              <select
+                class="field-select"
+                [value]="row.reasoningEffort ?? ''"
+                [disabled]="!display.draftSupportsReasoningEffort(row)"
+                aria-label="Agent reasoning effort"
+                (change)="agentReasoningSet.emit({ clientId: row.clientId, event: $event })"
+              >
+                @for (effort of display.draftReasoningEfforts(row); track effort) {
+                <option [value]="effort" [selected]="effort === (row.reasoningEffort ?? '')">
+                  {{ effort || 'default' }}
+                </option>
+                }
+              </select>
+            </label>
+          </div>
+          @if (recommendationFor(row.clientId); as recommendation) {
+          <div class="rec" [class.rec--match]="recommendation.recommendationMatchesCurrent">
+            <div class="rec__copy">
+              <strong>{{ recommendationLabel(recommendation) }}</strong>
+              @if (recommendationDetail(recommendation)) {
+              <span>{{ recommendationDetail(recommendation) }}</span>
+              } @if (whyNotCurrent(row, recommendation)) {
+              <span class="rec__why">{{ whyNotCurrent(row, recommendation) }}</span>
+              }
+            </div>
+            @if (recommendation.selectedProviderId &&
+            !recommendation.recommendationMatchesCurrent) {
+            <button
+              type="button"
+              class="rec__btn"
+              (click)="agentProviderRecommended.emit({ clientId: row.clientId, providerId: recommendation.selectedProviderId })"
+            >
+              use {{ display.draftProviderLabel(recommendation.selectedProviderId) }}
+            </button>
+            }
+          </div>
+          }
+        </section>
+
+        <section class="detail__section">
+          <p class="detail__section-title">behavior</p>
+          @if (leadReassignedFrom(); as previousName) {
+          <div class="lead-banner" role="status" aria-live="polite">
+            <span class="lead-banner__icon" aria-hidden="true">!</span>
+            <span class="lead-banner__copy">
+              lead unassigned from <strong>{{ previousName }}</strong>
+              <em>only one agent can be lead per room</em>
+            </span>
+          </div>
+          }
+          <div class="toggles">
+            <div class="toggle">
+              <div class="toggle__label">
+                <strong>auto-compact</strong>
+                <span class="toggle__hint"
+                  >context auto-compacts when usage crosses this threshold</span
+                >
+              </div>
+              <div class="toggle__ctrl">
+                <input
+                  type="checkbox"
+                  [checked]="row.autoCompactEnabled"
+                  aria-label="Enable automatic context compaction"
+                  (change)="agentAutoCompactToggled.emit({ clientId: row.clientId, event: $event })"
+                />
+                <input
+                  class="toggle__num"
+                  type="number"
+                  min="1"
+                  max="100"
+                  step="1"
+                  [value]="row.autoCompactPercent"
+                  [disabled]="!row.autoCompactEnabled"
+                  aria-label="Auto compact percent"
+                  (input)="agentAutoCompactPercentSet.emit({ clientId: row.clientId, event: $event })"
+                />
+                <span class="toggle__unit">%</span>
+              </div>
+            </div>
+
+            <div class="toggle">
+              <div class="toggle__label">
+                <strong>YOLO rounds</strong>
+                <span class="toggle__hint">— participates in autonomous turns</span>
+              </div>
+              <div class="toggle__ctrl">
+                <input
+                  type="checkbox"
+                  [checked]="row.yolo"
+                  aria-label="Participates in YOLO rounds"
+                  (change)="agentYoloToggled.emit({ clientId: row.clientId, event: $event })"
+                />
+              </div>
+            </div>
+
+            <div class="toggle">
+              <div class="toggle__label">
+                <strong>lead</strong>
+                <span class="toggle__hint"
+                  >— broker events route here first; max one per room</span
+                >
+              </div>
+              <div class="toggle__ctrl">
+                <input
+                  type="checkbox"
+                  [checked]="isLead(row.clientId)"
+                  aria-label="Lead agent"
+                  (change)="agentLeadSet.emit(row.clientId)"
+                />
+              </div>
+            </div>
+          </div>
+        </section>
+        } @else {
+        <div class="detail__empty">
+          <p>No agent selected.</p>
+          <p class="detail__empty-hint">
+            Use <strong>add agent</strong> in the rail to start your first one.
+          </p>
+        </div>
         }
-      </article>
-      } @if (agentValidationError()) {
+      </div>
+    </div>
+
+    <footer class="modal__foot">
+      @if (agentValidationError()) {
       <p class="agent-validation">{{ agentValidationError() }}</p>
       }
-    </div>
-    <footer class="modal__foot">
-      <button type="button" class="control-btn" (click)="agentAdded.emit()">add agent</button>
       <button type="button" class="control-btn" (click)="closed.emit()">cancel</button>
       <button
         type="button"

@@ -1067,6 +1067,16 @@ export function buildHttpServer(deps: HttpDeps) {
     },
   );
 
+  app.post<{ Params: { providerId: string } }>(
+    '/api/providers/:providerId/recheck-quota',
+    async (req, reply) => {
+      if (!isProviderId(req.params.providerId)) {
+        return reply.code(400).send({ error: `unknown provider: ${req.params.providerId}` });
+      }
+      return await deps.broker.recheckProviderQuota(req.params.providerId);
+    },
+  );
+
   app.post<{ Params: { id: string; agentId: AgentId }; Body: { authorId?: string } }>(
     '/api/rooms/:id/agents/:agentId/compact',
     async (req, reply) => {

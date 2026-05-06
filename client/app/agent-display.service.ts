@@ -159,6 +159,13 @@ export class AgentDisplayService {
     );
   }
 
+  /** True when the agent's provider is currently quota-blocked by fireside.
+   *  Server-side `incapacitated` is set ONLY when a ProviderCapacityBlock is
+   *  active, so this is a clean proxy for "click to recheck quota". */
+  isAgentQuotaBlocked(agentId: AgentId): boolean {
+    return this.workflowState(agentId)?.state === 'incapacitated';
+  }
+
   railStatus(agentId: AgentId): string {
     if (this.store.compactingAgent() === agentId) return 'compacting';
     const state = this.workflowState(agentId);

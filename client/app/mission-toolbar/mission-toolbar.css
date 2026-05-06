@@ -86,9 +86,11 @@
   font-size: 11px;
 }
 
-/* Strip the briefing button's chrome on the trigger only — keep the gold
-   text color and weight, drop the border, background, and shadow.
-   Compound selector wins specificity over .control-btn--briefing. */
+/* Strip the briefing button's chrome on the trigger only — drop the gold
+   border / background / shadow, and override the dark-on-gold text color
+   the briefing CTA sets by default (#2a1a05) to a warm amber that reads
+   against the dark canvas. Compound selector wins specificity over
+   .control-btn--briefing. */
 .mission-action-trigger.control-btn--briefing,
 .mission-action-trigger.control-btn--briefing:hover,
 .mission-action-trigger.control-btn--briefing.is-open {
@@ -96,6 +98,7 @@
   background: transparent;
   box-shadow: none;
   padding: 7px 10px;
+  color: #f2d17d;
 }
 
 .mission-action-trigger.control-btn--briefing:hover {
@@ -269,28 +272,48 @@
 }
 
 .mission-action-pop__pill {
+  display: inline-flex;
+  align-items: center;
+  min-height: 28px;
   padding: 5px 11px;
-  border-radius: 6px;
-  background: rgba(255, 255, 255, 0.025);
-  border: 1px solid rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.10);
+  border-radius: 7px;
+  background: transparent;
   color: var(--text-secondary);
-  cursor: pointer;
   font: inherit;
+  font-weight: 600;
+  cursor: pointer;
   transition:
-    background 140ms ease,
-    color 140ms ease,
-    border-color 140ms ease;
+    background-color 120ms ease,
+    color 120ms ease,
+    border-color 120ms ease,
+    box-shadow 120ms ease;
 }
 
 .mission-action-pop__pill:hover {
   color: var(--text-primary);
+  background: rgba(255, 255, 255, 0.03);
   border-color: rgba(255, 255, 255, 0.18);
 }
 
+.mission-action-pop__pill:active {
+  background: rgba(255, 255, 255, 0.06);
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.3);
+}
+
+.mission-action-pop__pill:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
 .mission-action-pop__pill.is-active {
-  background: rgba(229, 169, 26, 0.85);
-  color: rgba(13, 17, 23, 0.95);
-  border-color: rgba(229, 169, 26, 0.85);
+  background: linear-gradient(180deg, #f4c456 0%, #d99411 100%);
+  color: #2a1a05;
+  font-weight: 700;
+  border-color: rgba(0, 0, 0, 0.55);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.32),
+    0 1px 2px rgba(0, 0, 0, 0.4);
 }
 
 .mission-action-pop__select {
@@ -479,27 +502,55 @@
 
 .mission-action-scope button,
 .mission-action-option {
-  border: 1px solid var(--border-soft);
-  border-radius: 6px;
-  background: rgba(255, 255, 255, 0.025);
+  border: 1px solid rgba(255, 255, 255, 0.10);
+  border-radius: 7px;
+  background: transparent;
   color: var(--text-secondary);
   cursor: pointer;
   font: inherit;
+  transition:
+    background-color 120ms ease,
+    color 120ms ease,
+    border-color 120ms ease,
+    box-shadow 120ms ease;
 }
 
 .mission-action-scope button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   min-height: 30px;
   font-size: 11.5px;
-  font-weight: 800;
+  font-weight: 700;
+  letter-spacing: 0.02em;
 }
 
 .mission-action-scope button:hover,
-.mission-action-scope button.is-active,
-.mission-action-option:hover,
-.mission-action-option.is-selected {
-  border-color: rgba(94, 196, 144, 0.32);
-  background: rgba(94, 196, 144, 0.08);
+.mission-action-option:hover {
   color: var(--text-primary);
+  background: rgba(255, 255, 255, 0.03);
+  border-color: rgba(255, 255, 255, 0.18);
+}
+
+.mission-action-scope button:active {
+  background: rgba(255, 255, 255, 0.06);
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.3);
+}
+
+.mission-action-scope button:focus-visible,
+.mission-action-option:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.mission-action-scope button.is-active,
+.mission-action-option.is-selected {
+  background: rgba(94, 196, 144, 0.16);
+  color: var(--accent-hover);
+  border-color: rgba(94, 196, 144, 0.46);
+  box-shadow:
+    inset 0 0 0 1px rgba(94, 196, 144, 0.15),
+    inset 0 1px 0 rgba(255, 255, 255, 0.04);
 }
 
 .mission-action-agent-grid {

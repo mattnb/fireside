@@ -66,6 +66,22 @@ describe('work-lane planner', () => {
     expect([...plan.assignments.keys()]).toEqual([]);
   });
 
+  it('suppresses agent-specific lane cooldowns without blocking other owners', () => {
+    const cooledDown = item('cooldown-owned', { ownerAgentId: 'claude' });
+    const other = item('other-owned', { ownerAgentId: 'codex' });
+    const plan = planWorkLanes({
+      agents: ['claude', 'codex'],
+      items: [cooledDown, other],
+      activeItemIds: new Set(),
+      activeContracts: [],
+      busyAgents: new Set(),
+      suppressedItemIdsByAgent: new Map([['claude', new Set(['cooldown-owned'])]]),
+    });
+
+    expect(plan.assignments.has('claude')).toBe(false);
+    expect(plan.assignments.get('codex')?.item.id).toBe('other-owned');
+  });
+
   it('blocks work with unfinished dependencies', () => {
     const dependency = item('dependency', { status: 'open', ownerAgentId: 'codex' });
     const dependent = item('dependent', {

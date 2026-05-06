@@ -166,26 +166,58 @@
 
 .msg__actions button,
 .msg__edit-actions button {
-  border: 1px solid var(--border-soft);
-  border-radius: 999px;
-  padding: 3px 8px;
-  background: rgba(13, 17, 23, 0.46);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 22px;
+  padding: 4px 9px;
+  border: 1px solid rgba(255, 255, 255, 0.10);
+  border-radius: 6px;
+  background: transparent;
   color: var(--text-muted);
   font-family: var(--font-mono);
   font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  line-height: 1;
   cursor: pointer;
+  transition:
+    background-color 120ms ease,
+    color 120ms ease,
+    border-color 120ms ease,
+    box-shadow 120ms ease;
 }
 
 .msg__actions button:hover,
 .msg__edit-actions button:hover {
   color: var(--text-primary);
-  border-color: rgba(255, 255, 255, 0.24);
+  background: rgba(255, 255, 255, 0.03);
+  border-color: rgba(255, 255, 255, 0.18);
+}
+
+.msg__actions button:active,
+.msg__edit-actions button:active {
+  background: rgba(255, 255, 255, 0.06);
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.3);
+}
+
+.msg__actions button:focus-visible,
+.msg__edit-actions button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 
 .msg__actions button.is-danger,
 .msg__edit-actions button.is-danger {
-  color: rgba(245, 139, 124, 0.9);
-  border-color: rgba(245, 139, 124, 0.22);
+  color: #ffb4ae;
+  border-color: rgba(248, 81, 73, 0.32);
+}
+
+.msg__actions button.is-danger:hover,
+.msg__edit-actions button.is-danger:hover {
+  color: #ffd7d3;
+  background: rgba(248, 81, 73, 0.08);
+  border-color: rgba(248, 81, 73, 0.5);
 }
 
 .msg__edit {
@@ -345,42 +377,23 @@
   box-shadow: 0 0 0 3px rgba(94, 196, 144, 0.1);
 }
 
+/* Composer buttons compose the global Beveled Slate icon-button family
+   (.control-btn.control-btn--icon plus a role modifier — primary on send,
+   danger on stop, ghost on attach). The composer needs them at 40×40 to
+   line up with the textarea's min-height, and slightly larger SVG glyphs
+   than the rail's 14px default. Everything else (border, background,
+   hover, active, focus-visible) is inherited from app-tokens.css. */
 .composer__attach,
 .composer__send,
 .composer__stop {
   align-self: end;
-  height: 40px;
-}
-
-.composer__send,
-.composer__stop {
   width: 40px;
+  min-width: 40px;
+  height: 40px;
   min-height: 40px;
-  padding: 0;
-  display: inline-grid;
-  place-items: center;
-  border-radius: 8px;
-  cursor: pointer;
-  transition:
-    color 0.12s ease,
-    background-color 0.12s ease,
-    border-color 0.12s ease;
 }
 
-.composer__send,
-.composer__stop {
-  border: 1px solid var(--border-soft);
-  background: rgba(13, 17, 23, 0.46);
-  color: var(--text-secondary);
-}
-
-.composer__send:hover,
-.composer__stop:hover {
-  color: var(--accent-hover);
-  border-color: rgba(94, 196, 144, 0.34);
-  background: rgba(94, 196, 144, 0.08);
-}
-
+.composer__attach svg,
 .composer__send svg,
 .composer__stop svg {
   width: 18px;
@@ -389,29 +402,6 @@
 
 .composer__send svg {
   margin-left: -4px;
-}
-
-.composer__attach {
-  width: 40px;
-  min-height: 40px;
-  display: inline-grid;
-  place-items: center;
-  border: 1px solid var(--border-soft);
-  border-radius: 8px;
-  background: rgba(13, 17, 23, 0.46);
-  color: var(--text-secondary);
-  cursor: pointer;
-}
-
-.composer__attach:hover {
-  color: var(--accent-hover);
-  border-color: rgba(94, 196, 144, 0.34);
-  background: rgba(94, 196, 144, 0.08);
-}
-
-.composer__attach svg {
-  width: 18px;
-  height: 18px;
 }
 
 .markdown-body {
@@ -715,28 +705,8 @@
   overflow-wrap: anywhere;
 }
 
-.permission-card__btn {
-  min-height: 28px;
-  border: 1px solid var(--border-medium);
-  border-radius: 6px;
-  cursor: pointer;
-  font: inherit;
-  font-size: 11.5px;
-  font-weight: 800;
-  padding: 5px 10px;
-}
-
-.permission-card__btn--allow {
-  color: var(--accent-hover);
-  border-color: rgba(94, 196, 144, 0.36);
-  background: rgba(94, 196, 144, 0.12);
-}
-
-.permission-card__btn--deny {
-  color: #ffb4ae;
-  border-color: rgba(248, 81, 73, 0.34);
-  background: rgba(248, 81, 73, 0.1);
-}
+/* Allow/deny actions use .control-btn--primary / .control-btn--danger from the
+   global token sheet. */
 
 .permission-card__decided {
   color: var(--text-muted);

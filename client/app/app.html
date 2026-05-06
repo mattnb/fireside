@@ -38,6 +38,7 @@
     [yoloPercentRemaining]="yoloTurnPercentRemaining()"
     (addYoloTurnsRequested)="addYoloTurns()"
     (compactRequested)="ringCtxClick($event.agentId, $event.event)"
+    (recheckQuotaRequested)="recheckAgentQuota($event)"
     (manageAgentsRequested)="openEditAgents()"
   ></fs-agents-panel>
 
@@ -132,10 +133,11 @@
         (stopRequested)="stopActiveRuns()"
         (attachRequested)="attachFileToMessage($event)"
       ></fs-chat-pane>
-      <fs-runs-rail
+      <fs-mission-outline
         (runOpened)="openRunDetail($event)"
+        (runStopRequested)="onRunDetailStopRequested($event)"
         (completedRunsRequested)="openCompletedRunsModal()"
-      ></fs-runs-rail>
+      ></fs-mission-outline>
     </div>
     } @else if (selectedTab() === 'briefings') {
     <fs-briefings-tab />

@@ -5,7 +5,6 @@ import {
   addMessage,
   deleteQueuedHumanMessage,
   getMessage,
-  listQueuedHumanMessages,
   listMessages,
   updateQueuedHumanMessageText,
   updateMessageDeliveryStatus,
@@ -43,7 +42,6 @@ import {
 } from './context-files.js';
 import {
   buildPermissionGrant,
-  extractPermissionRequest,
   type PermissionGrant,
   type PermissionRequest,
   type YoloPermissionProfile,
@@ -97,6 +95,17 @@ import {
   type AgentJob,
 } from './repos/agent-jobs.js';
 import {
+  createDispatchQueueItems,
+  firstPendingDispatchQueueItemForAgent,
+  leaseDispatchQueueItem,
+  listPendingDispatchQueueItemsForRoom,
+  markDispatchQueueItemDelivered,
+  markDispatchQueueItemFailed,
+  recoverLeasedDispatchQueueItems,
+  type DispatchQueueItem,
+  type DispatchQueueKind,
+} from './repos/dispatch-queue.js';
+import {
   listCollaborationItems as listCollaborationItemsRepo,
   type CollaborationItem,
 } from './repos/collaboration.js';
@@ -132,6 +141,7 @@ import {
 import {
   createAgentRunAction,
   listAgentRunActionsForRoom,
+  clearProviderQuotaBlocks,
   listAgentRunActions,
   listRecentAgentRunActions,
   listRecentContextUsageActions,
@@ -187,11 +197,16 @@ import {
   maybeSampleGeminiStatsModelQuota,
 } from './agents/gemini-quota.js';
 import {
+  capacityBlockFromContextUsage,
   formatProviderCapacityBlock,
   latestProviderCapacityBlock,
   type ProviderCapacityBlock,
 } from './provider-capacity.js';
-import { mentionAliasSlug, resolveRoomAgentReferences } from './routing/agent-references.js';
+import {
+  mentionAliasSlug,
+  resolveRoomAgentReferences,
+  type RoutingRuleTrace,
+} from './routing/agent-references.js';
 import { routeAgentMessage } from './routing/agent-message-router.js';
 import { routeHumanMessage, type HumanRoutingDecision } from './routing/human-message-router.js';
 import {
@@ -254,20 +269,15 @@ import {
   type MissionReconciliationResult,
 } from './mission-state/mission-receipt-applicator.js';
 import { storeCollaborationNotes as storeCollaborationNotesState } from './mission-state/collaboration-note-applicator.js';
-import { extractCollaborationNotes, type ParsedCollaborationNote } from './collaboration-notes.js';
+import type { ParsedCollaborationNote } from './collaboration-notes.js';
 import { extractDraftArtifacts, writeDraftArtifact } from './draft-artifacts.js';
-import { extractMissionTaskUpdates, type ParsedMissionTaskUpdate } from './mission-task-updates.js';
-import {
-  extractMissionPhaseUpdates,
-  type ParsedMissionPhaseUpdate,
-} from './mission-phase-updates.js';
-import { extractMissionPlanUpdates, type ParsedMissionPlanUpdate } from './mission-plan-updates.js';
-import {
-  extractMissionCreateUpdates,
-  type ParsedMissionCreateUpdate,
-} from './mission-create-updates.js';
-import { extractMissionReceipts, type ParsedMissionReceipt } from './mission-receipts.js';
-import { extractAgentRosterUpdates, type ParsedAgentRosterUpdate } from './agent-roster-updates.js';
+import type { ParsedMissionTaskUpdate } from './mission-task-updates.js';
+import type { ParsedMissionPhaseUpdate } from './mission-phase-updates.js';
+import type { ParsedMissionPlanUpdate } from './mission-plan-updates.js';
+import type { ParsedMissionCreateUpdate } from './mission-create-updates.js';
+import type { ParsedMissionReceipt } from './mission-receipts.js';
+import type { ParsedAgentRosterUpdate } from './agent-roster-updates.js';
+import { runAgentReplySignalPipeline } from './pipelines/reply/run-agent-reply-signal-pipeline.js';
 import { defaultAgentProfile, providerIdFromAgentId } from './agents/profiles.js';
 import { getAgentPersona, isProviderId, providerDisplayName } from './agents/personas.js';
 
@@ -352,6 +362,7 @@ interface DiscussionThreadOptions {
   responders?: AgentId[];
   handoffPool?: AgentId[];
   bypassRoomYolo?: boolean;
+  routingTrace?: RoutingRuleTrace[];
 }
 
 type PermissionDecision = 'approved' | 'denied';
@@ -576,7 +587,6 @@ export class Broker extends EventEmitter {
   // human-readable reason instead of the default `canceled_by_reconciliation`.
   private userStoppedRuns = new Map<string, string>();
   private queuedHumanMessageIds = new Map<string, Set<string>>();
-  private drainingQueuedRooms = new Set<string>();
   private yoloLaunchRepairInFlight = new Set<string>();
   private yoloSequence = 0;
 
@@ -584,9 +594,11 @@ export class Broker extends EventEmitter {
     super();
     this.recoverInterruptedRuns();
     this.recoverInterruptedJobs();
+    recoverLeasedDispatchQueueItems(this.deps.db);
+    const startupRoomIds = listRooms(this.deps.db).map((room) => room.id);
     queueMicrotask(() => {
-      for (const room of listRooms(this.deps.db)) {
-        void this.drainQueuedHumanMessages(room.id);
+      for (const roomId of startupRoomIds) {
+        void this.drainDispatchQueue(roomId);
       }
     });
   }
@@ -612,10 +624,12 @@ export class Broker extends EventEmitter {
         return this.append(roomId, authorId, 'human', text, {
           responders: decision.responders,
           bypassRoomYolo: decision.bypassRoomYolo,
+          routingTrace: decision.trace,
         });
       case 'group-discussion':
         return this.append(roomId, authorId, 'human', text, {
           responders: decision.responders,
+          routingTrace: decision.trace,
         });
       case 'start-yolo':
         return this.startYoloDiscussion(
@@ -630,11 +644,16 @@ export class Broker extends EventEmitter {
           inlineYoloProfile ? undefined : decision.yoloResponders,
         );
       case 'queue-human-message':
-        return this.appendQueuedHumanMessage(roomId, authorId, text);
+        return this.append(roomId, authorId, 'human', text, {
+          responders: decision.responders,
+          bypassRoomYolo: true,
+          routingTrace: decision.trace,
+        });
       case 'append-only':
         return this.append(roomId, authorId, 'human', text, {
           responders: [],
           bypassRoomYolo: true,
+          routingTrace: decision.trace,
         });
     }
   }
@@ -1232,6 +1251,82 @@ export class Broker extends EventEmitter {
     return { ok: true, statusCode: 200, ...(refreshed ? { run: refreshed } : {}) };
   }
 
+  /**
+   * Recheck a provider's quota state and clear stale blocks if the provider
+   * is actually fresh. For Gemini this runs a real `/stats model` probe via
+   * the interactive PTY; if the probe says quota is still exhausted, the
+   * existing block rows stay and the caller receives the new ETA. For
+   * Claude / Codex there is no quota probe surface, so the call falls back
+   * to a manual force-unblock — the next dispatch will hit the provider for
+   * real, and if quota is still cooked a fresh terminal-quota event will
+   * re-record the block.
+   *
+   * Optional `runStatsModel` override exists for tests that want to inject
+   * a deterministic Gemini probe response without spawning a subprocess.
+   */
+  async recheckProviderQuota(
+    providerId: ProviderId,
+    options: { runStatsModel?: () => Promise<string | null> } = {},
+  ): Promise<{
+    ok: boolean;
+    cleared: number;
+    status?: string;
+    resetsAt?: number | null;
+    detail?: string;
+  }> {
+    if (providerId !== 'gemini') {
+      const result = clearProviderQuotaBlocks(this.deps.db, providerId);
+      return {
+        ok: true,
+        cleared: result.cleared,
+        detail:
+          result.cleared > 0
+            ? 'block cleared — next dispatch will retry against the provider'
+            : 'no active block to clear',
+      };
+    }
+
+    const probeArgs: { force: true; runStatsModel?: () => Promise<string | null> } = {
+      force: true,
+    };
+    if (options.runStatsModel) probeArgs.runStatsModel = options.runStatsModel;
+    const usage = await maybeSampleGeminiStatsModelQuota(probeArgs);
+
+    if (!usage) {
+      // Probe unavailable (node-pty missing, gemini CLI absent, etc.). Fall
+      // back to manual force-unblock so the user is never stuck behind a
+      // probe that can't run.
+      const result = clearProviderQuotaBlocks(this.deps.db, providerId);
+      return {
+        ok: true,
+        cleared: result.cleared,
+        detail: 'probe unavailable — cleared local block; next dispatch will retry',
+      };
+    }
+
+    const now = Date.now();
+    const block = capacityBlockFromContextUsage(usage, now);
+    if (block) {
+      return {
+        ok: false,
+        cleared: 0,
+        status: block.status,
+        resetsAt: block.resetsAt,
+        detail: formatProviderCapacityBlock(block, now),
+      };
+    }
+
+    const result = clearProviderQuotaBlocks(this.deps.db, providerId, now);
+    return {
+      ok: true,
+      cleared: result.cleared,
+      detail:
+        result.cleared > 0
+          ? `block cleared — quota looks fresh (${result.cleared} stale row${result.cleared === 1 ? '' : 's'} removed)`
+          : 'no active block to clear — quota looks fresh',
+    };
+  }
+
   startAgentCompaction(roomId: string, agentId: AgentId, authorId: string): AgentCompactionResult {
     const room = getRoom(this.deps.db, roomId);
     if (!room) return { ok: false, statusCode: 404, error: 'room not found' };
@@ -1723,11 +1818,11 @@ export class Broker extends EventEmitter {
         'system',
         `(${request.agentId} finished the ${mode} follow-up without a visible chat message.)`,
       );
-      await this.drainQueuedHumanMessages(request.roomId);
+      await this.drainDispatchQueue(request.roomId);
       return;
     }
     await this.runAgentHandoffs(request.roomId, request.agentId, result.message, result.handoffs);
-    await this.drainQueuedHumanMessages(request.roomId);
+    await this.drainDispatchQueue(request.roomId);
   }
 
   private createYoloState(roomId: string, startedBy: string): YoloDiscussionState {
@@ -1843,7 +1938,7 @@ export class Broker extends EventEmitter {
       if (result.message) {
         await this.runAgentHandoffs(roomId, leadAgentId, result.message, result.handoffs);
       }
-      await this.drainQueuedHumanMessages(roomId);
+      await this.drainDispatchQueue(roomId);
     } finally {
       this.yoloLaunchRepairInFlight.delete(key);
     }
@@ -2097,7 +2192,11 @@ export class Broker extends EventEmitter {
       .filter((contract): contract is WorkLaneScopeContract => Boolean(contract));
   }
 
-  private assignYoloWorkLanes(roomId: string, agents: AgentId[]): Map<AgentId, WorkLaneAssignment> {
+  private assignYoloWorkLanes(
+    roomId: string,
+    agents: AgentId[],
+    suppressedItemIdsByAgent?: Map<AgentId, Set<string>>,
+  ): Map<AgentId, WorkLaneAssignment> {
     const uniqueAgents = agents.filter((agent, index) => agents.indexOf(agent) === index);
     if (uniqueAgents.length === 0) return new Map();
     const task = getActiveTask(this.deps.db, roomId);
@@ -2118,13 +2217,15 @@ export class Broker extends EventEmitter {
     );
     const activeContracts = this.activeWorkLaneContracts(roomId, task.id);
     const items = listTaskChecklistItems(this.deps.db, task.id);
-    const plan = planWorkLanes({
+    const planInput = {
       agents: uniqueAgents,
       items,
       activeItemIds,
       activeContracts,
       busyAgents,
-    });
+      ...(suppressedItemIdsByAgent ? { suppressedItemIdsByAgent } : {}),
+    };
+    const plan = planWorkLanes(planInput);
     let changedOwner = false;
     for (const ownerUpdate of plan.ownerUpdates) {
       const updated =
@@ -2142,6 +2243,19 @@ export class Broker extends EventEmitter {
     }
 
     return plan.assignments;
+  }
+
+  private addSuppressedWorkLane(
+    suppressedItemIdsByAgent: Map<AgentId, Set<string>>,
+    agentId: AgentId,
+    itemId: string,
+  ): void {
+    const existing = suppressedItemIdsByAgent.get(agentId);
+    if (existing) {
+      existing.add(itemId);
+      return;
+    }
+    suppressedItemIdsByAgent.set(agentId, new Set([itemId]));
   }
 
   private async runAgentReply(
@@ -2752,7 +2866,8 @@ export class Broker extends EventEmitter {
         });
       }
     }
-    const extractedMissionCreates = extractMissionCreateUpdates(text);
+    const replySignals = runAgentReplySignalPipeline({ text, agentId });
+    const extractedMissionCreates = replySignals.missionCreates;
     const createdMission = this.applyMissionCreateUpdates({
       roomId,
       activeTask: activeTask ?? null,
@@ -2775,7 +2890,7 @@ export class Broker extends EventEmitter {
           : 'mission create did not produce a mission',
     });
     const missionTask = createdMission ?? activeTask ?? null;
-    const extractedMissionPlans = extractMissionPlanUpdates(extractedMissionCreates.visibleText);
+    const extractedMissionPlans = replySignals.missionPlans;
     const sameTurnPlan = this.applyMissionPlanUpdates({
       roomId,
       task: missionTask,
@@ -2799,7 +2914,7 @@ export class Broker extends EventEmitter {
         ? (listTaskPlans(this.deps.db, missionTask.id).find((plan) => plan.status === 'active') ??
           null)
         : null);
-    const extractedMissionPhases = extractMissionPhaseUpdates(extractedMissionPlans.visibleText);
+    const extractedMissionPhases = replySignals.missionPhases;
     this.applyMissionPhaseUpdates({
       roomId,
       task: missionTask,
@@ -2821,7 +2936,7 @@ export class Broker extends EventEmitter {
         ? 'mission phase command processed'
         : 'mission phase rejected: no mission',
     });
-    const extractedMissionTasks = extractMissionTaskUpdates(extractedMissionPhases.visibleText);
+    const extractedMissionTasks = replySignals.missionTasks;
     const missionTaskResult = this.applyMissionTaskUpdates({
       roomId,
       task: missionTask,
@@ -2846,7 +2961,7 @@ export class Broker extends EventEmitter {
             ? 'checklist command did not apply'
             : 'checklist command rejected: no mission',
     });
-    const extractedAgentRoster = extractAgentRosterUpdates(extractedMissionTasks.visibleText);
+    const extractedAgentRoster = replySignals.agentRoster;
     const rosterResult = this.applyAgentRosterUpdates({
       roomId,
       task: missionTask,
@@ -2874,7 +2989,7 @@ export class Broker extends EventEmitter {
       agentId,
       changedItems: missionTaskResult.dispatchCandidates,
     });
-    const extractedMissionReceipts = extractMissionReceipts(extractedAgentRoster.visibleText);
+    const extractedMissionReceipts = replySignals.missionReceipts;
     this.recordMissionReceipts({
       roomId,
       task: missionTask,
@@ -2908,7 +3023,7 @@ export class Broker extends EventEmitter {
     const productiveMissionReceiptCount = this.productiveMissionReceiptCount(
       extractedMissionReceipts.receipts,
     );
-    const textAfterMissionReceipts = extractedMissionReceipts.visibleText;
+    const textAfterMissionReceipts = replySignals.textAfterMissionReceipts;
     const reconciliation = this.reconcileMissionState({
       roomId,
       task: missionTask,
@@ -3027,10 +3142,10 @@ export class Broker extends EventEmitter {
         workDispatches: finalWorkDispatches,
       };
     }
-    const extractedPermission = extractPermissionRequest(textAfterMissionReceipts, agentId);
+    const extractedPermission = replySignals.permission;
     if (extractedPermission) {
       const permissionRequest = extractedPermission.request;
-      const visiblePermissionText = extractCollaborationNotes(extractedPermission.visibleText);
+      const visiblePermissionText = replySignals.collaboration;
       const cleanedVisibleText = cleanVisibleAgentMessage(
         agentId,
         visiblePermissionText.visibleText,
@@ -3236,10 +3351,13 @@ export class Broker extends EventEmitter {
         workDispatches: finalWorkDispatches,
       };
     }
-    const extracted = extractCollaborationNotes(textAfterMissionReceipts);
+    const extracted = replySignals.collaboration;
     const visibleText = cleanVisibleAgentMessage(agentId, extracted.visibleText);
     const message = visibleText ? this.appendDirect(roomId, agentId, 'agent', visibleText) : null;
     const handoffs = this.agentHandoffsForMessage(room, agentId, message);
+    if (message && handoffs.length > 0) {
+      this.enqueueAgentHandoffs(roomId, agentId, message, handoffs);
+    }
     this.storeCollaborationNotes({
       roomId,
       taskId: missionTask?.id ?? null,
@@ -3431,7 +3549,7 @@ export class Broker extends EventEmitter {
         label: canceled ? 'compaction canceled' : 'compaction failed',
         detail: errMsg,
       });
-      if (input.drainQueuedAfter !== false) void this.drainQueuedHumanMessages(input.roomId);
+      if (input.drainQueuedAfter !== false) void this.drainDispatchQueue(input.roomId);
       return;
     }
 
@@ -3485,7 +3603,7 @@ export class Broker extends EventEmitter {
           ? `session ${reply.sessionId} compacted`
           : 'provider completed compaction without returning a session id',
     });
-    if (input.drainQueuedAfter !== false) void this.drainQueuedHumanMessages(input.roomId);
+    if (input.drainQueuedAfter !== false) void this.drainDispatchQueue(input.roomId);
   }
 
   private recordRunAction(input: CreateAgentRunActionInput): AgentRunAction {
@@ -4773,15 +4891,36 @@ export class Broker extends EventEmitter {
     const room = getRoom(this.deps.db, roomId);
     if (!room) throw new Error(`unknown room: ${roomId}`);
 
-    const message = this.appendDirect(roomId, authorId, authorKind, text);
+    const responders =
+      authorKind === 'agent'
+        ? []
+        : (discussionOptions?.responders ?? this.pickResponders(room, text, authorId));
+    const queuedForDispatch = authorKind === 'human' && responders.length > 0;
+    const message = this.appendDirect(roomId, authorId, authorKind, text, {
+      ...(queuedForDispatch ? { deliveryStatus: 'queued' } : {}),
+    });
 
     // Direct agent appends are persisted only. Human/system messages start a
     // bounded discussion thread managed below.
     if (authorKind === 'agent') return message;
 
-    const responders = discussionOptions?.responders ?? this.pickResponders(room, text, authorId);
-    await this.runRoomAwareDiscussionThread(roomId, room, responders, message, discussionOptions);
-    return message;
+    if (discussionOptions?.mode === 'yolo') {
+      await this.runRoomAwareDiscussionThread(roomId, room, responders, message, discussionOptions);
+      return this.withDeliveryStatus(roomId, getMessage(this.deps.db, message.id) ?? message);
+    }
+
+    if (responders.length > 0) {
+      this.enqueueDispatchesForMessage({
+        roomId,
+        authorId,
+        message,
+        responders,
+        kind: 'chat-message',
+        routingTrace: discussionOptions?.routingTrace,
+      });
+      await this.drainDispatchQueue(roomId);
+    }
+    return this.withDeliveryStatus(roomId, getMessage(this.deps.db, message.id) ?? message);
   }
 
   /**
@@ -4794,25 +4933,58 @@ export class Broker extends EventEmitter {
     authorId: string,
     authorKind: AuthorKind,
     text: string,
+    options: { deliveryStatus?: MessageDeliveryStatus | undefined } = {},
   ): Message {
-    const message = addMessage(this.deps.db, { roomId, authorId, authorKind, text });
+    const message = addMessage(this.deps.db, {
+      roomId,
+      authorId,
+      authorKind,
+      text,
+      ...(options.deliveryStatus ? { deliveryStatus: options.deliveryStatus } : {}),
+    });
+    if (authorKind === 'human' && message.deliveryStatus === 'queued') {
+      const queued = this.queuedHumanMessageIds.get(roomId) ?? new Set<string>();
+      queued.add(message.id);
+      this.queuedHumanMessageIds.set(roomId, queued);
+    }
     this.emit('messageAppended', message);
     return message;
   }
 
-  private appendQueuedHumanMessage(roomId: string, authorId: string, text: string): Message {
-    const message = addMessage(this.deps.db, {
-      roomId,
-      authorId,
-      authorKind: 'human',
-      text,
-      deliveryStatus: 'queued',
+  private enqueueDispatchesForMessage(input: {
+    roomId: string;
+    authorId: string;
+    message: Message;
+    responders: AgentId[];
+    kind: DispatchQueueKind;
+    routingTrace?: RoutingRuleTrace[] | undefined;
+  }): DispatchQueueItem[] {
+    const targets = input.responders.filter(
+      (agentId, index) => agentId !== input.authorId && input.responders.indexOf(agentId) === index,
+    );
+    if (targets.length === 0) return [];
+    const queued = createDispatchQueueItems(this.deps.db, {
+      roomId: input.roomId,
+      sourceMessageId: input.message.id,
+      authorId: input.authorId,
+      targetKind: 'agent',
+      targetIds: targets,
+      kind: input.kind,
+      routingTrace: input.routingTrace ?? [],
     });
-    const queued = this.queuedHumanMessageIds.get(roomId) ?? new Set<string>();
-    queued.add(message.id);
-    this.queuedHumanMessageIds.set(roomId, queued);
-    this.emit('messageAppended', message);
-    return message;
+    if (queued.length > 0) {
+      logger.info(
+        {
+          roomId: input.roomId,
+          sourceMessageId: input.message.id,
+          authorId: input.authorId,
+          kind: input.kind,
+          responders: queued.map((item) => item.targetId),
+        },
+        'queued message dispatch',
+      );
+    }
+    return queued;
   }
 
   private roomHasActiveWork(roomId: string): boolean {
@@ -4969,42 +5141,145 @@ export class Broker extends EventEmitter {
     return { ...message, deliveryStatus: 'delivered' };
   }
 
-  private latestQueuedHumanMessage(roomId: string): Message | null {
-    const queuedMessages = listQueuedHumanMessages(this.deps.db, roomId);
-    return queuedMessages.at(-1) ?? null;
+  private pendingDispatchTriggers(
+    roomId: string,
+    candidateAgents: AgentId[],
+  ): Map<AgentId, { dispatch: DispatchQueueItem; message: Message }> {
+    const result = new Map<AgentId, { dispatch: DispatchQueueItem; message: Message }>();
+    for (const agentId of candidateAgents) {
+      if (result.has(agentId)) continue;
+      const dispatch = firstPendingDispatchQueueItemForAgent(this.deps.db, {
+        roomId,
+        agentId,
+      });
+      if (!dispatch) continue;
+      const message = getMessage(this.deps.db, dispatch.sourceMessageId);
+      if (message && message.roomId === roomId) result.set(agentId, { dispatch, message });
+    }
+    return result;
   }
 
-  private async drainQueuedHumanMessages(roomId: string): Promise<void> {
-    if (this.drainingQueuedRooms.has(roomId) || this.roomHasActiveWork(roomId)) return;
-    this.drainingQueuedRooms.add(roomId);
-    try {
-      const maxQueuedDrains = listQueuedHumanMessages(this.deps.db, roomId).length;
-      for (
-        let drained = 0;
-        drained < maxQueuedDrains && !this.roomHasActiveWork(roomId);
-        drained += 1
-      ) {
-        const message = this.latestQueuedHumanMessage(roomId);
-        if (!message) return;
-        const room = getRoom(this.deps.db, roomId);
-        if (!room) return;
-        const explicitResponders = this.pickExplicitResponders(
-          room,
-          message.text,
-          message.authorId,
-        );
-        const responders =
-          explicitResponders ?? this.pickResponders(room, message.text, message.authorId);
-        if (responders.length === 0) {
-          this.markQueuedMessagesDelivered(roomId, [message]);
-          continue;
-        }
-        await this.runRoomAwareDiscussionThread(roomId, room, responders, message, {
-          ...(explicitResponders !== null ? { bypassRoomYolo: true } : {}),
+  private enqueueAgentHandoffs(
+    roomId: string,
+    authorId: AgentId,
+    message: Message,
+    responders: AgentId[],
+  ): void {
+    this.enqueueDispatchesForMessage({
+      roomId,
+      authorId,
+      message,
+      responders,
+      kind: 'agent-handoff',
+    });
+  }
+
+  private markPendingDispatchDelivered(
+    roomId: string,
+    agentId: AgentId,
+    dispatch: DispatchQueueItem | undefined,
+    runId: string | undefined,
+  ): void {
+    if (!dispatch) return;
+    if (!runId) {
+      markDispatchQueueItemFailed(this.deps.db, {
+        id: dispatch.id,
+        error: 'dispatch target did not produce a run id',
+      });
+      return;
+    }
+    const delivered = markDispatchQueueItemDelivered(this.deps.db, {
+      id: dispatch.id,
+      deliveredRunId: runId,
+    });
+    if (!delivered) return;
+    const sourceMessage = getMessage(this.deps.db, delivered.sourceMessageId);
+    const routingKind =
+      sourceMessage?.authorKind === 'agent'
+        ? 'agent-message'
+        : delivered.kind === 'mission-work'
+          ? 'mission-work'
+          : 'human-message';
+    const action =
+      delivered.kind === 'agent-handoff' ? 'agent-handoff-delivered' : 'dispatch-delivered';
+    createRoutingDecision(this.deps.db, {
+      roomId,
+      runId,
+      messageId: delivered.sourceMessageId,
+      authorId: delivered.authorId,
+      kind: routingKind,
+      action,
+      reason:
+        delivered.kind === 'agent-handoff'
+          ? `${agentId} received queued handoff from ${delivered.authorId}`
+          : `${agentId} received queued ${delivered.kind} dispatch from ${delivered.authorId}`,
+      responders: [agentId],
+      trace: [
+        {
+          id: 'dispatch-queue',
+          result: 'matched',
+          reason: 'pending dispatch delivered as the turn trigger',
+          agents: [agentId],
+        },
+      ],
+    });
+  }
+
+  private nextDispatchBatch(room: Room): { message: Message; responders: AgentId[] } | null {
+    const pending = listPendingDispatchQueueItemsForRoom(this.deps.db, room.id).filter(
+      (item) => item.targetKind === 'agent',
+    );
+    if (pending.length === 0) return null;
+    const busy = this.busyAgentsInRoom(room.id);
+    for (const first of pending) {
+      if (!room.agents.includes(first.targetId as AgentId)) {
+        markDispatchQueueItemFailed(this.deps.db, {
+          id: first.id,
+          error: `target agent is not in room: ${first.targetId}`,
         });
+        continue;
       }
-    } finally {
-      this.drainingQueuedRooms.delete(roomId);
+      if (busy.has(first.targetId as AgentId)) continue;
+      const firstProfile = room.agentProfiles.find((candidate) => candidate.id === first.targetId);
+      if (firstProfile && this.providerCapacityBlock(firstProfile.providerId)) continue;
+      const message = getMessage(this.deps.db, first.sourceMessageId);
+      if (!message || message.roomId !== room.id) {
+        markDispatchQueueItemFailed(this.deps.db, {
+          id: first.id,
+          error: 'source message is no longer available',
+        });
+        continue;
+      }
+      const responders = pending
+        .filter(
+          (item) =>
+            item.sourceMessageId === first.sourceMessageId &&
+            item.kind === first.kind &&
+            item.authorId === first.authorId &&
+            item.targetKind === 'agent',
+        )
+        .map((item) => item.targetId as AgentId)
+        .filter((agentId, index, agents) => agents.indexOf(agentId) === index)
+        .filter((agentId) => room.agents.includes(agentId))
+        .filter((agentId) => !busy.has(agentId))
+        .filter((agentId) => {
+          const profile = room.agentProfiles.find((candidate) => candidate.id === agentId);
+          return !profile || !this.providerCapacityBlock(profile.providerId);
+        });
+      if (responders.length > 0) return { message, responders };
+    }
+    return null;
+  }
+
+  private async drainDispatchQueue(roomId: string): Promise<void> {
+    const room = getRoom(this.deps.db, roomId);
+    if (!room) return;
+    for (let drained = 0; drained < 100; drained += 1) {
+      const batch = this.nextDispatchBatch(room);
+      if (!batch) return;
+      await this.runRoomAwareDiscussionThread(roomId, room, batch.responders, batch.message, {
+        bypassRoomYolo: true,
+      });
     }
   }
 
@@ -5031,6 +5306,7 @@ export class Broker extends EventEmitter {
     text: string,
     authorId: AgentId,
     allowedAgents?: Set<AgentId>,
+    sourceMessageId?: string,
   ): AgentId[] {
     const decision = routeAgentMessage({ room, text, authorId, allowedAgents });
     logger.info(
@@ -5051,6 +5327,7 @@ export class Broker extends EventEmitter {
     );
     createRoutingDecision(this.deps.db, {
       roomId: room.id,
+      messageId: sourceMessageId ?? null,
       authorId,
       kind: 'agent-message',
       action: decision.action,
@@ -5068,7 +5345,13 @@ export class Broker extends EventEmitter {
     allowedAgents?: Set<AgentId>,
   ): AgentId[] {
     if (!message) return [];
-    return this.pickAgentHandoffResponders(room, message.text, authorId, allowedAgents);
+    return this.pickAgentHandoffResponders(
+      room,
+      message.text,
+      authorId,
+      allowedAgents,
+      message.id,
+    );
   }
 
   private async runAgentHandoffs(
@@ -5080,9 +5363,11 @@ export class Broker extends EventEmitter {
     const room = getRoom(this.deps.db, roomId);
     if (!room) return;
     const responders =
-      precomputedResponders ?? this.pickAgentHandoffResponders(room, message.text, authorId);
+      precomputedResponders ??
+      this.pickAgentHandoffResponders(room, message.text, authorId, undefined, message.id);
     if (responders.length === 0) return;
-    await this.runRoomAwareDiscussionThread(roomId, room, responders, message);
+    this.enqueueAgentHandoffs(roomId, authorId, message, responders);
+    await this.drainDispatchQueue(roomId);
   }
 
   private maxAgentRepliesPerThread(): number {
@@ -5163,6 +5448,7 @@ export class Broker extends EventEmitter {
       this.emit('yoloStatusUpdated', this.yoloStatus(options.yoloState, true));
     }
     const pendingWorkLanes = new Map<AgentId, WorkLaneAssignment>();
+    let suppressedOpenLaneIdsByAgent = new Map<AgentId, Set<string>>();
 
     try {
       for (
@@ -5184,6 +5470,7 @@ export class Broker extends EventEmitter {
                     !scheduler.quarantinedAgents.has(id) &&
                     (scheduler.replyCounts.get(id) ?? 0) < currentMaxRepliesPerAgent(scheduler),
                 ),
+                suppressedOpenLaneIdsByAgent,
               )
             : new Map<AgentId, WorkLaneAssignment>();
         if (pendingWorkLanes.size > 0) {
@@ -5224,17 +5511,39 @@ export class Broker extends EventEmitter {
             return;
           }
         }
+        const capacityBlockedHandoffPool = room
+          ? this.capacityBlockedAgents(room, scheduler.handoffPool)
+          : new Set<AgentId>();
+        const pendingDispatchTriggers = this.pendingDispatchTriggers(
+          roomId,
+          scheduler.handoffPool.filter(
+            (id) =>
+              !scheduler.quarantinedAgents.has(id) &&
+              !capacityBlockedHandoffPool.has(id) &&
+              (scheduler.replyCounts.get(id) ?? 0) < currentMaxRepliesPerAgent(scheduler),
+          ),
+        );
         const trigger = this.latestMessage(roomId, initialTrigger);
         const roundPlan = planDiscussionRound(scheduler, {
           round,
-          laneAgents: Array.from(laneAssignments.keys()),
+          laneAgents: [
+            ...Array.from(laneAssignments.keys()),
+            ...Array.from(pendingDispatchTriggers.keys()),
+          ],
         });
         const busyAgentsForRound = this.busyAgentsInRoom(roomId);
+        const capacityBlockedAgentsForRound = room
+          ? this.capacityBlockedAgents(room, roundPlan.eligibleAgents)
+          : new Set<AgentId>();
         const eligible = roundPlan.eligibleAgents.filter(
-          (agentId) => !busyAgentsForRound.has(agentId),
+          (agentId) =>
+            !busyAgentsForRound.has(agentId) && !capacityBlockedAgentsForRound.has(agentId),
         );
         const skippedBusyAgents = roundPlan.eligibleAgents.filter((agentId) =>
           busyAgentsForRound.has(agentId),
+        );
+        const skippedCapacityAgents = roundPlan.eligibleAgents.filter((agentId) =>
+          capacityBlockedAgentsForRound.has(agentId),
         );
         if (skippedBusyAgents.length > 0) {
           logger.info(
@@ -5263,6 +5572,33 @@ export class Broker extends EventEmitter {
             ],
           });
         }
+        if (skippedCapacityAgents.length > 0) {
+          logger.info(
+            {
+              roomId,
+              round,
+              agents: skippedCapacityAgents,
+            },
+            'discussion round skipped capacity-blocked agents',
+          );
+          createRoutingDecision(this.deps.db, {
+            roomId,
+            taskId: getActiveTask(this.deps.db, roomId)?.id ?? null,
+            authorId: 'fireside',
+            kind: 'agent-message',
+            action: 'provider-capacity-skip',
+            reason: `skipped ${skippedCapacityAgents.length} capacity-blocked agent(s) before provider launch`,
+            responders: skippedCapacityAgents,
+            trace: [
+              {
+                id: 'provider-capacity',
+                result: 'blocked',
+                reason: 'provider capacity block is active',
+                agents: skippedCapacityAgents,
+              },
+            ],
+          });
+        }
         if (eligible.length === 0) return;
         if (isCancelled()) return;
         for (const agentId of eligible) {
@@ -5270,32 +5606,61 @@ export class Broker extends EventEmitter {
         }
 
         const results = await Promise.all(
-          eligible.map(async (agentId) => ({
-            agentId,
-            result: await this.runAgentReply(
-              roomId,
+          eligible.map(async (agentId) => {
+            const pendingDispatch = pendingDispatchTriggers.get(agentId);
+            if (pendingDispatch) {
+              leaseDispatchQueueItem(this.deps.db, {
+                id: pendingDispatch.dispatch.id,
+                leaseOwner: this.agentJobLeaseOwner(),
+                leaseMs: AGENT_JOB_LEASE_MS,
+              });
+            }
+            return {
               agentId,
-              trigger,
-              {
-                round: Math.min(round, roundPlan.maxPromptRounds),
-                maxRounds: roundPlan.maxPromptRounds,
-                repliesUsed: scheduler.replyCounts.get(agentId) ?? 0,
-                maxRepliesPerAgent: roundPlan.maxRepliesPerAgent,
-                mode: options.mode ?? 'normal',
-                totalRepliesUsed: scheduler.totalReplies,
-                maxTotalReplies: roundPlan.maxTotalReplies,
-              },
-              options.permission,
-              options.yoloState?.abortController.signal,
-              0,
-              laneAssignments.get(agentId),
-            ),
-          })),
+              pendingDispatch: pendingDispatch?.dispatch,
+              result: await this.runAgentReply(
+                roomId,
+                agentId,
+                pendingDispatch?.message ?? trigger,
+                {
+                  round: Math.min(round, roundPlan.maxPromptRounds),
+                  maxRounds: roundPlan.maxPromptRounds,
+                  repliesUsed: scheduler.replyCounts.get(agentId) ?? 0,
+                  maxRepliesPerAgent: roundPlan.maxRepliesPerAgent,
+                  mode: options.mode ?? 'normal',
+                  totalRepliesUsed: scheduler.totalReplies,
+                  maxTotalReplies: roundPlan.maxTotalReplies,
+                },
+                options.permission,
+                options.yoloState?.abortController.signal,
+                0,
+                laneAssignments.get(agentId),
+              ),
+            };
+          }),
         );
         if (isCancelled()) return;
 
         const resultSummaries: DiscussionResultSummary[] = [];
-        for (const { agentId, result } of results) {
+        const nextSuppressedOpenLaneIdsByAgent = new Map<AgentId, Set<string>>();
+        for (const { agentId, pendingDispatch, result } of results) {
+          this.markPendingDispatchDelivered(
+            roomId,
+            agentId,
+            pendingDispatch,
+            result.runId,
+          );
+          const assignedLane = laneAssignments.get(agentId);
+          if (assignedLane) {
+            const freshAssignedItem = getTaskChecklistItem(this.deps.db, assignedLane.item.id);
+            if (freshAssignedItem?.status === 'open') {
+              this.addSuppressedWorkLane(
+                nextSuppressedOpenLaneIdsByAgent,
+                agentId,
+                freshAssignedItem.id,
+              );
+            }
+          }
           const handoffPool = new Set(scheduler.handoffPool);
           const handoffs = room
             ? result.message
@@ -5321,6 +5686,7 @@ export class Broker extends EventEmitter {
             error: result.error ?? '',
           });
         }
+        suppressedOpenLaneIdsByAgent = nextSuppressedOpenLaneIdsByAgent;
 
         const outcome = applyDiscussionRoundResults(scheduler, {
           results: resultSummaries,
@@ -5366,7 +5732,10 @@ export class Broker extends EventEmitter {
     } finally {
       if (yoloStateForLoop) yoloStateForLoop.loopActive = false;
       if (options.mode !== 'yolo' && !isCancelled()) {
-        await this.drainQueuedHumanMessages(roomId);
+        await this.drainDispatchQueue(roomId);
+      }
+      if (!isCancelled()) {
+        await this.drainDispatchQueue(roomId);
       }
     }
   }

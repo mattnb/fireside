@@ -1,5 +1,5 @@
 // client/app/completed-runs-modal/completed-runs-modal.ts
-// Modal triggered from the runs-rail "history" icon. Shows the latest
+// Modal triggered from the mission-outline rail's "history" icon. Shows the latest
 // completed runs (any status other than 'running') as clickable cards that
 // open the run-detail modal.
 

@@ -18,6 +18,7 @@ const NOISY_LABEL_PATTERNS = [
   /\bturn\.completed\b/i,
   /\bassistant message ready\b/i,
   /\bagent_message\b/i,
+  /\brate limit headers\b/i,
   /^(?:claude|codex|gemini)?\s*status$/i,
 ];
 
@@ -73,6 +74,7 @@ function isSubstantiveProviderText(text: string): boolean {
   if (!text) return false;
   const normalized = text.trim();
   const lowered = normalized.toLowerCase();
+  if (/^quota\b/.test(lowered)) return false;
   if (TOOL_NAME_ONLY.has(lowered)) return false;
   if (/^[0-9a-f-]{20,}$/i.test(normalized)) return false;
   const words = normalized.split(/\s+/).filter(Boolean);

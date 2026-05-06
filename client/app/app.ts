@@ -45,7 +45,7 @@ import {
   type MissionActionKind,
   type MissionActionScope,
 } from './mission-toolbar/mission-toolbar';
-import { RunsRail } from './runs-rail/runs-rail';
+import { MissionOutline } from './mission-outline/mission-outline';
 import { CompletedRunsModal } from './completed-runs-modal/completed-runs-modal';
 import type { DraftRoomAgent } from './room-agent-types';
 import type { ChatTimelineItem } from './chat-types';
@@ -129,6 +129,13 @@ const INLINE_CHAT_TOKEN_RE =
 const CHAT_MENTION_RE =
   /(?:^|[\s([{"'`>])@[a-z][a-z0-9-]*(?=$|[\s,;:!?)\]}"'\u2014\u2013-]|\.(?=[\s)\]}"']|$))/gi;
 
+/** Display cap on chat scrollback. The full history stays in the DB and is
+ *  served by the API; the chat pane just renders the most-recent N messages
+ *  to keep the DOM (and the user's eye) bounded. Permissions + activity
+ *  events older than the oldest visible message are also filtered so the
+ *  rendered timeline stays coherent. */
+const CHAT_TIMELINE_MESSAGE_CAP = 50;
+
 type TabId = 'chat' | 'mission' | 'briefings' | 'archives';
 type MissionViewId =
   | 'overview'
@@ -197,7 +204,7 @@ const DEFAULT_AGENT_AUTO_COMPACT_PERCENT = 70;
     Sidebar,
     Topbar,
     MissionToolbar,
-    RunsRail,
+    MissionOutline,
     CompletedRunsModal,
     ArchivesView,
     DeleteProjectModal,
@@ -499,36 +506,48 @@ export class App implements OnDestroy {
   );
   readonly taskInspectorCard = computed(() => this.graph.findCard(this.taskInspectorItemId()));
   readonly chatTimeline = computed(() => {
+    const visibleMessages = this.messages().filter(
+      (message) => !this.isHiddenSystemMessage(message),
+    );
+    const cappedMessages = visibleMessages.slice(-CHAT_TIMELINE_MESSAGE_CAP);
+    // Drop permissions + activity older than the oldest visible message so the
+    // rendered window doesn't show orphaned events from the deep past. When the
+    // chat is short (< cap) this is a no-op since oldestVisibleAt is 0.
+    const oldestVisibleAt = cappedMessages[0]?.createdAt ?? 0;
+
     const rawItems: ChatTimelineItem[] = [
-      ...this.messages()
-        .filter((message) => !this.isHiddenSystemMessage(message))
-        .map((message) => ({
-          id: `message:${message.id}`,
-          kind: 'message' as const,
-          createdAt: message.createdAt,
-          message,
+      ...cappedMessages.map((message) => ({
+        id: `message:${message.id}`,
+        kind: 'message' as const,
+        createdAt: message.createdAt,
+        message,
+        grouped: false,
+        html: this.renderMessageHtml(message.text),
+        isError: message.authorKind === 'system' && /failed|timed out|error/i.test(message.text),
+        humanMentioned: this.messageMentionsHuman(message),
+        ...(message.authorKind === 'system'
+          ? {}
+          : { seenAgents: this.display.messageSeenAgents(message) }),
+      })),
+      ...this.permissionRequests()
+        .filter((request) => request.createdAt >= oldestVisibleAt)
+        .map((request) => ({
+          id: `permission:${request.id}`,
+          kind: 'permission' as const,
+          createdAt: request.createdAt,
+          request,
           grouped: false,
-          html: this.renderMessageHtml(message.text),
-          isError: message.authorKind === 'system' && /failed|timed out|error/i.test(message.text),
-          humanMentioned: this.messageMentionsHuman(message),
-          ...(message.authorKind === 'system'
-            ? {}
-            : { seenAgents: this.display.messageSeenAgents(message) }),
         })),
-      ...this.permissionRequests().map((request) => ({
-        id: `permission:${request.id}`,
-        kind: 'permission' as const,
-        createdAt: request.createdAt,
-        request,
-        grouped: false,
-      })),
-      ...this.graph.activity().map((activity) => ({
-        id: `activity:${activity.id}`,
-        kind: 'activity' as const,
-        createdAt: activity.createdAt,
-        activity,
-        grouped: false,
-      })),
+      ...this.graph
+        .activity()
+        .filter((activity) => activity.createdAt >= oldestVisibleAt)
+        .map((activity) => ({
+          id: `activity:${activity.id}`,
+          kind: 'activity' as const,
+          createdAt: activity.createdAt,
+          activity,
+          grouped: false,
+        })),
     ].sort((a, b) => a.createdAt - b.createdAt);
 
     let lastAuthor = '';
@@ -2135,6 +2154,32 @@ export class App implements OnDestroy {
     this.openCompactAgent(agentId, event);
   }
 
+  recheckAgentQuota(agentId: AgentId): void {
+    const providerId = this.display.agentProviderId(agentId);
+    const providerLabel = this.display.providerForId(providerId).displayName || providerId;
+    this.toasts.push({ message: `rechecking ${providerLabel} quota…` });
+    this.api.providers.recheckQuota(providerId).subscribe({
+      next: (result) => {
+        if (result.ok) {
+          const cleared = result.cleared || 0;
+          this.toasts.push({
+            message:
+              cleared > 0
+                ? `${providerLabel} quota cleared (${cleared} block${cleared === 1 ? '' : 's'} removed)`
+                : `${providerLabel} quota looks fresh — no blocks to clear`,
+          });
+        } else {
+          const detail = result.detail || result.status || 'still exhausted';
+          this.toasts.push({ message: `${providerLabel} quota ${detail}` });
+        }
+      },
+      error: (err: unknown) => {
+        const message = err instanceof Error ? err.message : 'recheck failed';
+        this.toasts.push({ message: `${providerLabel} quota recheck failed: ${message}` });
+      },
+    });
+  }
+
   private parseActivityDetail(
     detail: string | undefined,
   ): { title: string; status: string } | null {
@@ -2486,14 +2531,16 @@ export class App implements OnDestroy {
   }
 
   visibleRunActions(actions: AgentRunAction[]): AgentRunAction[] {
+    const displayable = actions.filter((action) => !this.isHiddenRunAction(action));
     return this.showLowSignalRunEvents()
-      ? actions
-      : actions.filter((action) => this.isVisibleRunAction(action));
+      ? displayable
+      : displayable.filter((action) => this.isVisibleRunAction(action));
   }
 
   hiddenRunActionCount(actions: AgentRunAction[]): number {
+    const displayable = actions.filter((action) => !this.isHiddenRunAction(action));
     if (this.showLowSignalRunEvents()) return 0;
-    return this.lowSignalRunActionCount(actions);
+    return this.lowSignalRunActionCount(displayable);
   }
 
   lowSignalRunActionCount(actions: AgentRunAction[]): number {
@@ -2501,7 +2548,7 @@ export class App implements OnDestroy {
   }
 
   visibleDiagnosticSignals(signals: AgentRunDetail['diagnostics']['signals'] | undefined) {
-    const items = signals ?? [];
+    const items = (signals ?? []).filter((signal) => !this.isHiddenProviderSignal(signal.label));
     return this.showLowSignalRunEvents()
       ? items
       : items.filter((signal) => this.isVisibleProviderSignal(signal.label, signal.detail));
@@ -2510,8 +2557,11 @@ export class App implements OnDestroy {
   hiddenDiagnosticSignalCount(
     signals: AgentRunDetail['diagnostics']['signals'] | undefined,
   ): number {
+    const displayable = (signals ?? []).filter(
+      (signal) => !this.isHiddenProviderSignal(signal.label),
+    );
     if (this.showLowSignalRunEvents()) return 0;
-    return this.lowSignalDiagnosticSignalCount(signals);
+    return this.lowSignalDiagnosticSignalCount(displayable);
   }
 
   lowSignalDiagnosticSignalCount(
@@ -2540,6 +2590,14 @@ export class App implements OnDestroy {
 
   private isVisibleRunAction(action: AgentRunAction): boolean {
     return this.isVisibleProviderSignal(action.label, action.detail);
+  }
+
+  private isHiddenRunAction(action: AgentRunAction): boolean {
+    return this.isHiddenProviderSignal(action.label);
+  }
+
+  private isHiddenProviderSignal(label: string): boolean {
+    return /\b(?:claude\s+)?rate limit headers\b/i.test(label);
   }
 
   private isVisibleProviderSignal(label: string, detail: string | undefined): boolean {

@@ -1,0 +1,182 @@
+<aside class="mission-outline" aria-label="Mission outline">
+  <header class="mission-outline__head">
+    <h3 class="section-label mission-outline__title">Objective</h3>
+    <div class="mission-outline__head-meta">
+      @if (summary().itemsTotal > 0) {
+        @if (summary().activeRuns > 0) {
+          <span class="mission-outline__counter">
+            {{ summary().activeRuns }} active · {{ summary().itemsDone }}/{{ summary().itemsTotal }}
+          </span>
+        } @else {
+          <span class="mission-outline__counter">
+            {{ summary().itemsDone }}/{{ summary().itemsTotal }}
+          </span>
+        }
+      }
+      <button
+        type="button"
+        class="control-btn control-btn--icon-sm mission-outline__history"
+        title="Show completed runs"
+        aria-label="Show completed runs"
+        (click)="onHistoryClick()"
+      >
+        <svg viewBox="0 0 20 20" aria-hidden="true">
+          <path d="M10 3a7 7 0 1 1-6.93 8.07" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" />
+          <path d="M3 7V3.4M3 3.4h3.6" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" />
+          <path d="M10 7v3.5l2.4 1.7" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" />
+        </svg>
+      </button>
+    </div>
+  </header>
+
+  <section class="mission-outline__body">
+    @if (missionTitle(); as title) {
+      <div class="mission-outline__goal">
+        <span class="mission-outline__goal-label">Mission</span>
+        <p class="mission-outline__goal-text">{{ title }}</p>
+        @if (summary().itemsTotal > 0) {
+          <div class="mission-outline__goal-progress">
+            <div class="mission-outline__goal-bar">
+              <div class="mission-outline__goal-fill" [style.width.%]="progressPercent()"></div>
+            </div>
+            <span class="mission-outline__goal-pct">{{ progressPercent() }}%</span>
+          </div>
+        }
+      </div>
+    } @else {
+      <div class="mission-outline__empty">
+        <p>No mission set.</p>
+        <small>Open the Mission tab to define an objective.</small>
+      </div>
+    }
+
+    @for (lane of lanes(); track lane.id) {
+      <div class="mission-outline__lane" [class.is-collapsed]="isLaneCollapsed(lane)">
+        <button
+          type="button"
+          class="mission-outline__lane-head"
+          [attr.aria-expanded]="!isLaneCollapsed(lane)"
+          (click)="toggleLane(lane, $event)"
+        >
+          <svg
+            class="mission-outline__lane-chevron"
+            viewBox="0 0 12 12"
+            width="10"
+            height="10"
+            aria-hidden="true"
+          >
+            <path
+              d="M3.5 4.5 6 7l2.5-2.5"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.6"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            />
+          </svg>
+          <span class="mission-outline__lane-title">{{ lane.title }}</span>
+          <span class="mission-outline__lane-count">
+            {{ lane.counts.done }}/{{ lane.counts.total }}
+          </span>
+        </button>
+        @if (!isLaneCollapsed(lane)) {
+        @for (card of lane.cards; track card.item.id) {
+          <article class="mo-row" [class]="'is-' + card.tone">
+            <span class="mo-row__icon">
+              @if (card.tone === 'done') {
+                <span class="mo-row__check" aria-hidden="true">✓</span>
+              } @else if (card.tone === 'active') {
+                <span class="mo-row__spinner" aria-hidden="true"></span>
+              } @else {
+                <span class="mo-row__bullet" aria-hidden="true">○</span>
+              }
+            </span>
+            <div class="mo-row__body">
+              <p class="mo-row__title">{{ card.item.title }}</p>
+              <div class="mo-row__meta">
+                @if (ownerAgentId(card); as agentId) {
+                  <span [class]="display.avatarClass(agentId, 'sm') + ' avatar--tiny'"></span>
+                }
+                @if (card.activeRun; as run) {
+                  <button
+                    type="button"
+                    class="mo-row__pill mo-row__pill--running"
+                    title="Open run detail"
+                    (click)="onPillClick(run, $event)"
+                  >
+                    <span>running · {{ runDuration(run) }}</span>
+                    <svg viewBox="0 0 12 12" width="9" height="9" aria-hidden="true">
+                      <path d="M4.5 2.5 8 6l-3.5 3.5" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" />
+                    </svg>
+                  </button>
+                  <button
+                    type="button"
+                    class="mo-row__stop"
+                    title="Stop this run"
+                    aria-label="Stop run"
+                    (click)="onStopClick(run, $event)"
+                  >
+                    <svg viewBox="0 0 640 640" aria-hidden="true">
+                      <path d="M160 96L480 96C515.3 96 544 124.7 544 160L544 480C544 515.3 515.3 544 480 544L160 544C124.7 544 96 515.3 96 480L96 160C96 124.7 124.7 96 160 96z" fill="currentColor" />
+                    </svg>
+                  </button>
+                } @else if (pillLabelFor(card); as label) {
+                  <span class="mo-row__pill mo-row__pill--{{ card.tone }}">{{ label }}</span>
+                }
+              </div>
+            </div>
+          </article>
+        }
+        }
+      </div>
+    }
+
+    @if (orphanRunningRuns().length > 0) {
+      <div class="mission-outline__lane mission-outline__lane--orphan">
+        <header class="mission-outline__lane-head">
+          <span class="mission-outline__lane-title">Other activity</span>
+          <span class="mission-outline__lane-count">{{ orphanRunningRuns().length }}</span>
+        </header>
+        @for (run of orphanRunningRuns(); track run.id) {
+          <article class="mo-row is-active">
+            <span class="mo-row__icon">
+              <span class="mo-row__spinner" aria-hidden="true"></span>
+            </span>
+            <div class="mo-row__body">
+              <p class="mo-row__title">{{ display.name(run.agentId) }} run</p>
+              <div class="mo-row__meta">
+                <span [class]="display.avatarClass(run.agentId, 'sm') + ' avatar--tiny'"></span>
+                <button
+                  type="button"
+                  class="mo-row__pill mo-row__pill--running"
+                  title="Open run detail"
+                  (click)="onPillClick(run, $event)"
+                >
+                  <span>running · {{ runDuration(run) }}</span>
+                  <svg viewBox="0 0 12 12" width="9" height="9" aria-hidden="true">
+                    <path d="M4.5 2.5 8 6l-3.5 3.5" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" />
+                  </svg>
+                </button>
+                <button
+                  type="button"
+                  class="mo-row__stop"
+                  title="Stop this run"
+                  aria-label="Stop run"
+                  (click)="onStopClick(run, $event)"
+                >
+                  <svg viewBox="0 0 640 640" aria-hidden="true">
+                    <path d="M160 96L480 96C515.3 96 544 124.7 544 160L544 480C544 515.3 515.3 544 480 544L160 544C124.7 544 96 515.3 96 480L96 160C96 124.7 124.7 96 160 96z" fill="currentColor" />
+                  </svg>
+                </button>
+              </div>
+            </div>
+          </article>
+        }
+      </div>
+    }
+
+    @if (lanes().length === 0 && orphanRunningRuns().length === 0 && missionTitle()) {
+      <p class="empty-copy">No checklist items yet.</p>
+    }
+  </section>
+</aside>

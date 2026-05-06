@@ -320,6 +320,54 @@ CREATE INDEX IF NOT EXISTS idx_routing_decisions_room_created
 CREATE INDEX IF NOT EXISTS idx_routing_decisions_run_created
   ON routing_decisions(run_id, created_at);
 
+CREATE TABLE IF NOT EXISTS agent_handoffs (
+  id TEXT PRIMARY KEY,
+  room_id TEXT NOT NULL REFERENCES rooms(id) ON DELETE CASCADE,
+  source_message_id TEXT NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+  author_id TEXT NOT NULL,
+  target_agent_id TEXT NOT NULL,
+  status TEXT NOT NULL CHECK (status IN ('pending', 'delivered', 'canceled')),
+  delivered_run_id TEXT REFERENCES agent_runs(id) ON DELETE SET NULL,
+  created_at INTEGER NOT NULL,
+  delivered_at INTEGER,
+  UNIQUE(room_id, source_message_id, target_agent_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_agent_handoffs_room_status_created
+  ON agent_handoffs(room_id, status, created_at);
+
+CREATE INDEX IF NOT EXISTS idx_agent_handoffs_target_status_created
+  ON agent_handoffs(room_id, target_agent_id, status, created_at);
+
+CREATE TABLE IF NOT EXISTS dispatch_queue (
+  id TEXT PRIMARY KEY,
+  room_id TEXT NOT NULL REFERENCES rooms(id) ON DELETE CASCADE,
+  source_message_id TEXT NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+  author_id TEXT NOT NULL,
+  target_kind TEXT NOT NULL CHECK (target_kind IN ('agent', 'human', 'broker')),
+  target_id TEXT NOT NULL,
+  kind TEXT NOT NULL CHECK (kind IN ('chat-message', 'agent-handoff', 'mission-work', 'permission-followup', 'system-repair')),
+  status TEXT NOT NULL CHECK (status IN ('pending', 'leased', 'delivered', 'canceled', 'failed', 'superseded')),
+  priority INTEGER NOT NULL DEFAULT 0,
+  available_at INTEGER NOT NULL DEFAULT 0,
+  attempt_count INTEGER NOT NULL DEFAULT 0,
+  lease_owner TEXT NOT NULL DEFAULT '',
+  lease_expires_at INTEGER NOT NULL DEFAULT 0,
+  delivered_run_id TEXT REFERENCES agent_runs(id) ON DELETE SET NULL,
+  routing_trace_json TEXT NOT NULL DEFAULT '[]',
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  delivered_at INTEGER,
+  error TEXT NOT NULL DEFAULT '',
+  UNIQUE(room_id, source_message_id, target_kind, target_id, kind)
+);
+
+CREATE INDEX IF NOT EXISTS idx_dispatch_queue_room_status_available
+  ON dispatch_queue(room_id, status, available_at, priority, created_at);
+
+CREATE INDEX IF NOT EXISTS idx_dispatch_queue_target_status_available
+  ON dispatch_queue(room_id, target_kind, target_id, status, available_at, priority, created_at);
+
 CREATE TABLE IF NOT EXISTS mission_command_events (
   id TEXT PRIMARY KEY,
   room_id TEXT NOT NULL REFERENCES rooms(id) ON DELETE CASCADE,
@@ -591,6 +639,62 @@ function ensureRoutingDecisionTables(db: DbType): void {
 
     CREATE INDEX IF NOT EXISTS idx_routing_decisions_run_created
       ON routing_decisions(run_id, created_at);
+  `);
+}
+
+function ensureAgentHandoffTables(db: DbType): void {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS agent_handoffs (
+      id TEXT PRIMARY KEY,
+      room_id TEXT NOT NULL REFERENCES rooms(id) ON DELETE CASCADE,
+      source_message_id TEXT NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+      author_id TEXT NOT NULL,
+      target_agent_id TEXT NOT NULL,
+      status TEXT NOT NULL CHECK (status IN ('pending', 'delivered', 'canceled')),
+      delivered_run_id TEXT REFERENCES agent_runs(id) ON DELETE SET NULL,
+      created_at INTEGER NOT NULL,
+      delivered_at INTEGER,
+      UNIQUE(room_id, source_message_id, target_agent_id)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_agent_handoffs_room_status_created
+      ON agent_handoffs(room_id, status, created_at);
+
+    CREATE INDEX IF NOT EXISTS idx_agent_handoffs_target_status_created
+      ON agent_handoffs(room_id, target_agent_id, status, created_at);
+  `);
+}
+
+function ensureDispatchQueueTables(db: DbType): void {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS dispatch_queue (
+      id TEXT PRIMARY KEY,
+      room_id TEXT NOT NULL REFERENCES rooms(id) ON DELETE CASCADE,
+      source_message_id TEXT NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+      author_id TEXT NOT NULL,
+      target_kind TEXT NOT NULL CHECK (target_kind IN ('agent', 'human', 'broker')),
+      target_id TEXT NOT NULL,
+      kind TEXT NOT NULL CHECK (kind IN ('chat-message', 'agent-handoff', 'mission-work', 'permission-followup', 'system-repair')),
+      status TEXT NOT NULL CHECK (status IN ('pending', 'leased', 'delivered', 'canceled', 'failed', 'superseded')),
+      priority INTEGER NOT NULL DEFAULT 0,
+      available_at INTEGER NOT NULL DEFAULT 0,
+      attempt_count INTEGER NOT NULL DEFAULT 0,
+      lease_owner TEXT NOT NULL DEFAULT '',
+      lease_expires_at INTEGER NOT NULL DEFAULT 0,
+      delivered_run_id TEXT REFERENCES agent_runs(id) ON DELETE SET NULL,
+      routing_trace_json TEXT NOT NULL DEFAULT '[]',
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL,
+      delivered_at INTEGER,
+      error TEXT NOT NULL DEFAULT '',
+      UNIQUE(room_id, source_message_id, target_kind, target_id, kind)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_dispatch_queue_room_status_available
+      ON dispatch_queue(room_id, status, available_at, priority, created_at);
+
+    CREATE INDEX IF NOT EXISTS idx_dispatch_queue_target_status_available
+      ON dispatch_queue(room_id, target_kind, target_id, status, available_at, priority, created_at);
   `);
 }
 
@@ -1316,6 +1420,8 @@ export function openDatabase(filename: string): DbType {
   ensureAgentJobTables(db);
   ensureAgentRunActionColumns(db);
   ensureRoutingDecisionTables(db);
+  ensureAgentHandoffTables(db);
+  ensureDispatchQueueTables(db);
   ensureMissionCommandEventTables(db);
   ensureAgentTurnOutcomeTables(db);
   ensureCollaborationStatusConstraint(db);

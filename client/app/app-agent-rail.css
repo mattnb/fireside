@@ -258,6 +258,61 @@
   transform: translate(-50%, 0);
 }
 
+/* Quota-recheck hover hints. Mirror the compact-hint pattern but anchored to
+   the ring's bottom corners — h5 wedge curves through the bottom-right, d7
+   through the bottom-left, so each pill peeks out of the wedge's nearest
+   corner. Rendered conditionally only when the wedge is red-or-blocked, and
+   revealed when the user hovers the wedge. */
+.rail-agent__wedge--h5.is-actionable .rail-agent__wedge-hit,
+.rail-agent__wedge--d7.is-actionable .rail-agent__wedge-hit {
+  cursor: pointer;
+}
+
+.rail-agent__recheck-hint {
+  position: absolute;
+  width: 18px;
+  height: 18px;
+  border-radius: 999px;
+  background: rgba(13, 17, 23, 0.95);
+  border: 1px solid rgba(229, 169, 26, 0.5);
+  display: grid;
+  place-items: center;
+  color: #f2d17d;
+  pointer-events: none;
+  opacity: 0;
+  transition:
+    opacity 140ms ease,
+    transform 140ms ease;
+}
+
+.rail-agent__recheck-hint svg {
+  width: 10px;
+  height: 10px;
+}
+
+.rail-agent__recheck-hint--h5 {
+  bottom: -4px;
+  right: -4px;
+  transform: translate(4px, 4px);
+}
+
+.rail-agent__recheck-hint--d7 {
+  bottom: -4px;
+  left: -4px;
+  transform: translate(-4px, 4px);
+}
+
+.rail-agent__ring:has(.rail-agent__wedge--h5.is-actionable:hover) .rail-agent__recheck-hint--h5,
+.rail-agent__ring:has(.rail-agent__wedge--d7.is-actionable:hover) .rail-agent__recheck-hint--d7 {
+  opacity: 1;
+  transform: translate(0, 0);
+}
+
+.rail-agent__wedge--h5.is-actionable:hover .rail-agent__wedge-fill,
+.rail-agent__wedge--d7.is-actionable:hover .rail-agent__wedge-fill {
+  filter: drop-shadow(0 0 5px currentColor);
+}
+
 .rail-agent__meta {
   grid-row: 1;
   grid-column: 2;
@@ -482,24 +537,7 @@
   background: #ff7b72;
 }
 
-.agent-manage-btn {
-  min-height: 30px;
-  border: 1px solid rgba(94, 196, 144, 0.28);
-  border-radius: 6px;
-  background: rgba(94, 196, 144, 0.09);
-  color: var(--accent-hover);
-  cursor: pointer;
-  font: inherit;
-  font-size: 11.5px;
-  font-weight: 800;
-  margin-top: 2px;
-  padding: 6px 8px;
-}
-
-.agent-manage-btn:hover {
-  border-color: rgba(94, 196, 144, 0.46);
-  background: rgba(94, 196, 144, 0.14);
-}
+/* Agents-panel "Manage Agents" button uses the global .control-btn token. */
 
 .work-card {
   position: relative;

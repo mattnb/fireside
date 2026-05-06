@@ -32,14 +32,14 @@
         @if (request.status === 'pending') {
         <button
           type="button"
-          class="permission-card__btn permission-card__btn--deny"
+          class="control-btn control-btn--danger"
           (click)="permissionDecided.emit({ request, decision: 'denied' })"
         >
           Deny
         </button>
         <button
           type="button"
-          class="permission-card__btn permission-card__btn--allow"
+          class="control-btn control-btn--primary"
           (click)="permissionDecided.emit({ request, decision: 'approved' })"
         >
           Allow

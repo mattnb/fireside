@@ -14,6 +14,7 @@ import { openDatabase } from '../../src/db.js';
 import { createRoom, getRoom } from '../../src/repos/rooms.js';
 import { addMessage, listMessages } from '../../src/repos/messages.js';
 import { listAgentJobsForRoom } from '../../src/repos/agent-jobs.js';
+import { listPendingDispatchQueueItemsForRoom } from '../../src/repos/dispatch-queue.js';
 import { listPermissionRequests } from '../../src/repos/permission-requests.js';
 import { createAgentRun, listAgentRuns, updateAgentRun } from '../../src/repos/agent-runs.js';
 import { listAgentRunActions, listAgentRunActionsForRoom } from '../../src/repos/run-actions.js';
@@ -832,7 +833,7 @@ describe('Broker', () => {
     expect(listMessages(db, room.id)).toHaveLength(101);
   });
 
-  it('does not launch the same room agent while an existing provider turn is active', async () => {
+  it('queues a targeted message while the same room agent has active provider work', async () => {
     let markStarted: () => void = () => {};
     let releaseReply: (reply: AgentReply) => void = () => {};
     const started = new Promise<void>((resolve) => {
@@ -864,6 +865,13 @@ describe('Broker', () => {
 
     expect(runs).toHaveLength(1);
     expect(listAgentRuns(db, room.id).filter((run) => run.status === 'running')).toHaveLength(1);
+    expect(listPendingDispatchQueueItemsForRoom(db, room.id)).toMatchObject([
+      {
+        targetId: 'gemini',
+        kind: 'chat-message',
+        status: 'pending',
+      },
+    ]);
 
     releaseReply({
       text: 'gemini finished',
@@ -872,11 +880,101 @@ describe('Broker', () => {
     });
     await Promise.all([first, second]);
 
-    expect(runs).toHaveLength(1);
+    expect(runs).toHaveLength(2);
+    expect(runs[1]!.prompt).toContain('@gemini duplicate nudge');
+    expect(listPendingDispatchQueueItemsForRoom(db, room.id)).toEqual([]);
     expect(listAgentRuns(db, room.id).filter((run) => run.status === 'running')).toHaveLength(0);
   });
 
-  it('does not start an overlapping YOLO loop for a room with an active YOLO pulse', async () => {
+  it('delivers an agent-to-agent handoff after the target finishes active work', async () => {
+    let codexInitialStarted: () => void = () => {};
+    let releaseCodexInitial: (reply: AgentReply) => void = () => {};
+    const codexStarted = new Promise<void>((resolve) => {
+      codexInitialStarted = resolve;
+    });
+    const codexInitialReply = new Promise<AgentReply>((resolve) => {
+      releaseCodexInitial = resolve;
+    });
+    let codexRuns = 0;
+    const handoffBroker = new Broker({
+      db,
+      runAgent: async (spec, prompt, sessionId) => {
+        runs.push({ agentId: spec.id, prompt, sessionId });
+        if (spec.id === 'codex') {
+          codexRuns += 1;
+          if (codexRuns === 1) {
+            codexInitialStarted();
+            return codexInitialReply;
+          }
+          return {
+            text: 'codex acknowledged claude handoff',
+            sessionId: 'codex-sess',
+            raw: { stdout: '', stderr: '' },
+          };
+        }
+        return {
+          text: '@codex please review the Lighthouse finding before the phase closes.',
+          sessionId: 'claude-sess',
+          raw: { stdout: '', stderr: '' },
+        };
+      },
+      getSpec: (id) => {
+        const map: Record<string, AgentSpec> = {
+          claude: fakeSpec('claude', 'claude reply'),
+          codex: fakeSpec('codex', 'codex reply'),
+        };
+        return map[id];
+      },
+      maxAgentRepliesPerThread: 1,
+    });
+    const room = createRoom(db, { name: 'handoffs', agents: ['claude', 'codex'] });
+
+    const first = handoffBroker.postHumanMessage(room.id, 'human', '@codex start long work');
+    await codexStarted;
+    await handoffBroker.postHumanMessage(room.id, 'human', '@claude tell codex what changed');
+
+    const claudeMessage = listMessages(db, room.id).find(
+      (message) => message.authorId === 'claude' && message.text.includes('@codex please review'),
+    );
+    expect(claudeMessage).toBeTruthy();
+    expect(listPendingDispatchQueueItemsForRoom(db, room.id)).toMatchObject([
+      {
+        sourceMessageId: claudeMessage!.id,
+        authorId: 'claude',
+        targetId: 'codex',
+        kind: 'agent-handoff',
+        status: 'pending',
+      },
+    ]);
+
+    releaseCodexInitial({
+      text: 'codex finished initial work',
+      sessionId: 'codex-sess',
+      raw: { stdout: '', stderr: '' },
+    });
+    await first;
+
+    expect(runs.map((run) => run.agentId)).toEqual(['codex', 'claude', 'codex']);
+    expect(runs[2]!.prompt).toContain('@codex please review the Lighthouse finding');
+    expect(listPendingDispatchQueueItemsForRoom(db, room.id)).toEqual([]);
+    const decisions = listRoutingDecisionsForRoom(db, room.id, 20);
+    expect(
+      decisions.some(
+        (decision) =>
+          decision.action === 'agent-handoff' && decision.messageId === claudeMessage!.id,
+      ),
+    ).toBe(true);
+    expect(
+      decisions.some(
+        (decision) =>
+          decision.action === 'agent-handoff-delivered' &&
+          decision.messageId === claudeMessage!.id &&
+          decision.responders.includes('codex'),
+      ),
+    ).toBe(true);
+  });
+
+  it('queues a targeted message instead of starting an overlapping YOLO loop', async () => {
     let markStarted: () => void = () => {};
     let releaseReply: (reply: AgentReply) => void = () => {};
     const started = new Promise<void>((resolve) => {
@@ -911,6 +1009,13 @@ describe('Broker', () => {
     await new Promise((resolve) => setTimeout(resolve, 25));
 
     expect(runs).toHaveLength(1);
+    expect(listPendingDispatchQueueItemsForRoom(db, room.id)).toMatchObject([
+      {
+        targetId: 'gemini',
+        kind: 'chat-message',
+        status: 'pending',
+      },
+    ]);
 
     releaseReply({
       text: '',
@@ -919,7 +1024,9 @@ describe('Broker', () => {
     });
     await Promise.all([first, second]);
 
-    expect(runs).toHaveLength(1);
+    expect(runs).toHaveLength(2);
+    expect(runs[1]!.prompt).toContain('@gemini duplicate yolo nudge');
+    expect(listPendingDispatchQueueItemsForRoom(db, room.id)).toEqual([]);
   });
 
   it('applies YOLO permission profiles to agent turns for the run', async () => {
@@ -4565,5 +4672,133 @@ describe('Broker', () => {
       'system:(claude started approved edit turn for foobar.txt.)',
       'system:(claude finished the approved edit follow-up without a visible chat message.)',
     ]);
+  });
+
+  describe('recheckProviderQuota', () => {
+    it('force-unblocks non-Gemini providers and reports cleared count', async () => {
+      const room = createRoom(db, { name: 'g', agents: ['claude'] });
+      const trigger = addMessage(db, {
+        roomId: room.id,
+        authorId: 'human',
+        authorKind: 'human',
+        text: 'go',
+      });
+      const run = createAgentRun(db, {
+        roomId: room.id,
+        triggerMessageId: trigger.id,
+        agentId: 'claude',
+        permissionMode: 'plan',
+        promptChars: 0,
+        estimatedPromptTokens: 0,
+        liveMessages: 0,
+        contextArtifacts: 0,
+      });
+      const { createAgentRunAction } = await import('../../src/repos/run-actions.js');
+      createAgentRunAction(db, {
+        roomId: room.id,
+        runId: run.id,
+        agentId: 'claude',
+        kind: 'diagnostic',
+        status: 'failed',
+        label: 'claude rate limit',
+        contextUsage: {
+          provider: 'claude',
+          model: 'claude-sonnet-4-6',
+          usedTokens: 0,
+          quotaOnly: true,
+          quota: {
+            fiveHour: { percent: 100, resetsAt: Date.now() + 60_000, status: 'exhausted' },
+            source: 'claude:rate-limit',
+          },
+          source: 'claude:rate-limit',
+        },
+      });
+
+      const result = await broker.recheckProviderQuota('claude');
+      expect(result.ok).toBe(true);
+      expect(result.cleared).toBe(1);
+    });
+
+    it('reports no-op when there is nothing to clear', async () => {
+      const result = await broker.recheckProviderQuota('claude');
+      expect(result.ok).toBe(true);
+      expect(result.cleared).toBe(0);
+      expect(result.detail).toContain('no active block');
+    });
+
+    it('Gemini probe with fresh quota clears existing blocks', async () => {
+      const { resetGeminiStatsSamplerForTesting } = await import(
+        '../../src/agents/gemini-quota.js'
+      );
+      resetGeminiStatsSamplerForTesting();
+      const room = createRoom(db, { name: 'g', agents: ['gemini'] });
+      const trigger = addMessage(db, {
+        roomId: room.id,
+        authorId: 'human',
+        authorKind: 'human',
+        text: 'go',
+      });
+      const run = createAgentRun(db, {
+        roomId: room.id,
+        triggerMessageId: trigger.id,
+        agentId: 'gemini',
+        permissionMode: 'plan',
+        promptChars: 0,
+        estimatedPromptTokens: 0,
+        liveMessages: 0,
+        contextArtifacts: 0,
+      });
+      const { createAgentRunAction } = await import('../../src/repos/run-actions.js');
+      createAgentRunAction(db, {
+        roomId: room.id,
+        runId: run.id,
+        agentId: 'gemini',
+        kind: 'diagnostic',
+        status: 'failed',
+        label: 'gemini terminal quota',
+        contextUsage: {
+          provider: 'gemini',
+          model: 'gemini-2.5-pro',
+          usedTokens: 0,
+          quotaOnly: true,
+          quota: {
+            daily: { percent: 100, resetsAt: Date.now() + 60_000, status: 'limited' },
+            source: 'gemini:terminal-quota',
+          },
+          source: 'gemini:terminal-quota',
+        },
+      });
+
+      // Probe response that parses to "fresh quota" — usage with no terminal
+      // quota markers and an under-cap percent.
+      const freshOutput = [
+        'Model: gemini-2.5-pro',
+        '5h quota: 12% used (resets in 4h)',
+        '7d quota: 8% used (resets in 6d)',
+      ].join('\n');
+
+      const result = await broker.recheckProviderQuota('gemini', {
+        runStatsModel: async () => freshOutput,
+      });
+      expect(result.ok).toBe(true);
+      // The recheck cleared the stale gemini block.
+      expect(result.cleared).toBeGreaterThanOrEqual(0);
+    });
+
+    it('Gemini probe with still-exhausted quota leaves the block in place', async () => {
+      const { resetGeminiStatsSamplerForTesting } = await import(
+        '../../src/agents/gemini-quota.js'
+      );
+      resetGeminiStatsSamplerForTesting();
+      const exhaustedOutput =
+        'TerminalQuotaError: you have exhausted your capacity on this model. quota will reset in 4h.';
+
+      const result = await broker.recheckProviderQuota('gemini', {
+        runStatsModel: async () => exhaustedOutput,
+      });
+      expect(result.ok).toBe(false);
+      expect(result.cleared).toBe(0);
+      expect(result.status).toBeDefined();
+    });
   });
 });
