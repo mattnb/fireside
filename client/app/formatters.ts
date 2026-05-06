@@ -37,6 +37,7 @@ export function formatDurationMs(ms: number): string {
 export function formatTokenCount(tokens: number | undefined): string {
   if (!Number.isFinite(tokens)) return 'unknown';
   const value = Math.max(0, tokens ?? 0);
+  if (value >= 1_000_000_000) return `${(value / 1_000_000_000).toFixed(value >= 10_000_000_000 ? 0 : 1)}B`;
   if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(value >= 10_000_000 ? 0 : 1)}M`;
   if (value >= 1_000) return `${(value / 1_000).toFixed(value >= 100_000 ? 0 : 1)}K`;
   return String(Math.round(value));

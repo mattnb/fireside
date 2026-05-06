@@ -252,6 +252,54 @@ export interface StatusSnapshotContextUsage {
   byAgent: StatusSnapshotAgentContextUsage[];
 }
 
+export interface StatusSnapshotTokenUsageBucket {
+  id: string;
+  label: string;
+  totalTokens: number;
+  promptEstimateTokens: number;
+  inputTokens: number;
+  outputTokens: number;
+  cachedInputTokens: number;
+  cacheReadInputTokens: number;
+  cacheCreationInputTokens: number;
+  reasoningOutputTokens: number;
+  usageEvents: number;
+  runs: number;
+}
+
+export interface StatusSnapshotTokenUsageEvent {
+  id: string;
+  runId: string;
+  taskId: string | null;
+  agentId: AgentId;
+  provider: string;
+  model: string;
+  createdAt: number;
+  totalTokens: number;
+  inputTokens: number;
+  outputTokens: number;
+  cachedInputTokens: number;
+  cacheReadInputTokens: number;
+  cacheCreationInputTokens: number;
+  reasoningOutputTokens: number;
+}
+
+export interface StatusSnapshotTokenUsage {
+  totalTokens: number;
+  promptEstimateTokens: number;
+  inputTokens: number;
+  outputTokens: number;
+  cachedInputTokens: number;
+  cacheReadInputTokens: number;
+  cacheCreationInputTokens: number;
+  reasoningOutputTokens: number;
+  usageEvents: number;
+  runs: number;
+  byProvider: StatusSnapshotTokenUsageBucket[];
+  byAgent: StatusSnapshotTokenUsageBucket[];
+  recentEvents: StatusSnapshotTokenUsageEvent[];
+}
+
 export interface StatusSnapshotRoom {
   id: string;
   projectId: string;
@@ -280,6 +328,8 @@ export interface StatusSnapshotRoom {
   lastRun: AgentRun | null;
   lastAction: AgentRunAction | null;
   contextUsage: StatusSnapshotContextUsage;
+  tokenUsage: StatusSnapshotTokenUsage;
+  activeMissionTokenUsage: StatusSnapshotTokenUsage | null;
   agentStates: StatusSnapshotAgentState[];
 }
 
@@ -295,6 +345,7 @@ export interface StatusSnapshot {
   };
   rooms: StatusSnapshotRoom[];
   contextUsage: StatusSnapshotContextUsage;
+  tokenUsage: StatusSnapshotTokenUsage;
   agentStates: StatusSnapshotAgentState[];
 }
 

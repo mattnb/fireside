@@ -23,12 +23,12 @@ import {
 } from '@angular/core';
 
 import { AgentDisplayService } from '../agent-display.service';
-import { AgentRingService } from '../agent-ring.service';
 import { MissionStore } from '../mission-store';
 import {
   elapsedLabel as fmtElapsedLabel,
   formatDurationMs as fmtDurationMs,
   formatRelativeAgo as fmtRelativeAgo,
+  formatTokenCount as fmtTokenCount,
   oneLine as fmtOneLine,
   pad2 as fmtPad2,
 } from '../formatters';
@@ -101,7 +101,6 @@ const ATTENTION_TONE_PRIORITY: Record<OpsTone, number> = {
 })
 export class OverviewView implements OnDestroy {
   protected readonly display = inject(AgentDisplayService);
-  protected readonly ring = inject(AgentRingService);
   private readonly store = inject(MissionStore);
 
   readonly attentionItemOpened = output<AttentionItem>();
@@ -372,8 +371,40 @@ export class OverviewView implements OnDestroy {
     return fmtElapsedLabel(run.startedAt, null, this.now());
   });
   readonly tokensLabel = computed(() => {
-    const run = this.featuredRunningRun();
-    return run?.estimatedPromptTokens ? this.ring.formatTokens(run.estimatedPromptTokens) : '0';
+    const usage = this.store.selectedRoomSnapshot()?.tokenUsage;
+    if (usage?.totalTokens) return fmtTokenCount(usage.totalTokens);
+    return usage?.promptEstimateTokens ? `~${fmtTokenCount(usage.promptEstimateTokens)}` : '0';
+  });
+  readonly tokenScopeLabel = computed(() => {
+    const missionUsage = this.store.selectedRoomSnapshot()?.activeMissionTokenUsage;
+    if (missionUsage?.totalTokens) return `mission ${fmtTokenCount(missionUsage.totalTokens)}`;
+    return 'room total';
+  });
+  readonly tokenBreakdownTitle = computed(() => {
+    const roomUsage = this.store.selectedRoomSnapshot()?.tokenUsage;
+    if (!roomUsage) return 'No room token usage recorded yet';
+    const lines = [
+      `Room observed: ${fmtTokenCount(roomUsage.totalTokens)} tokens across ${roomUsage.usageEvents} provider usage event(s)`,
+      `Prompt estimate: ${fmtTokenCount(roomUsage.promptEstimateTokens)} tokens across ${roomUsage.runs} run(s)`,
+      `Input: ${fmtTokenCount(roomUsage.inputTokens)} / output: ${fmtTokenCount(roomUsage.outputTokens)}`,
+      roomUsage.cacheCreationInputTokens || roomUsage.cacheReadInputTokens
+        ? `Claude cache creation: ${fmtTokenCount(roomUsage.cacheCreationInputTokens)} / cache read: ${fmtTokenCount(roomUsage.cacheReadInputTokens)}`
+        : '',
+      roomUsage.byProvider.length > 0
+        ? `By provider: ${roomUsage.byProvider
+            .map((bucket) => `${bucket.label} ${fmtTokenCount(bucket.totalTokens)}`)
+            .join(', ')}`
+        : '',
+    ].filter(Boolean);
+    const missionUsage = this.store.selectedRoomSnapshot()?.activeMissionTokenUsage;
+    if (missionUsage) {
+      lines.splice(
+        1,
+        0,
+        `Active mission observed: ${fmtTokenCount(missionUsage.totalTokens)} tokens`,
+      );
+    }
+    return lines.join('\n');
   });
 
   // ---- Progress bar -----------------------------------------------------

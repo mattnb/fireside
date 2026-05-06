@@ -93,6 +93,15 @@ describe('status snapshot', () => {
       runs: { last: null, running: [], retrying: [], completed: [] },
       runActions: { last: null, recent: [] },
       contextUsage: { latest: null, byAgent: [] },
+      tokenUsage: {
+        totalTokens: 0,
+        promptEstimateTokens: 0,
+        usageEvents: 0,
+        runs: 0,
+        byProvider: [],
+        byAgent: [],
+        recentEvents: [],
+      },
     });
   });
 
@@ -317,6 +326,177 @@ describe('status snapshot', () => {
       },
     ]);
     expect(snapshot.contextUsage.byAgent[0]?.usage.quotaOnly).toBeUndefined();
+  });
+
+  it('aggregates room and active-mission lifetime token usage', () => {
+    const room = createRoom(db, { name: 'token-room', agents: ['claude', 'codex'] });
+    const activeTask = createTask(db, {
+      roomId: room.id,
+      title: 'Active mission',
+      agents: ['claude', 'codex'],
+    });
+    const doneTask = createTask(db, {
+      roomId: room.id,
+      title: 'Done mission',
+      status: 'done',
+      agents: ['claude'],
+    });
+    const activeClaudeRun = insertRun(db, {
+      roomId: room.id,
+      taskId: activeTask.id,
+      triggerMessageId: 'msg-active-claude',
+      agentId: 'claude',
+      status: 'completed',
+      completedAt: Date.now(),
+      estimatedPromptTokens: 100,
+    });
+    const activeCodexRun = insertRun(db, {
+      roomId: room.id,
+      taskId: activeTask.id,
+      triggerMessageId: 'msg-active-codex',
+      agentId: 'codex',
+      status: 'completed',
+      completedAt: Date.now(),
+      estimatedPromptTokens: 50,
+    });
+    const historicalRun = insertRun(db, {
+      roomId: room.id,
+      taskId: doneTask.id,
+      triggerMessageId: 'msg-done',
+      agentId: 'claude',
+      status: 'completed',
+      completedAt: Date.now(),
+      estimatedPromptTokens: 25,
+    });
+
+    createAgentRunAction(db, {
+      roomId: room.id,
+      taskId: activeTask.id,
+      runId: activeClaudeRun.id,
+      agentId: 'claude',
+      kind: 'adapter',
+      status: 'completed',
+      label: 'claude result received',
+      contextUsage: {
+        provider: 'claude',
+        model: 'claude-opus-4-7[1m]',
+        usedTokens: 1_250,
+        inputTokens: 100,
+        outputTokens: 50,
+        cacheCreationInputTokens: 1_000,
+        cacheReadInputTokens: 100,
+        source: 'test',
+      },
+    });
+    createAgentRunAction(db, {
+      roomId: room.id,
+      taskId: activeTask.id,
+      runId: activeCodexRun.id,
+      agentId: 'codex',
+      kind: 'adapter',
+      status: 'completed',
+      label: 'codex turn completed',
+      contextUsage: {
+        provider: 'codex',
+        model: 'gpt-5.5',
+        usedTokens: 225,
+        inputTokens: 200,
+        outputTokens: 25,
+        reasoningOutputTokens: 10,
+        source: 'test',
+      },
+    });
+    createAgentRunAction(db, {
+      roomId: room.id,
+      taskId: doneTask.id,
+      runId: historicalRun.id,
+      agentId: 'claude',
+      kind: 'adapter',
+      status: 'info',
+      label: 'claude rate limit update',
+      contextUsage: {
+        provider: 'claude',
+        model: 'claude',
+        usedTokens: 0,
+        quotaOnly: true,
+        quota: { source: 'test' },
+        source: 'test',
+      },
+    });
+
+    const snapshot = buildStatusSnapshot({ db });
+    const roomSnapshot = snapshot.rooms[0]!;
+
+    expect(snapshot.tokenUsage).toMatchObject({
+      totalTokens: 1_475,
+      promptEstimateTokens: 175,
+      inputTokens: 300,
+      outputTokens: 75,
+      cacheCreationInputTokens: 1_000,
+      cacheReadInputTokens: 100,
+      reasoningOutputTokens: 10,
+      usageEvents: 2,
+      runs: 3,
+    });
+    expect(roomSnapshot.activeMissionTokenUsage).toMatchObject({
+      totalTokens: 1_475,
+      promptEstimateTokens: 150,
+      usageEvents: 2,
+      runs: 2,
+    });
+    expect(roomSnapshot.tokenUsage.byProvider).toMatchObject([
+      { id: 'claude', totalTokens: 1_250 },
+      { id: 'codex', totalTokens: 225 },
+    ]);
+    expect(roomSnapshot.tokenUsage.byAgent).toMatchObject([
+      { id: 'claude', totalTokens: 1_250, promptEstimateTokens: 125 },
+      { id: 'codex', totalTokens: 225, promptEstimateTokens: 50 },
+    ]);
+    expect(roomSnapshot.tokenUsage.recentEvents).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ agentId: 'claude', provider: 'claude', totalTokens: 1_250 }),
+        expect.objectContaining({ agentId: 'codex', provider: 'codex', totalTokens: 225 }),
+      ]),
+    );
+    expect(roomSnapshot.tokenUsage.recentEvents).toHaveLength(2);
+  });
+
+  it('does not let diagnostic reported tokens inflate lifetime burn totals', () => {
+    const room = createRoom(db, { name: 'diagnostic-token-noise', agents: ['codex'] });
+    const run = insertRun(db, {
+      roomId: room.id,
+      triggerMessageId: 'msg-codex',
+      agentId: 'codex',
+      status: 'completed',
+      completedAt: Date.now(),
+      estimatedPromptTokens: 1_000,
+    });
+
+    createAgentRunAction(db, {
+      roomId: room.id,
+      runId: run.id,
+      agentId: 'codex',
+      kind: 'adapter',
+      status: 'completed',
+      label: 'codex turn completed',
+      contextUsage: {
+        provider: 'codex',
+        model: 'gpt-5.5',
+        usedTokens: 225_000,
+        reportedUsedTokens: 120_000_000,
+        inputTokens: 224_000,
+        outputTokens: 1_000,
+        source: 'test',
+      },
+    });
+
+    const snapshot = buildStatusSnapshot({ db });
+
+    expect(snapshot.tokenUsage.totalTokens).toBe(225_000);
+    expect(snapshot.tokenUsage.recentEvents[0]).toMatchObject({
+      provider: 'codex',
+      totalTokens: 225_000,
+    });
   });
 
   it('merges partial quota window fragments without losing existing fields', () => {

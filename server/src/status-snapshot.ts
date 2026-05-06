@@ -10,6 +10,7 @@ import {
 import { listActiveAgentJobSummariesForRoom, type AgentJob } from './repos/agent-jobs.js';
 import {
   listAgentRunActionAggregatesForRoom,
+  listContextUsageActionsForRoom,
   listRecentAgentRunActions,
   listRecentContextUsageActionsForRoom,
   type AgentRunAction,
@@ -188,6 +189,54 @@ export interface StatusSnapshotContextUsage {
   byAgent: StatusSnapshotAgentContextUsage[];
 }
 
+export interface StatusSnapshotTokenUsageBucket {
+  id: string;
+  label: string;
+  totalTokens: number;
+  promptEstimateTokens: number;
+  inputTokens: number;
+  outputTokens: number;
+  cachedInputTokens: number;
+  cacheReadInputTokens: number;
+  cacheCreationInputTokens: number;
+  reasoningOutputTokens: number;
+  usageEvents: number;
+  runs: number;
+}
+
+export interface StatusSnapshotTokenUsageEvent {
+  id: string;
+  runId: string;
+  taskId: string | null;
+  agentId: AgentId;
+  provider: string;
+  model: string;
+  createdAt: number;
+  totalTokens: number;
+  inputTokens: number;
+  outputTokens: number;
+  cachedInputTokens: number;
+  cacheReadInputTokens: number;
+  cacheCreationInputTokens: number;
+  reasoningOutputTokens: number;
+}
+
+export interface StatusSnapshotTokenUsage {
+  totalTokens: number;
+  promptEstimateTokens: number;
+  inputTokens: number;
+  outputTokens: number;
+  cachedInputTokens: number;
+  cacheReadInputTokens: number;
+  cacheCreationInputTokens: number;
+  reasoningOutputTokens: number;
+  usageEvents: number;
+  runs: number;
+  byProvider: StatusSnapshotTokenUsageBucket[];
+  byAgent: StatusSnapshotTokenUsageBucket[];
+  recentEvents: StatusSnapshotTokenUsageEvent[];
+}
+
 interface ContextUsageBuildOptions {
   agentIds?: AgentId[];
   agentProviderById?: Map<AgentId, string>;
@@ -240,6 +289,8 @@ export interface StatusSnapshotRoom {
   lastRun: StatusSnapshotRun | null;
   lastAction: StatusSnapshotRunAction | null;
   contextUsage: StatusSnapshotContextUsage;
+  tokenUsage: StatusSnapshotTokenUsage;
+  activeMissionTokenUsage: StatusSnapshotTokenUsage | null;
   agentStates: StatusSnapshotAgentState[];
 }
 
@@ -265,6 +316,7 @@ export interface StatusSnapshot {
     summary: StatusSnapshotRunActionCounts;
   };
   contextUsage: StatusSnapshotContextUsage;
+  tokenUsage: StatusSnapshotTokenUsage;
   agentStates: StatusSnapshotAgentState[];
 }
 
@@ -415,6 +467,151 @@ function mergeRunActionCounts(
   for (const kind of ACTION_KINDS) {
     target.byKind[kind] += source.byKind[kind];
   }
+}
+
+function zeroTokenBucket(id: string, label = id): StatusSnapshotTokenUsageBucket {
+  return {
+    id,
+    label,
+    totalTokens: 0,
+    promptEstimateTokens: 0,
+    inputTokens: 0,
+    outputTokens: 0,
+    cachedInputTokens: 0,
+    cacheReadInputTokens: 0,
+    cacheCreationInputTokens: 0,
+    reasoningOutputTokens: 0,
+    usageEvents: 0,
+    runs: 0,
+  };
+}
+
+function positiveToken(value: number | undefined): number {
+  return Number.isFinite(value) && value !== undefined ? Math.max(0, Math.floor(value)) : 0;
+}
+
+function observedTokenTotal(usage: AgentContextUsage): number {
+  if (usage.quotaOnly) return 0;
+  const inputTokens = positiveToken(usage.inputTokens);
+  const outputTokens =
+    usage.outputTokens !== undefined
+      ? positiveToken(usage.outputTokens)
+      : positiveToken(usage.reasoningOutputTokens);
+  const componentTotal =
+    inputTokens +
+    outputTokens +
+    positiveToken(usage.cacheReadInputTokens) +
+    positiveToken(usage.cacheCreationInputTokens);
+  const measuredTotal = Math.max(positiveToken(usage.usedTokens), componentTotal);
+  if (measuredTotal > 0) return measuredTotal;
+  return positiveToken(usage.reportedUsedTokens);
+}
+
+function addRunPromptTokens(target: StatusSnapshotTokenUsageBucket, run: StatusSnapshotRun): void {
+  target.runs += 1;
+  target.promptEstimateTokens += positiveToken(run.estimatedPromptTokens);
+}
+
+function addContextUsageTokens(
+  target: StatusSnapshotTokenUsageBucket,
+  usage: AgentContextUsage,
+): void {
+  if (usage.quotaOnly) return;
+  target.usageEvents += 1;
+  target.totalTokens += observedTokenTotal(usage);
+  target.inputTokens += positiveToken(usage.inputTokens);
+  target.outputTokens += positiveToken(usage.outputTokens);
+  target.cachedInputTokens += positiveToken(usage.cachedInputTokens);
+  target.cacheReadInputTokens += positiveToken(usage.cacheReadInputTokens);
+  target.cacheCreationInputTokens += positiveToken(usage.cacheCreationInputTokens);
+  target.reasoningOutputTokens += positiveToken(usage.reasoningOutputTokens);
+}
+
+function sortedTokenBuckets(
+  buckets: Map<string, StatusSnapshotTokenUsageBucket>,
+): StatusSnapshotTokenUsageBucket[] {
+  return Array.from(buckets.values()).sort((a, b) => {
+    const tokenDelta = b.totalTokens - a.totalTokens;
+    if (tokenDelta !== 0) return tokenDelta;
+    const promptDelta = b.promptEstimateTokens - a.promptEstimateTokens;
+    if (promptDelta !== 0) return promptDelta;
+    return a.label.localeCompare(b.label);
+  });
+}
+
+function tokenUsageEvent(action: AgentRunAction): StatusSnapshotTokenUsageEvent | null {
+  const usage = action.contextUsage;
+  if (!usage || usage.quotaOnly) return null;
+  return {
+    id: action.id,
+    runId: action.runId,
+    taskId: action.taskId,
+    agentId: action.agentId,
+    provider: usage.provider || 'unknown',
+    model: usage.model || '',
+    createdAt: action.createdAt,
+    totalTokens: observedTokenTotal(usage),
+    inputTokens: positiveToken(usage.inputTokens),
+    outputTokens: positiveToken(usage.outputTokens),
+    cachedInputTokens: positiveToken(usage.cachedInputTokens),
+    cacheReadInputTokens: positiveToken(usage.cacheReadInputTokens),
+    cacheCreationInputTokens: positiveToken(usage.cacheCreationInputTokens),
+    reasoningOutputTokens: positiveToken(usage.reasoningOutputTokens),
+  };
+}
+
+function buildTokenUsage(
+  runs: StatusSnapshotRun[],
+  contextActions: AgentRunAction[],
+): StatusSnapshotTokenUsage {
+  const total = zeroTokenBucket('total', 'Total');
+  const byProvider = new Map<string, StatusSnapshotTokenUsageBucket>();
+  const byAgent = new Map<string, StatusSnapshotTokenUsageBucket>();
+  const events: StatusSnapshotTokenUsageEvent[] = [];
+
+  for (const run of runs) {
+    addRunPromptTokens(total, run);
+    const agentBucket = byAgent.get(run.agentId) ?? zeroTokenBucket(run.agentId);
+    addRunPromptTokens(agentBucket, run);
+    byAgent.set(run.agentId, agentBucket);
+  }
+
+  for (const action of contextActions) {
+    const usage = action.contextUsage;
+    if (!usage || usage.quotaOnly) continue;
+
+    addContextUsageTokens(total, usage);
+    const event = tokenUsageEvent(action);
+    if (event) events.push(event);
+
+    const providerId = usage.provider || 'unknown';
+    const providerBucket =
+      byProvider.get(providerId) ?? zeroTokenBucket(providerId, providerId);
+    addContextUsageTokens(providerBucket, usage);
+    byProvider.set(providerId, providerBucket);
+
+    const agentBucket = byAgent.get(action.agentId) ?? zeroTokenBucket(action.agentId);
+    addContextUsageTokens(agentBucket, usage);
+    byAgent.set(action.agentId, agentBucket);
+  }
+
+  return {
+    totalTokens: total.totalTokens,
+    promptEstimateTokens: total.promptEstimateTokens,
+    inputTokens: total.inputTokens,
+    outputTokens: total.outputTokens,
+    cachedInputTokens: total.cachedInputTokens,
+    cacheReadInputTokens: total.cacheReadInputTokens,
+    cacheCreationInputTokens: total.cacheCreationInputTokens,
+    reasoningOutputTokens: total.reasoningOutputTokens,
+    usageEvents: total.usageEvents,
+    runs: total.runs,
+    byProvider: sortedTokenBuckets(byProvider),
+    byAgent: sortedTokenBuckets(byAgent),
+    recentEvents: events
+      .sort((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id))
+      .slice(-48),
+  };
 }
 
 function toTaskSummary(task: Task): StatusSnapshotTask {
@@ -871,6 +1068,7 @@ export function buildStatusSnapshot(input: BuildStatusSnapshotInput): StatusSnap
   const activeTasks: StatusSnapshotTask[] = [];
   const allRuns: StatusSnapshotRun[] = [];
   const allActions: StatusSnapshotRunAction[] = [];
+  const allContextActions: AgentRunAction[] = [];
   const allAgentStates: StatusSnapshotAgentState[] = [];
 
   const roomSnapshots = rooms.map((room) => {
@@ -889,6 +1087,7 @@ export function buildStatusSnapshot(input: BuildStatusSnapshotInput): StatusSnap
     const roomRuns = listAllAgentRunSummariesForRoom(input.db, room.id);
     const roomRecentActions = listRecentAgentRunActions(input.db, room.id, Math.max(100, recentLimit));
     const roomContextActions = listRecentContextUsageActionsForRoom(input.db, room.id);
+    const roomAllContextActions = listContextUsageActionsForRoom(input.db, room.id);
     const roomActionAggregates = listAgentRunActionAggregatesForRoom(input.db, room.id);
     const roomActiveJobs = listActiveAgentJobSummariesForRoom(input.db, room.id);
 
@@ -912,10 +1111,22 @@ export function buildStatusSnapshot(input: BuildStatusSnapshotInput): StatusSnap
     activeTasks.push(...roomActiveTasks);
     allRuns.push(...roomRunSummaries);
     allActions.push(...roomActionSummaries);
+    allContextActions.push(...roomAllContextActions);
 
     const roomSortedRuns = [...roomRunSummaries].sort(compareRunsDesc);
     const roomSortedActions = [...roomActionSummaries].sort(compareActionsDesc);
     const activeTaskRecords = roomTasks.filter((task) => ACTIVE_TASK_STATUSES.has(task.status));
+    const activeTaskIds = new Set(activeTaskRecords.map((task) => task.id));
+    const roomTokenUsage = buildTokenUsage(roomRunSummaries, roomAllContextActions);
+    const activeMissionTokenUsage =
+      activeTaskIds.size > 0
+        ? buildTokenUsage(
+            roomRunSummaries.filter((run) => run.taskId && activeTaskIds.has(run.taskId)),
+            roomAllContextActions.filter(
+              (action) => action.taskId && activeTaskIds.has(action.taskId),
+            ),
+          )
+        : null;
     const roomAgentStates = buildAgentStates({
       room,
       activeTasks: activeTaskRecords,
@@ -953,6 +1164,8 @@ export function buildStatusSnapshot(input: BuildStatusSnapshotInput): StatusSnap
         agentIds: room.agents,
         agentProviderById: roomAgentProviderById,
       }),
+      tokenUsage: roomTokenUsage,
+      activeMissionTokenUsage,
       agentStates: roomAgentStates,
     } satisfies StatusSnapshotRoom;
   });
@@ -996,6 +1209,7 @@ export function buildStatusSnapshot(input: BuildStatusSnapshotInput): StatusSnap
       agentIds: Array.from(agents),
       agentProviderById,
     }),
+    tokenUsage: buildTokenUsage(allRuns, allContextActions),
     agentStates: allAgentStates,
   };
 }

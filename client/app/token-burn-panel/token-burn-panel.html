@@ -1,0 +1,72 @@
+<aside class="token-burn" aria-label="Token burn">
+  <header class="token-burn__head">
+    <div>
+      <span class="section-label">Token burn</span>
+      <strong>{{ totalLabel() }}</strong>
+      <small>{{ totalSubLabel() }}</small>
+    </div>
+    <div class="token-burn__live">
+      <span>last 15m</span>
+      <strong>{{ recentBurnLabel() }}</strong>
+      <small>last snapshot {{ lastSnapshotLabel() }}</small>
+    </div>
+  </header>
+
+  <section class="token-burn__graph" aria-label="Recent token usage events">
+    @if (graphEmpty()) {
+      <p>No usage events yet.</p>
+    } @else {
+      @for (bar of burnBars(); track bar.id) {
+        <span
+          [class]="providerClass(bar.provider)"
+          [style.height.%]="bar.height"
+          [title]="bar.title"
+          aria-hidden="true"
+        ></span>
+      }
+    }
+  </section>
+
+  <section class="token-burn__stats">
+    <div>
+      <span>active mission</span>
+      <strong>{{ missionLabel() }}</strong>
+    </div>
+    <div>
+      <span>split</span>
+      <strong>{{ splitLabel() }}</strong>
+    </div>
+    @if (cacheLabel(); as label) {
+      <div>
+        <span>claude cache</span>
+        <strong>{{ label }}</strong>
+      </div>
+    }
+  </section>
+
+  <section class="token-burn__buckets">
+    <header>providers</header>
+    @for (bucket of providerRows(); track bucket.id) {
+      <div class="token-burn__bucket">
+        <span>{{ bucket.label }}</span>
+        <div><i [style.width.%]="bucketPercent(bucket)"></i></div>
+        <strong>{{ formatBucketTokens(bucket) }}</strong>
+      </div>
+    } @empty {
+      <p>No provider usage yet.</p>
+    }
+  </section>
+
+  <section class="token-burn__buckets token-burn__buckets--agents">
+    <header>agents</header>
+    @for (bucket of agentRows(); track bucket.id) {
+      <div class="token-burn__bucket">
+        <span>{{ display.name(bucket.id) }}</span>
+        <div><i [style.width.%]="bucketPercent(bucket)"></i></div>
+        <strong>{{ formatBucketTokens(bucket) }}</strong>
+      </div>
+    } @empty {
+      <p>No agent usage yet.</p>
+    }
+  </section>
+</aside>

@@ -46,6 +46,7 @@ import {
   type MissionActionScope,
 } from './mission-toolbar/mission-toolbar';
 import { MissionOutline } from './mission-outline/mission-outline';
+import { TokenBurnPanel } from './token-burn-panel/token-burn-panel';
 import { CompletedRunsModal } from './completed-runs-modal/completed-runs-modal';
 import type { DraftRoomAgent } from './room-agent-types';
 import type { ChatTimelineItem } from './chat-types';
@@ -205,6 +206,7 @@ const DEFAULT_AGENT_AUTO_COMPACT_PERCENT = 70;
     Topbar,
     MissionToolbar,
     MissionOutline,
+    TokenBurnPanel,
     CompletedRunsModal,
     ArchivesView,
     DeleteProjectModal,

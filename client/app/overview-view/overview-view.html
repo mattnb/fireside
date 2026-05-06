@@ -203,9 +203,9 @@
             <strong>{{ runtimeLabel() }}</strong>
             <span>runtime</span>
           </div>
-          <div class="ov-stat__metric">
+          <div class="ov-stat__metric" [title]="tokenBreakdownTitle()">
             <strong>{{ tokensLabel() }}</strong>
-            <span>tokens</span>
+            <span>{{ tokenScopeLabel() }}</span>
           </div>
         </div>
         <svg
