@@ -195,3 +195,31 @@
 .control-strip select {
   flex: 1 1 130px;
 }
+
+/* === Input field styling === */
+
+.mission-form input,
+.mission-form textarea,
+.mission-form select {
+  width: 100%;
+  min-width: 0;
+  border: 1px solid var(--border-soft);
+  border-radius: 6px;
+  background: rgba(13, 17, 23, 0.46);
+  color: var(--text-primary);
+  font: inherit;
+  font-size: 12px;
+  outline: none;
+  padding: 8px;
+}
+
+.mission-form textarea {
+  resize: vertical;
+}
+
+.mission-form input:focus,
+.mission-form textarea:focus,
+.mission-form select:focus {
+  border-color: rgba(94, 196, 144, 0.42);
+  box-shadow: 0 0 0 3px rgba(94, 196, 144, 0.1);
+}

@@ -17,6 +17,7 @@
   display: grid;
   grid-template-rows: minmax(0, 1fr) auto;
   overflow: hidden;
+  min-width: 64ch;
   max-width: 124ch;
 }
 
