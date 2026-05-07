@@ -7,6 +7,7 @@ import {
   cancelAgentJob,
   completeAgentJob,
   createAgentJob,
+  createAgentJobIfAvailable,
   leaseAgentJob,
   listActiveAgentJobsForRoom,
   recoverInterruptedAgentJobs,
@@ -76,6 +77,51 @@ describe('agent jobs repo', () => {
       completedAt: 4_000,
     });
     expect(listActiveAgentJobsForRoom(db, room.id)).toEqual([]);
+    db.close();
+  });
+
+  it('returns the existing active job for the same room, agent, and trigger', () => {
+    const db = openDatabase(':memory:');
+    const room = createRoom(db, { name: 'jobs', agents: ['codex'] });
+    const trigger = addMessage(db, {
+      roomId: room.id,
+      authorId: 'human',
+      authorKind: 'human',
+      text: '@codex work',
+    });
+
+    const first = createAgentJobIfAvailable(db, {
+      roomId: room.id,
+      agentId: 'codex',
+      triggerMessageId: trigger.id,
+      workPacketJson: '{"task":"first"}',
+    });
+    const second = createAgentJobIfAvailable(db, {
+      roomId: room.id,
+      agentId: 'codex',
+      triggerMessageId: trigger.id,
+      workPacketJson: '{"task":"second"}',
+    });
+
+    expect(first.created).toBe(true);
+    expect(second).toMatchObject({
+      created: false,
+      job: { id: first.job.id, workPacketJson: '{"task":"first"}' },
+    });
+    expect(listActiveAgentJobsForRoom(db, room.id).map((item) => item.id)).toEqual([
+      first.job.id,
+    ]);
+
+    completeAgentJob(db, first.job.id, 4_000);
+    const afterTerminal = createAgentJobIfAvailable(db, {
+      roomId: room.id,
+      agentId: 'codex',
+      triggerMessageId: trigger.id,
+      workPacketJson: '{"task":"after"}',
+    });
+
+    expect(afterTerminal.created).toBe(true);
+    expect(afterTerminal.job.id).not.toBe(first.job.id);
     db.close();
   });
 

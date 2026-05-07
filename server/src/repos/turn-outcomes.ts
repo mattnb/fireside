@@ -11,10 +11,24 @@ export type AgentTurnOutcomeStatus =
   | 'permission-requested'
   | 'retry-scheduled';
 
+export type AgentTurnRunKind =
+  | 'normal.turn'
+  | 'maintenance.compaction'
+  | 'workflow.repair'
+  | 'post-reset.first-turn';
+
+export const AGENT_TURN_RUN_KIND_VALUES: readonly AgentTurnRunKind[] = [
+  'normal.turn',
+  'maintenance.compaction',
+  'workflow.repair',
+  'post-reset.first-turn',
+] as const;
+
 export interface AgentTurnOutcome {
   id: string;
   roomId: string;
   taskId: string | null;
+  phaseId: string | null;
   runId: string;
   agentId: AgentId;
   visibleMessageId: string | null;
@@ -38,6 +52,7 @@ export interface AgentTurnOutcome {
   }>;
   nextAgents: AgentId[];
   summary: string;
+  runKind: AgentTurnRunKind | null;
   createdAt: number;
 }
 
@@ -45,6 +60,7 @@ interface AgentTurnOutcomeRow {
   id: string;
   room_id: string;
   task_id: string | null;
+  phase_id: string | null;
   run_id: string;
   agent_id: AgentId;
   visible_message_id: string | null;
@@ -63,12 +79,14 @@ interface AgentTurnOutcomeRow {
   work_dispatches_json: string;
   next_agents_json: string;
   summary: string;
+  run_kind: string | null;
   created_at: number;
 }
 
 export interface RecordAgentTurnOutcomeInput {
   roomId: string;
   taskId?: string | null;
+  phaseId?: string | null;
   runId: string;
   agentId: AgentId;
   visibleMessageId?: string | null;
@@ -87,6 +105,7 @@ export interface RecordAgentTurnOutcomeInput {
   workDispatches?: MissionWorkDispatch[];
   nextAgents?: AgentId[];
   summary?: string;
+  runKind?: AgentTurnRunKind | null;
 }
 
 function parseJsonArray<T>(json: string): T[] {
@@ -103,6 +122,7 @@ function rowToAgentTurnOutcome(row: AgentTurnOutcomeRow): AgentTurnOutcome {
     id: row.id,
     roomId: row.room_id,
     taskId: row.task_id,
+    phaseId: row.phase_id,
     runId: row.run_id,
     agentId: row.agent_id,
     visibleMessageId: row.visible_message_id,
@@ -123,8 +143,16 @@ function rowToAgentTurnOutcome(row: AgentTurnOutcomeRow): AgentTurnOutcome {
     ),
     nextAgents: parseJsonArray<AgentId>(row.next_agents_json),
     summary: row.summary,
+    runKind: isAgentTurnRunKind(row.run_kind) ? row.run_kind : null,
     createdAt: row.created_at,
   };
+}
+
+export function isAgentTurnRunKind(value: unknown): value is AgentTurnRunKind {
+  return (
+    typeof value === 'string' &&
+    (AGENT_TURN_RUN_KIND_VALUES as readonly string[]).includes(value)
+  );
 }
 
 export function recordAgentTurnOutcome(
@@ -141,17 +169,23 @@ export function recordAgentTurnOutcome(
   }));
   const nextAgents =
     input.nextAgents ??
-    workDispatches.map((dispatch) => dispatch.agentId).filter((agent, index, all) => all.indexOf(agent) === index);
+    workDispatches
+      .map((dispatch) => dispatch.agentId)
+      .filter((agent, index, all) => all.indexOf(agent) === index);
+
+  const runKind: AgentTurnRunKind | null =
+    input.runKind && isAgentTurnRunKind(input.runKind) ? input.runKind : null;
 
   db.prepare(
     `INSERT INTO agent_turn_outcomes (
-      id, room_id, task_id, run_id, agent_id, visible_message_id, visible_message_emitted,
+      id, room_id, task_id, phase_id, run_id, agent_id, visible_message_id, visible_message_emitted,
       status, progressed, failed, error, mission_updates, mission_receipts, mission_reconciliations,
       collaboration_notes, draft_artifacts, permission_request_id, permission_auto_approved,
-      work_dispatches_json, next_agents_json, summary, created_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      work_dispatches_json, next_agents_json, summary, run_kind, created_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(run_id) DO UPDATE SET
       task_id = excluded.task_id,
+      phase_id = excluded.phase_id,
       visible_message_id = excluded.visible_message_id,
       visible_message_emitted = excluded.visible_message_emitted,
       status = excluded.status,
@@ -167,11 +201,13 @@ export function recordAgentTurnOutcome(
       permission_auto_approved = excluded.permission_auto_approved,
       work_dispatches_json = excluded.work_dispatches_json,
       next_agents_json = excluded.next_agents_json,
-      summary = excluded.summary`,
+      summary = excluded.summary,
+      run_kind = COALESCE(excluded.run_kind, agent_turn_outcomes.run_kind)`,
   ).run(
     id,
     input.roomId,
     input.taskId ?? null,
+    input.phaseId ?? null,
     input.runId,
     input.agentId,
     input.visibleMessageId ?? null,
@@ -190,15 +226,13 @@ export function recordAgentTurnOutcome(
     JSON.stringify(workDispatches),
     JSON.stringify(nextAgents),
     input.summary?.slice(0, 2000) ?? '',
+    runKind,
     now,
   );
   return getAgentTurnOutcome(db, input.runId)!;
 }
 
-export function getAgentTurnOutcome(
-  db: Database,
-  runId: string,
-): AgentTurnOutcome | null {
+export function getAgentTurnOutcome(db: Database, runId: string): AgentTurnOutcome | null {
   const row = db.prepare(`SELECT * FROM agent_turn_outcomes WHERE run_id = ?`).get(runId) as
     | AgentTurnOutcomeRow
     | undefined;
@@ -219,4 +253,57 @@ export function listAgentTurnOutcomesForRoom(
     )
     .all(roomId, limit) as AgentTurnOutcomeRow[];
   return rows.map(rowToAgentTurnOutcome);
+}
+
+export function listNoProgressTurnStreakAgents(
+  db: Database,
+  input: {
+    roomId: string;
+    taskId: string;
+    phaseId?: string | null;
+    agentIds: AgentId[];
+    threshold?: number | undefined;
+    limit?: number | undefined;
+  },
+): AgentId[] {
+  const candidates = new Set(input.agentIds);
+  if (candidates.size === 0) return [];
+  const threshold = Math.max(1, Math.floor(input.threshold ?? 2));
+  const rows = db
+    .prepare(
+      `SELECT * FROM agent_turn_outcomes
+       WHERE room_id = ?
+         AND task_id = ?
+         AND phase_id IS ?
+       ORDER BY created_at DESC, id DESC
+       LIMIT ?`,
+    )
+    .all(
+      input.roomId,
+      input.taskId,
+      input.phaseId ?? null,
+      input.limit ?? 200,
+    ) as AgentTurnOutcomeRow[];
+
+  const streaks = new Map<AgentId, number>();
+  const closed = new Set<AgentId>();
+  for (const row of rows) {
+    const agentId = row.agent_id;
+    if (!candidates.has(agentId) || closed.has(agentId)) continue;
+    const noProgress =
+      row.visible_message_emitted === 0 &&
+      row.progressed === 0 &&
+      row.failed === 0 &&
+      row.status !== 'permission-requested' &&
+      row.status !== 'retry-scheduled';
+    if (!noProgress) {
+      closed.add(agentId);
+      continue;
+    }
+    const count = (streaks.get(agentId) ?? 0) + 1;
+    streaks.set(agentId, count);
+    if (count >= threshold) closed.add(agentId);
+  }
+
+  return input.agentIds.filter((agentId) => (streaks.get(agentId) ?? 0) >= threshold);
 }

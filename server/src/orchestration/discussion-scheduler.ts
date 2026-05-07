@@ -8,12 +8,16 @@ export interface DiscussionSchedulerState {
   handoffPool: AgentId[];
   uniqueResponders: AgentId[];
   openFloor: boolean;
+  leadAgentId: AgentId | null;
   maxRepliesPerAgent: number;
   maxTotalReplies: number;
   totalReplies: number;
   allowedAgents: Set<AgentId>;
   replyCounts: Map<AgentId, number>;
   quarantinedAgents: Set<AgentId>;
+  opportunisticQuarantinedAgents: Set<AgentId>;
+  noProgressStreaks: Map<AgentId, number>;
+  candidateSource: 'initial' | 'directed' | 'open-floor';
   candidates: AgentId[];
 }
 
@@ -26,6 +30,8 @@ export interface CreateDiscussionSchedulerInput {
   maxRepliesPerAgent: number;
   maxTotalReplies?: number | undefined;
   totalRepliesUsed?: number | undefined;
+  leadAgentId?: AgentId | null | undefined;
+  opportunisticQuarantinedAgents?: AgentId[] | undefined;
 }
 
 export interface DiscussionRoundPlan {
@@ -99,18 +105,24 @@ export function createDiscussionScheduler(
     Math.max(1, maxRepliesPerAgent * Math.max(1, handoffPool.length)),
   );
   const knownAgents = new Set<AgentId>([...handoffPool, ...uniqueResponders]);
+  const leadAgentId =
+    input.leadAgentId && handoffPool.includes(input.leadAgentId) ? input.leadAgentId : null;
 
   return {
     mode,
     handoffPool,
     uniqueResponders,
     openFloor: mode === 'yolo' || uniqueResponders.length > 1,
+    leadAgentId,
     maxRepliesPerAgent,
     maxTotalReplies,
     totalReplies: positiveInteger(input.totalRepliesUsed ?? 0, 0),
     allowedAgents: new Set(uniqueResponders),
     replyCounts: new Map(Array.from(knownAgents).map((id) => [id, 0])),
     quarantinedAgents: new Set(),
+    opportunisticQuarantinedAgents: new Set(input.opportunisticQuarantinedAgents ?? []),
+    noProgressStreaks: new Map(),
+    candidateSource: 'initial',
     candidates: [...uniqueResponders],
   };
 }
@@ -143,27 +155,60 @@ export function planDiscussionRound(
   const maxReplies = currentMaxRepliesPerAgent(state);
   const maxTotal = currentMaxTotalReplies(state);
   const remainingTotal = Math.max(0, maxTotal - state.totalReplies);
-  const candidateSet = new Set<AgentId>([...state.candidates, ...input.laneAgents]);
+  const laneAgentSet = new Set(input.laneAgents);
+  const directedCandidateSource = state.candidateSource === 'directed';
+  const opportunisticPulse = state.mode === 'yolo' && !directedCandidateSource;
+  const leadRoutingPulse = opportunisticPulse && laneAgentSet.size === 0;
+  const candidateSet = new Set<AgentId>();
+  if (directedCandidateSource || state.mode !== 'yolo') {
+    for (const agentId of state.candidates) candidateSet.add(agentId);
+  } else if (leadRoutingPulse && state.leadAgentId) {
+    candidateSet.add(state.leadAgentId);
+  } else if (opportunisticPulse && !state.leadAgentId) {
+    for (const agentId of state.candidates) candidateSet.add(agentId);
+  }
+  for (const agentId of input.laneAgents) candidateSet.add(agentId);
   const eligibleAgents = Array.from(candidateSet)
     .filter(
       (agentId) =>
         !state.quarantinedAgents.has(agentId) &&
+        (!leadRoutingPulse || !state.opportunisticQuarantinedAgents.has(agentId)) &&
         (state.replyCounts.get(agentId) ?? 0) < maxReplies,
     )
     .slice(0, remainingTotal);
-  const trace: RoutingRuleTrace[] = [
-    {
-      id: 'discussion-round-candidates',
-      result: eligibleAgents.length > 0 ? 'matched' : 'blocked',
-      reason:
-        eligibleAgents.length > 0
-          ? `selected ${eligibleAgents.length} eligible agent(s) for round ${input.round}`
-          : remainingTotal <= 0
-            ? 'turn budget exhausted'
-            : 'no candidates remain under per-agent limits',
-      agents: eligibleAgents,
-    },
-  ];
+  const trace: RoutingRuleTrace[] = [];
+  if (opportunisticPulse) {
+    const suppressedAgents = state.handoffPool.filter(
+      (agentId) =>
+        !eligibleAgents.includes(agentId) &&
+        (state.candidates.includes(agentId) ||
+          input.laneAgents.includes(agentId) ||
+          agentId === state.leadAgentId) &&
+        !laneAgentSet.has(agentId) &&
+        (state.opportunisticQuarantinedAgents.has(agentId) ||
+          !leadRoutingPulse ||
+          agentId !== state.leadAgentId),
+    );
+    trace.push({
+      id: 'discussion-opportunistic-suppression',
+      result: suppressedAgents.length > 0 ? 'matched' : 'skipped',
+      reason: state.leadAgentId
+        ? 'YOLO pulse has no lane, handoff, or queued dispatch; routing only to unquarantined lead'
+        : 'YOLO pulse has no lane, handoff, queued dispatch, or lead-routing target',
+      agents: suppressedAgents,
+    });
+  }
+  trace.push({
+    id: 'discussion-round-candidates',
+    result: eligibleAgents.length > 0 ? 'matched' : 'blocked',
+    reason:
+      eligibleAgents.length > 0
+        ? `selected ${eligibleAgents.length} eligible agent(s) for round ${input.round}`
+        : remainingTotal <= 0
+          ? 'turn budget exhausted'
+          : 'no candidates remain under per-agent limits',
+    agents: eligibleAgents,
+  });
 
   return {
     round: input.round,
@@ -208,6 +253,23 @@ export function applyDiscussionRoundResults(
     const directed = [...result.handoffs, ...result.workDispatches].filter((agentId) =>
       handoffPool.has(agentId),
     );
+    const noVisibleNoProgress =
+      !result.progressed && !result.hasMessage && !result.failed && directed.length === 0;
+    if (noVisibleNoProgress) {
+      const streak = (state.noProgressStreaks.get(result.agentId) ?? 0) + 1;
+      state.noProgressStreaks.set(result.agentId, streak);
+      if (state.mode === 'yolo' && streak >= 2) {
+        state.opportunisticQuarantinedAgents.add(result.agentId);
+        trace.push({
+          id: 'discussion-no-op-quarantine',
+          result: 'blocked',
+          reason: `${result.agentId} produced ${streak} consecutive no-message/no-progress turns and is paused for opportunistic pulses`,
+          agents: [result.agentId],
+        });
+      }
+    } else {
+      state.noProgressStreaks.set(result.agentId, 0);
+    }
     if (!result.progressed && directed.length === 0) {
       trace.push({
         id: 'discussion-no-progress',
@@ -231,6 +293,7 @@ export function applyDiscussionRoundResults(
 
   if (activeAgents.length === 0) {
     state.candidates = [];
+    state.candidateSource = 'open-floor';
     return {
       activeAgents,
       directedAgents,
@@ -254,13 +317,11 @@ export function applyDiscussionRoundResults(
   const maxReplies = currentMaxRepliesPerAgent(state);
   const underLimit = Array.from(state.allowedAgents).filter(
     (agentId) =>
-      !state.quarantinedAgents.has(agentId) &&
-      (state.replyCounts.get(agentId) ?? 0) < maxReplies,
+      !state.quarantinedAgents.has(agentId) && (state.replyCounts.get(agentId) ?? 0) < maxReplies,
   );
   const directedUnderLimit = directedAgents.filter(
     (agentId) =>
-      !state.quarantinedAgents.has(agentId) &&
-      (state.replyCounts.get(agentId) ?? 0) < maxReplies,
+      !state.quarantinedAgents.has(agentId) && (state.replyCounts.get(agentId) ?? 0) < maxReplies,
   );
   const directedYoloAgents =
     state.mode === 'yolo'
@@ -274,13 +335,16 @@ export function applyDiscussionRoundResults(
   let nextCandidates: AgentId[];
   if (directedUnderLimit.length > 0) {
     nextCandidates = directedNormalAgents;
+    state.candidateSource = 'directed';
   } else if (!state.openFloor) {
     nextCandidates = [];
+    state.candidateSource = 'open-floor';
   } else {
     nextCandidates =
       state.mode !== 'yolo' && activeAgents.length === 1
         ? underLimit.filter((agentId) => agentId !== activeAgents[0])
         : underLimit;
+    state.candidateSource = 'open-floor';
   }
   state.candidates = nextCandidates;
 

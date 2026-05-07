@@ -8,7 +8,17 @@ import { AgentParseError } from '../../src/agents/types.js';
 
 const FIXTURE_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../fixtures');
 const headless = readFileSync(path.join(FIXTURE_DIR, 'claude-headless.json'), 'utf8');
+const resume = readFileSync(path.join(FIXTURE_DIR, 'claude-resume.json'), 'utf8');
 const withPreamble = readFileSync(path.join(FIXTURE_DIR, 'claude-with-preamble.txt'), 'utf8');
+
+// argv contains alternating flag/value pairs. The allowlist + disallowlist
+// values are now comma-joined, so substring-match on the value rather than
+// element-equality on argv.
+function argvFlagValue(argv: string[], flag: string): string {
+  const idx = argv.indexOf(flag);
+  if (idx < 0 || idx === argv.length - 1) return '';
+  return argv[idx + 1] ?? '';
+}
 
 describe('claude adapter', () => {
   it('builds correct argv for fresh session', () => {
@@ -42,6 +52,128 @@ describe('claude adapter', () => {
     expect(argv).toContain('low');
   });
 
+  describe('mechanical-turn model routing (Haiku 4.5)', () => {
+    const ENV_KEY = 'FIRESIDE_CLAUDE_MECHANICAL_MODEL';
+
+    function withMechanicalEnv<T>(value: string | undefined, body: () => T): T {
+      const previous = process.env[ENV_KEY];
+      if (value === undefined) delete process.env[ENV_KEY];
+      else process.env[ENV_KEY] = value;
+      try {
+        return body();
+      } finally {
+        if (previous === undefined) delete process.env[ENV_KEY];
+        else process.env[ENV_KEY] = previous;
+      }
+    }
+
+    it('routes workflow-repair turns to claude-haiku-4-5 by default', () => {
+      withMechanicalEnv(undefined, () => {
+        const argv = claudeSpec.buildArgs('repair', null, {
+          turnKind: 'workflow-repair',
+          // Profile happens to specify Opus, but a mechanical bookkeeping
+          // turn should override it with Haiku to save tokens.
+          model: { modelId: 'claude-opus-4-7', reasoningEffort: 'high' },
+        });
+        expect(argvFlagValue(argv, '--model')).toBe('claude-haiku-4-5');
+        // Reasoning effort is dropped: Haiku has no extended-thinking lever
+        // and the mechanical workload does not benefit from it.
+        expect(argv).not.toContain('--effort');
+      });
+    });
+
+    it('routes maintenance-compaction turns to claude-haiku-4-5 by default', () => {
+      withMechanicalEnv(undefined, () => {
+        const argv = claudeSpec.buildArgs('/compact', null, {
+          turnKind: 'maintenance-compaction',
+          model: { modelId: 'claude-sonnet-4-6' },
+        });
+        expect(argvFlagValue(argv, '--model')).toBe('claude-haiku-4-5');
+      });
+    });
+
+    it('honors FIRESIDE_CLAUDE_MECHANICAL_MODEL override target', () => {
+      withMechanicalEnv('claude-sonnet-4-6', () => {
+        const argv = claudeSpec.buildArgs('repair', null, {
+          turnKind: 'workflow-repair',
+          model: { modelId: 'claude-opus-4-7' },
+        });
+        expect(argvFlagValue(argv, '--model')).toBe('claude-sonnet-4-6');
+      });
+    });
+
+    it('disables mechanical routing when env override is "0" and falls back to profile model', () => {
+      withMechanicalEnv('0', () => {
+        const argv = claudeSpec.buildArgs('repair', null, {
+          turnKind: 'workflow-repair',
+          model: { modelId: 'claude-opus-4-7', reasoningEffort: 'medium' },
+        });
+        expect(argvFlagValue(argv, '--model')).toBe('claude-opus-4-7');
+        expect(argvFlagValue(argv, '--effort')).toBe('medium');
+      });
+    });
+
+    it('disables mechanical routing when env override is empty', () => {
+      withMechanicalEnv('', () => {
+        const argv = claudeSpec.buildArgs('repair', null, {
+          turnKind: 'workflow-repair',
+          model: { modelId: 'claude-opus-4-7' },
+        });
+        expect(argvFlagValue(argv, '--model')).toBe('claude-opus-4-7');
+      });
+    });
+
+    it('does not override the model for normal chat turns', () => {
+      withMechanicalEnv(undefined, () => {
+        const argv = claudeSpec.buildArgs('hi', null, {
+          turnKind: 'chat',
+          model: { modelId: 'claude-opus-4-7', reasoningEffort: 'high' },
+        });
+        expect(argvFlagValue(argv, '--model')).toBe('claude-opus-4-7');
+        expect(argvFlagValue(argv, '--effort')).toBe('high');
+      });
+    });
+
+    it('does not override the model for work-lane turns (real reasoning)', () => {
+      withMechanicalEnv(undefined, () => {
+        const argv = claudeSpec.buildArgs('lane', null, {
+          turnKind: 'work-lane',
+          model: { modelId: 'claude-opus-4-7' },
+        });
+        expect(argvFlagValue(argv, '--model')).toBe('claude-opus-4-7');
+      });
+    });
+
+    it('does not override the model for permission-operation turns', () => {
+      withMechanicalEnv(undefined, () => {
+        const argv = claudeSpec.buildArgs('grant', null, {
+          turnKind: 'permission-operation',
+          model: { modelId: 'claude-opus-4-7' },
+        });
+        expect(argvFlagValue(argv, '--model')).toBe('claude-opus-4-7');
+      });
+    });
+  });
+
+  it('excludes dynamic Claude system prompt sections by default for provider cache stability', () => {
+    const previous = process.env.FIRESIDE_CLAUDE_EXCLUDE_DYNAMIC_SYSTEM_PROMPT_SECTIONS;
+    delete process.env.FIRESIDE_CLAUDE_EXCLUDE_DYNAMIC_SYSTEM_PROMPT_SECTIONS;
+    try {
+      expect(claudeSpec.buildArgs('hi', null)).toContain(
+        '--exclude-dynamic-system-prompt-sections',
+      );
+
+      process.env.FIRESIDE_CLAUDE_EXCLUDE_DYNAMIC_SYSTEM_PROMPT_SECTIONS = '0';
+      expect(claudeSpec.buildArgs('hi', null)).not.toContain(
+        '--exclude-dynamic-system-prompt-sections',
+      );
+    } finally {
+      if (previous === undefined)
+        delete process.env.FIRESIDE_CLAUDE_EXCLUDE_DYNAMIC_SYSTEM_PROMPT_SECTIONS;
+      else process.env.FIRESIDE_CLAUDE_EXCLUDE_DYNAMIC_SYSTEM_PROMPT_SECTIONS = previous;
+    }
+  });
+
   it('builds argv with an approved edit permission grant', () => {
     const argv = claudeSpec.buildArgs('edit', null, {
       permission: {
@@ -53,7 +185,20 @@ describe('claude adapter', () => {
     expect(argv).toContain('--permission-mode');
     expect(argv).toContain('acceptEdits');
     expect(argv).toContain('--allowedTools');
-    expect(argv).toContain('Edit,MultiEdit,Write');
+    // Edit-mode allowlist must cover write tools + reads + MCP + Skill so a
+    // worker can read what it's editing and use browser MCPs / user skills.
+    const allowed = argvFlagValue(argv, '--allowedTools');
+    expect(allowed).toContain('Edit');
+    expect(allowed).toContain('MultiEdit');
+    expect(allowed).toContain('Write');
+    expect(allowed).toContain('Read');
+    expect(allowed).toContain('Glob');
+    expect(allowed).toContain('Grep');
+    expect(allowed).toContain('mcp__*');
+    expect(allowed).toContain('Skill');
+    // Superpowers must be disallowed on every Claude turn.
+    expect(argv).toContain('--disallowedTools');
+    expect(argvFlagValue(argv, '--disallowedTools')).toContain('Skill(superpowers:*)');
     expect(argv).toContain('--add-dir');
     expect(argv).toContain('C:\\workspaces\\project');
   });
@@ -72,11 +217,73 @@ describe('claude adapter', () => {
     expect(argv).toContain('default');
     expect(argv).not.toContain('bypassPermissions');
     expect(argv).toContain('--allowedTools');
-    expect(argv).toContain('Bash(git *)');
+    const allowed = argvFlagValue(argv, '--allowedTools');
+    expect(allowed).toContain('Bash(git *)');
+    // MCP + Skill survive the scoped narrowing so chrome-devtools-mcp et al.
+    // still work alongside a git command grant.
+    expect(allowed).toContain('mcp__*');
+    expect(allowed).toContain('Skill');
     expect(argv).toContain('--disallowedTools');
-    expect(argv).toContain('Bash(git push*) Bash(git * push*)');
+    const disallowed = argvFlagValue(argv, '--disallowedTools');
+    expect(disallowed).toContain('Skill(superpowers:*)');
+    expect(disallowed).toContain('Bash(git push*)');
+    expect(disallowed).toContain('Bash(git * push*)');
     expect(argv).toContain('--add-dir');
     expect(argv).toContain('C:\\workspaces\\project');
+  });
+
+  it('disallows superpowers skills on plan turns (no permission context)', () => {
+    const argv = claudeSpec.buildArgs('hi', null);
+    expect(argv).toContain('--disallowedTools');
+    expect(argvFlagValue(argv, '--disallowedTools')).toContain('Skill(superpowers:*)');
+  });
+
+  it('disallows superpowers skills on full-auto turns', () => {
+    const argv = claudeSpec.buildArgs('go', null, {
+      permission: {
+        mode: 'full-auto',
+        target: 'C:\\workspaces\\project\\',
+        reason: 'yolo',
+      },
+    });
+    expect(argv).toContain('--permission-mode');
+    expect(argv).toContain('bypassPermissions');
+    expect(argv).toContain('--disallowedTools');
+    expect(argvFlagValue(argv, '--disallowedTools')).toContain('Skill(superpowers:*)');
+    // Full-auto has no allowlist — the spawned CLI inherits the user's full
+    // tool set (including any registered MCP servers).
+    expect(argv).not.toContain('--allowedTools');
+  });
+
+  it('emits --mcp-config when FIRESIDE_MCP_CONFIG is set', () => {
+    const previous = process.env.FIRESIDE_MCP_CONFIG;
+    process.env.FIRESIDE_MCP_CONFIG = 'C:\\workspaces\\project\\.fireside-mcp.json';
+    try {
+      const argv = claudeSpec.buildArgs('hi', null);
+      expect(argv).toContain('--mcp-config');
+      expect(argv).toContain('C:\\workspaces\\project\\.fireside-mcp.json');
+    } finally {
+      if (previous === undefined) delete process.env.FIRESIDE_MCP_CONFIG;
+      else process.env.FIRESIDE_MCP_CONFIG = previous;
+    }
+  });
+
+  it('omits --mcp-config when FIRESIDE_MCP_CONFIG is unset or blank', () => {
+    const previous = process.env.FIRESIDE_MCP_CONFIG;
+    delete process.env.FIRESIDE_MCP_CONFIG;
+    try {
+      expect(claudeSpec.buildArgs('hi', null)).not.toContain('--mcp-config');
+    } finally {
+      if (previous !== undefined) process.env.FIRESIDE_MCP_CONFIG = previous;
+    }
+
+    process.env.FIRESIDE_MCP_CONFIG = '   ';
+    try {
+      expect(claudeSpec.buildArgs('hi', null)).not.toContain('--mcp-config');
+    } finally {
+      if (previous === undefined) delete process.env.FIRESIDE_MCP_CONFIG;
+      else process.env.FIRESIDE_MCP_CONFIG = previous;
+    }
   });
 
   it('parses headless fixture output into reply', () => {
@@ -198,6 +405,29 @@ describe('claude adapter', () => {
         },
       },
     ]);
+  });
+
+  it('emits provider-billed Claude cache read and creation telemetry from result lines', () => {
+    const events = claudeSpec.parseStreamLine?.(resume.trim(), 'stdout');
+
+    expect(events?.[0]).toMatchObject({
+      kind: 'usage',
+      status: 'completed',
+      label: 'claude result received',
+      detail:
+        'claude-opus-4-7[1m]: 41467 used / 1000000 window / cache_read_input_tokens 19575 / cache_creation_input_tokens 21880',
+      contextUsage: {
+        provider: 'claude',
+        model: 'claude-opus-4-7[1m]',
+        usedTokens: 41467,
+        inputTokens: 6,
+        outputTokens: 6,
+        cacheReadInputTokens: 19575,
+        cacheCreationInputTokens: 21880,
+        contextWindow: 1000000,
+        source: 'claude:usage',
+      },
+    });
   });
 
   it('emits quota telemetry from Claude debug header lines on stderr', () => {

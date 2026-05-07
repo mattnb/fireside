@@ -205,10 +205,10 @@ describe('autonomous mission scenarios', () => {
 
     await broker.postHumanMessage(room.id, 'human', '@temur please resume your task');
 
-    expect(runs.map((run) => run.agentId)).toEqual([
-      'codex-principal-software',
-      'codex-principal-software',
-    ]);
+    // Reply text is purely conversational and no work lane was assigned by this
+    // direct nudge, so the broker auto-synthesizes a /mission-receipt and skips the
+    // legacy repair turn — a single agent run is the correct steady state.
+    expect(runs.map((run) => run.agentId)).toEqual(['codex-principal-software']);
     expect(runs.some((run) => run.prompt.includes('YOLO work lane'))).toBe(false);
     expect(listTaskChecklistItems(db, task.id)[0]).toMatchObject({
       status: 'open',

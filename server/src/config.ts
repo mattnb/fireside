@@ -14,6 +14,16 @@ export interface Config {
   autoCompactEnabled: boolean;
   autoCompactPercent: number;
   autoCompactTokenLimit: number;
+  /** Percentage of the standard auto-compact threshold at which the room
+   *  lead deterministically resets its CLI session. Defaults to 60. */
+  leadResetPercent: number;
+  /** Kill-switch for the deterministic lead reset path. When true, leads fall
+   *  back to the legacy `/compact` flow. */
+  leadResetDisabled: boolean;
+  /** Optional path to an MCP config JSON file forwarded to spawned
+   *  `claude` subprocesses via `--mcp-config`. When unset, the spawned
+   *  CLI inherits the operator's interactive Claude MCP configuration. */
+  claudeMcpConfigPath: string | null;
 }
 
 function envFlag(name: string, defaultValue = false): boolean {
@@ -83,5 +93,8 @@ export function loadConfig(): Config {
     autoCompactEnabled: envFlag('FIRESIDE_AUTO_COMPACT_ENABLED', true),
     autoCompactPercent: envNumber('FIRESIDE_AUTO_COMPACT_PERCENT', 70),
     autoCompactTokenLimit: envNumber('FIRESIDE_AUTO_COMPACT_TOKEN_LIMIT', 220_000),
+    leadResetPercent: envNumber('FIRESIDE_LEAD_RESET_PERCENT', 60),
+    leadResetDisabled: envFlag('FIRESIDE_LEAD_RESET_DISABLED', false),
+    claudeMcpConfigPath: process.env.FIRESIDE_MCP_CONFIG?.trim() || null,
   };
 }

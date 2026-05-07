@@ -1,6 +1,6 @@
 // server/src/agents/claude.ts
 import type { AgentReply, AgentRunContext, AgentSpec, AgentStreamEvent } from './types.js';
-import { AgentParseError } from './types.js';
+import { AgentParseError, isMechanicalTurnKind } from './types.js';
 import { extractTopLevelJsonObject } from './json-extract.js';
 import {
   claudeContextUsage,
@@ -16,8 +16,7 @@ import { permissionTargetDirectory } from '../permissions.js';
 const RESULT_FIELD = 'result';
 const SESSION_FIELD = 'session_id';
 const CLAUDE_QUOTA_DEBUG_INTERVAL_MS = 10 * 60 * 1000;
-const CLAUDE_DEBUG_REDACTION =
-  '[claude debug log redacted; quota headers parsed into telemetry]';
+const CLAUDE_DEBUG_REDACTION = '[claude debug log redacted; quota headers parsed into telemetry]';
 
 let nextClaudeQuotaDebugAt = 0;
 
@@ -117,8 +116,7 @@ function claudePromptTooLongReason(stdout: string): string {
     const obj = parseJsonLine(line);
     if (!obj) continue;
     const type = typeof obj.type === 'string' ? obj.type : '';
-    const terminalReason =
-      typeof obj.terminal_reason === 'string' ? obj.terminal_reason : '';
+    const terminalReason = typeof obj.terminal_reason === 'string' ? obj.terminal_reason : '';
     const result = typeof obj[RESULT_FIELD] === 'string' ? obj[RESULT_FIELD] : '';
     if (
       (type === 'result' || result) &&
@@ -227,7 +225,11 @@ function claudeStreamEvents(line: string): AgentStreamEvent[] {
       ];
     }
     const contentBlock = asRecord(event?.content_block);
-    if (contentBlock && typeof contentBlock.type === 'string' && contentBlock.type.includes('tool')) {
+    if (
+      contentBlock &&
+      typeof contentBlock.type === 'string' &&
+      contentBlock.type.includes('tool')
+    ) {
       return [
         {
           kind: 'tool',
@@ -319,37 +321,105 @@ function isScopedCommandGrant(context?: AgentRunContext): boolean {
   );
 }
 
+// Skills shipped by the @claude-plugins-official "superpowers" plugin
+// orchestrate the top-level Claude conversation in ways that conflict with
+// fireside's own conductor/worker dynamics (they instruct the model to
+// invoke other skills before responding, run brainstorming flows, etc.).
+// Block them on every turn — independent of permission mode — so a
+// reinstall of the plugin can't accidentally derail a fireside room.
+const ALWAYS_DISALLOWED_TOOLS = 'Skill(superpowers:*)';
+
+function mergeDisallowed(...specs: string[]): string {
+  return specs.filter(Boolean).join(' ');
+}
+
 function claudePermissionToolArgs(context?: AgentRunContext): string[] {
   if (isScopedCommandGrant(context)) {
     const capabilities = context?.permission?.capabilities ?? [];
     const gitOnly = capabilities.includes('git-commit') || capabilities.includes('git-push');
-    const allowed = gitOnly ? 'Bash(git *)' : 'Bash(*)';
-    const args = ['--allowedTools', allowed];
-    if (!capabilities.includes('git-push')) {
-      args.push('--disallowedTools', 'Bash(git push*) Bash(git * push*)');
-    }
+    const bashAllow = gitOnly ? 'Bash(git *)' : 'Bash(*)';
+    // Allow MCP server tools and the Skill tool alongside Bash so a
+    // command-scoped grant doesn't accidentally lock out browser MCPs or
+    // user-curated workflow skills.
+    const args = ['--allowedTools', `${bashAllow},mcp__*,Skill`];
+    const pushSpec = capabilities.includes('git-push') ? '' : 'Bash(git push*) Bash(git * push*)';
+    args.push('--disallowedTools', mergeDisallowed(ALWAYS_DISALLOWED_TOOLS, pushSpec));
     return args;
   }
   switch (context?.permission?.mode ?? 'plan') {
     case 'edit':
       // Fireside's normalized "edit" means workspace file mutation, including
       // creating a new file. Claude Code distinguishes Write from Edit, so
-      // allow all file-mutation tools while keeping shell/tool escalation out
-      // of this profile.
-      return ['--allowedTools', 'Edit,MultiEdit,Write'];
+      // allow all file-mutation tools. Read/Glob/Grep are needed so the
+      // agent can understand the code it's editing, and MCP + Skill are
+      // allowed so browser automation and user workflow skills survive an
+      // edit-scoped permission grant.
+      return [
+        '--allowedTools',
+        'Edit,MultiEdit,Write,Read,Glob,Grep,mcp__*,Skill',
+        '--disallowedTools',
+        ALWAYS_DISALLOWED_TOOLS,
+      ];
     case 'full-auto':
     case 'plan':
-      return [];
+      // No allowlist — the CLI inherits the user's tool set. Still block
+      // superpowers so it cannot derail the worker turn.
+      return ['--disallowedTools', ALWAYS_DISALLOWED_TOOLS];
   }
+}
+
+const DEFAULT_CLAUDE_MECHANICAL_MODEL = 'claude-haiku-4-5';
+
+/** Resolve the Claude model id used for mechanical bookkeeping turns
+ *  (workflow-repair, maintenance compaction). Returns null when the
+ *  routing has been explicitly disabled by the operator.
+ *
+ *  - `FIRESIDE_CLAUDE_MECHANICAL_MODEL` overrides the target model id.
+ *  - `FIRESIDE_CLAUDE_MECHANICAL_MODEL=0` (or empty) opts out and falls
+ *    back to the agent profile's model. */
+function resolveClaudeMechanicalModel(): string | null {
+  const override = process.env.FIRESIDE_CLAUDE_MECHANICAL_MODEL;
+  if (override === undefined) return DEFAULT_CLAUDE_MECHANICAL_MODEL;
+  const trimmed = override.trim();
+  if (trimmed === '' || trimmed === '0') return null;
+  return trimmed;
 }
 
 function claudeModelArgs(context?: AgentRunContext): string[] {
   const args: string[] = [];
-  const modelId = context?.model?.modelId;
-  const reasoningEffort = context?.model?.reasoningEffort;
-  if (modelId) args.push('--model', modelId);
-  if (reasoningEffort) args.push('--effort', reasoningEffort);
+  const profileModelId = context?.model?.modelId;
+  const profileReasoningEffort = context?.model?.reasoningEffort;
+  const mechanical = isMechanicalTurnKind(context?.turnKind);
+  const mechanicalModel = mechanical ? resolveClaudeMechanicalModel() : null;
+  // For mechanical bookkeeping turns we route to a small, cheap model
+  // (Haiku 4.5 by default). Reasoning effort is dropped because Haiku
+  // does not expose the extended-thinking lever and the mechanical
+  // workload (emit-missing-block, summarize-context) does not need it.
+  if (mechanicalModel) {
+    args.push('--model', mechanicalModel);
+    return args;
+  }
+  if (profileModelId) args.push('--model', profileModelId);
+  if (profileReasoningEffort) args.push('--effort', profileReasoningEffort);
   return args;
+}
+
+// When FIRESIDE_MCP_CONFIG points at a JSON file describing MCP servers,
+// we pass it through verbatim. This guarantees the spawned `claude`
+// subprocess sees the same MCP server set the operator declared, even when
+// the per-room cwd doesn't carry a project-level `.mcp.json`. Unset means
+// "inherit whatever the user's interactive Claude config provides."
+function claudeMcpConfigArgs(): string[] {
+  const path = process.env.FIRESIDE_MCP_CONFIG;
+  if (!path || !path.trim()) return [];
+  return ['--mcp-config', path];
+}
+
+function claudeCacheStabilityArgs(): string[] {
+  if (process.env.FIRESIDE_CLAUDE_EXCLUDE_DYNAMIC_SYSTEM_PROMPT_SECTIONS === '0') {
+    return [];
+  }
+  return ['--exclude-dynamic-system-prompt-sections'];
 }
 
 export const claudeSpec: AgentSpec = {
@@ -365,6 +435,8 @@ export const claudeSpec: AgentSpec = {
       'stream-json',
       '--include-partial-messages',
       ...claudeModelArgs(context),
+      ...claudeMcpConfigArgs(),
+      ...claudeCacheStabilityArgs(),
       '--permission-mode',
       claudePermissionMode(context),
       ...claudePermissionToolArgs(context),

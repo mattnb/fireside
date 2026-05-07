@@ -6,6 +6,13 @@ export interface AutoCompactionConfig {
   enabled: boolean;
   percentThreshold: number;
   tokenThreshold: number;
+  /** When true, this agent is the room lead. The lead branch lowers the
+   *  threshold and switches the action from `compact` to `reset-session`. */
+  isLead?: boolean;
+  /** Percentage of the standard threshold at which the lead deterministically
+   *  resets. Only honored when `isLead === true` and the value is in (0, 100].
+   *  Defaults to 60 in production via env override; tests set it explicitly. */
+  leadResetPercent?: number;
 }
 
 export type AutoContextMaintenanceAction = 'compact' | 'reset-session';
@@ -85,17 +92,26 @@ export function autoContextMaintenanceDecision(
     thresholds.push(Math.floor(contextWindow * (percentThreshold / 100)));
   }
 
-  const thresholdTokens = Math.min(...thresholds.filter((value) => value > 0));
-  if (!Number.isFinite(thresholdTokens) || usage.usedTokens < thresholdTokens) return null;
+  const baseThreshold = Math.min(...thresholds.filter((value) => value > 0));
+  if (!Number.isFinite(baseThreshold)) return null;
+
+  const leadResetPercent = positiveNumber(config.leadResetPercent ?? 0);
+  const useLeadBranch =
+    config.isLead === true && leadResetPercent !== null && leadResetPercent <= 100;
+  const effectiveAction: AutoContextMaintenanceAction = useLeadBranch ? 'reset-session' : action;
+  const thresholdTokens = useLeadBranch
+    ? Math.max(1, Math.floor(baseThreshold * (leadResetPercent / 100)))
+    : baseThreshold;
+  if (usage.usedTokens < thresholdTokens) return null;
 
   const windowDetail = contextWindow ? ` of ${contextWindow} context window` : '';
   return {
-    action,
+    action: effectiveAction,
     providerId: profile.providerId,
     model,
     usedTokens: usage.usedTokens,
     thresholdTokens,
     ...(contextWindow ? { contextWindow } : {}),
-    reason: `${model} context is ${usage.usedTokens}/${thresholdTokens} tokens${windowDetail}; ${action === 'compact' ? 'auto-compacting' : 'resetting resumable session'} before the next turn`,
+    reason: `${model} context is ${usage.usedTokens}/${thresholdTokens} tokens${windowDetail}; ${effectiveAction === 'compact' ? 'auto-compacting' : 'resetting resumable session'} before the next turn${useLeadBranch ? ' (lead reset)' : ''}`,
   };
 }

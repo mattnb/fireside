@@ -13,6 +13,8 @@ function scheduler(input: {
   responders: AgentId[];
   roomAgents?: AgentId[];
   handoffPool?: AgentId[];
+  leadAgentId?: AgentId | null;
+  opportunisticQuarantinedAgents?: AgentId[];
   maxRepliesPerAgent?: number;
   maxTotalReplies?: number;
 }) {
@@ -21,6 +23,10 @@ function scheduler(input: {
     responders: input.responders,
     roomAgents: input.roomAgents ?? input.responders,
     ...(input.handoffPool !== undefined ? { handoffPool: input.handoffPool } : {}),
+    ...(input.leadAgentId !== undefined ? { leadAgentId: input.leadAgentId } : {}),
+    ...(input.opportunisticQuarantinedAgents !== undefined
+      ? { opportunisticQuarantinedAgents: input.opportunisticQuarantinedAgents }
+      : {}),
     maxRepliesPerAgent: input.maxRepliesPerAgent ?? 1,
     ...(input.maxTotalReplies !== undefined ? { maxTotalReplies: input.maxTotalReplies } : {}),
   });
@@ -40,6 +46,71 @@ describe('discussion scheduler', () => {
     expect(plan.eligibleAgents).toEqual(['claude', 'codex']);
     expect(plan.remainingTotal).toBe(2);
     expect(currentMaxRepliesPerAgent(state)).toBe(2);
+  });
+
+  it('routes no-lane YOLO pulses only to the room lead', () => {
+    const state = scheduler({
+      mode: 'yolo',
+      responders: ['claude', 'codex', 'gemini'],
+      roomAgents: ['claude', 'codex', 'gemini'],
+      handoffPool: ['claude', 'codex', 'gemini'],
+      leadAgentId: 'codex',
+      maxRepliesPerAgent: 100,
+      maxTotalReplies: 100,
+    });
+
+    const plan = planDiscussionRound(state, { round: 1, laneAgents: [] });
+
+    expect(plan.eligibleAgents).toEqual(['codex']);
+    expect(plan.trace).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: 'discussion-opportunistic-suppression',
+          agents: ['claude', 'gemini'],
+        }),
+      ]),
+    );
+  });
+
+  it('does not suppress assigned YOLO work lanes while trimming unrelated open-floor candidates', () => {
+    const state = scheduler({
+      mode: 'yolo',
+      responders: ['claude', 'codex'],
+      roomAgents: ['claude', 'codex'],
+      handoffPool: ['claude', 'codex'],
+      leadAgentId: 'claude',
+      maxRepliesPerAgent: 100,
+      maxTotalReplies: 100,
+    });
+
+    const plan = planDiscussionRound(state, { round: 1, laneAgents: ['codex'] });
+
+    expect(plan.eligibleAgents).toEqual(['codex']);
+    expect(plan.trace).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: 'discussion-opportunistic-suppression',
+          agents: ['claude'],
+        }),
+      ]),
+    );
+  });
+
+  it('suppresses persisted no-op-quarantined agents from opportunistic YOLO pulses', () => {
+    const state = scheduler({
+      mode: 'yolo',
+      responders: ['claude', 'codex'],
+      roomAgents: ['claude', 'codex'],
+      handoffPool: ['claude', 'codex'],
+      leadAgentId: 'codex',
+      opportunisticQuarantinedAgents: ['codex'],
+      maxRepliesPerAgent: 100,
+      maxTotalReplies: 100,
+    });
+
+    const plan = planDiscussionRound(state, { round: 1, laneAgents: [] });
+
+    expect(plan.eligibleAgents).toEqual([]);
   });
 
   it('rotates a normal multi-agent thread away from the lone active speaker', () => {
@@ -160,9 +231,7 @@ describe('discussion scheduler', () => {
       ],
     });
 
-    expect(outcome.failedYoloAgents).toMatchObject([
-      { agentId: 'claude', runId: 'run-1' },
-    ]);
+    expect(outcome.failedYoloAgents).toMatchObject([{ agentId: 'claude', runId: 'run-1' }]);
     expect(state.quarantinedAgents.has('claude')).toBe(true);
     expect(outcome.nextCandidates).toEqual(['codex']);
   });
@@ -267,6 +336,44 @@ describe('discussion scheduler', () => {
     expect(outcome.shouldStop).toBe(true);
     expect(outcome.nextCandidates).toEqual([]);
     expect(state.totalReplies).toBe(0);
+  });
+
+  it('quarantines agents after two consecutive no-message/no-progress YOLO results', () => {
+    const state = scheduler({
+      mode: 'yolo',
+      responders: ['codex'],
+      roomAgents: ['codex'],
+      handoffPool: ['codex'],
+      leadAgentId: 'codex',
+      maxRepliesPerAgent: 100,
+      maxTotalReplies: 100,
+    });
+
+    for (const runId of ['run-1', 'run-2']) {
+      applyDiscussionRoundResults(state, {
+        roomYoloAgents: ['codex'],
+        results: [
+          {
+            agentId: 'codex',
+            progressed: false,
+            hasMessage: false,
+            failed: false,
+            handoffs: [],
+            workDispatches: [],
+            runId,
+            error: '',
+          },
+        ],
+      });
+      state.candidates = ['codex'];
+      state.candidateSource = 'open-floor';
+    }
+
+    expect(state.opportunisticQuarantinedAgents.has('codex')).toBe(true);
+    expect(planDiscussionRound(state, { round: 3, laneAgents: [] }).eligibleAgents).toEqual([]);
+    expect(planDiscussionRound(state, { round: 3, laneAgents: ['codex'] }).eligibleAgents).toEqual([
+      'codex',
+    ]);
   });
 
   it('accepts a larger live YOLO budget between rounds', () => {

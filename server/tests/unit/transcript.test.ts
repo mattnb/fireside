@@ -1,5 +1,6 @@
 // server/tests/unit/transcript.test.ts
 import { describe, it, expect } from 'vitest';
+import type { TaskPromptContext } from '../../src/task-summary.js';
 import { buildTurnPrompt, buildTurnPromptResult } from '../../src/transcript.js';
 
 describe('buildTurnPrompt', () => {
@@ -17,6 +18,332 @@ describe('buildTurnPrompt', () => {
     // With empty history, the transcript section is just the new message line.
     // The prompt must end with that line, not a turn cue.
     expect(prompt.endsWith('human: hi')).toBe(true);
+  });
+
+  it('reports prompt section accounting that sums to the rendered prompt', () => {
+    const result = buildTurnPromptResult({
+      agentId: 'codex',
+      roomName: 'general',
+      roomAgents: ['codex', 'claude'],
+      history: [{ authorId: 'human', authorKind: 'human', text: 'previous' }],
+      newMessage: { authorId: 'human', authorKind: 'human', text: 'continue' },
+      permission: {
+        source: 'yolo',
+        mode: 'full-auto',
+        target: 'unrestricted filesystem',
+        reason: 'YOLO profile',
+      },
+      discussion: {
+        mode: 'yolo',
+        round: 1,
+        maxRounds: 100,
+        repliesUsed: 0,
+        maxRepliesPerAgent: 100,
+        totalRepliesUsed: 0,
+        maxTotalReplies: 100,
+      },
+    });
+
+    expect(result.stats.sections.length).toBeGreaterThan(0);
+    expect(result.stats.sections.reduce((sum, section) => sum + section.chars, 0)).toBe(
+      result.prompt.length,
+    );
+    expect(result.stats.sections.map((section) => section.id)).toEqual(
+      expect.arrayContaining(['dispatch', 'identity', 'permission', 'discussion', 'transcript']),
+    );
+    expect(
+      result.stats.sections.find((section) => section.id === 'transcript')?.chars,
+    ).toBeGreaterThan('Transcript:\nhuman: previous\nhuman: continue'.length);
+  });
+
+  it('reports a byte-stable cache prefix when only dynamic tail fields change', () => {
+    const agentProfile = {
+      id: 'codex-worker',
+      providerId: 'codex' as const,
+      displayName: 'Codex Worker',
+      personaId: 'principal-software-engineer',
+      personaName: 'Principal Software Engineer',
+      personaSummary: '',
+    };
+    const task = (phaseTitle: string, checklistTitle: string): TaskPromptContext => ({
+      id: 'task-1',
+      title: 'Token mission',
+      status: 'active',
+      goal: 'Reduce token spend',
+      repoPath: 'C:/repo',
+      acceptanceCriteria: 'Stable prefixes hash the same.',
+      assignedAgents: ['codex-worker', 'claude-pm'],
+      capabilityProfile: 'full-auto',
+      summary: `Dynamic summary ${phaseTitle}`,
+      missionControl: {
+        currentPhase: {
+          id: 'phase-1',
+          taskId: 'task-1',
+          planId: 'plan-1',
+          title: phaseTitle,
+          description: '',
+          status: 'active',
+          gate: `Gate for ${phaseTitle}`,
+          sortOrder: 1,
+          createdAt: 1,
+          updatedAt: 1,
+        },
+        openChecklistItems: [
+          {
+            id: 'item-1',
+            taskId: 'task-1',
+            planId: 'plan-1',
+            phaseId: 'phase-1',
+            title: checklistTitle,
+            detail: 'Dynamic checklist detail',
+            status: 'open',
+            dependencyIds: [],
+            expectedTouches: ['server/src/transcript.ts'],
+            parallelism: 'parallel-safe',
+            conflictGroup: '',
+            workRole: 'verify',
+            ownerAgentId: 'codex-worker',
+            statusNote: '',
+            blockedReason: '',
+            councilRequired: false,
+            updatedBy: '',
+            completedAt: null,
+            sortOrder: 1,
+            createdAt: 1,
+            updatedAt: 1,
+          },
+        ],
+        blockedChecklistItems: [],
+        activePlan: {
+          id: 'plan-1',
+          taskId: 'task-1',
+          title: 'Plan',
+          body: `Dynamic plan excerpt ${phaseTitle}`,
+          status: 'active',
+          createdAt: 1,
+          updatedAt: 1,
+        },
+      },
+    });
+    const common = {
+      agentId: 'codex-worker',
+      agentProfile,
+      roomName: 'token-room',
+      roomAgents: ['codex-worker', 'claude-pm'],
+      roomAgentProfiles: [
+        agentProfile,
+        {
+          id: 'claude-pm',
+          providerId: 'claude' as const,
+          displayName: 'Claude PM',
+          personaId: 'project-manager',
+          personaName: 'Project Manager',
+          personaSummary: '',
+        },
+      ],
+      roomLeadAgentId: 'claude-pm',
+      contextFiles: {
+        recapPath: 'data/agent-context/r1/recap.md',
+        transcriptPath: 'data/agent-context/r1/transcript.md',
+        protocolsPath: 'data/agent-context/r1/protocols.md',
+        omittedMessages: 3,
+        recentMessages: 2,
+        totalMessages: 5,
+      },
+      permission: {
+        source: 'yolo' as const,
+        mode: 'full-auto' as const,
+        target: 'unrestricted filesystem',
+        reason: 'YOLO',
+      },
+      maxPromptChars: 40_000,
+    };
+
+    const first = buildTurnPromptResult({
+      ...common,
+      history: [{ authorId: 'human', authorKind: 'human', text: 'first history' }],
+      newMessage: { authorId: 'human', authorKind: 'human', text: 'first latest' },
+      task: task('Measurement', 'Capture prefix baseline'),
+      collaboration: [
+        {
+          kind: 'evidence',
+          status: 'informational',
+          title: 'First ledger item',
+          agentId: 'codex-worker',
+        },
+      ],
+      discussion: {
+        mode: 'yolo',
+        round: 5,
+        maxRounds: 100,
+        repliesUsed: 2,
+        maxRepliesPerAgent: 100,
+        totalRepliesUsed: 8,
+        maxTotalReplies: 100,
+      },
+    });
+    const second = buildTurnPromptResult({
+      ...common,
+      history: [{ authorId: 'human', authorKind: 'human', text: 'second history' }],
+      newMessage: { authorId: 'claude-pm', authorKind: 'agent', text: 'second latest' },
+      task: task('Session policy', 'Run controlled sample'),
+      collaboration: [
+        {
+          kind: 'challenge',
+          status: 'open',
+          title: 'Second ledger item',
+          agentId: 'claude-pm',
+        },
+      ],
+      discussion: {
+        mode: 'yolo',
+        round: 6,
+        maxRounds: 100,
+        repliesUsed: 3,
+        maxRepliesPerAgent: 100,
+        totalRepliesUsed: 9,
+        maxTotalReplies: 100,
+      },
+    });
+
+    expect(first.prompt).not.toBe(second.prompt);
+    expect(first.stats.stablePrefixHash).toBe(second.stats.stablePrefixHash);
+    expect(first.stats.stablePrefixChars).toBe(second.stats.stablePrefixChars);
+    expect(first.prompt.slice(0, first.stats.stablePrefixChars)).toBe(
+      second.prompt.slice(0, second.stats.stablePrefixChars),
+    );
+    expect(first.stats.stablePrefixChars).toBeGreaterThan(1_500);
+    expect(first.stats.stablePrefixEstimatedTokens).toBe(
+      Math.ceil(first.stats.stablePrefixChars / 4),
+    );
+    expect(
+      first.stats.sections.filter((section) => section.stablePrefix).map((section) => section.id),
+    ).toEqual(['dispatch', 'identity', 'permission', 'collaborationProtocol', 'missionProtocol']);
+    expect(
+      first.stats.sections.find((section) => section.id === 'collaborationLedger'),
+    ).toMatchObject({
+      stablePrefix: false,
+    });
+  });
+
+  it('caps the rendered collaboration ledger contribution', () => {
+    const result = buildTurnPromptResult({
+      agentId: 'codex',
+      roomName: 'general',
+      history: [],
+      newMessage: { authorId: 'human', authorKind: 'human', text: 'continue' },
+      maxPromptChars: 40_000,
+      maxCollaborationLedgerChars: 700,
+      maxAlwaysIncludedContextChars: 10_000,
+      collaboration: Array.from({ length: 12 }, (_, i) => ({
+        kind: 'evidence',
+        status: 'informational',
+        title: `Ledger item ${i}`,
+        agentId: 'codex',
+        target: `target-${i}`.repeat(20),
+        body: `Long ledger body ${i} `.repeat(40),
+        evidence: Array.from({ length: 8 }, (_, j) => `evidence-${i}-${j} `.repeat(20)),
+      })),
+    });
+
+    const ledgerSection = result.stats.sections.find(
+      (section) => section.id === 'collaborationLedger',
+    );
+    expect(ledgerSection?.chars).toBeLessThanOrEqual(720);
+    expect(result.prompt).toContain('omitted to keep ledger under 700 chars');
+    expect(result.prompt).not.toContain('Ledger item 11');
+    expect(result.stats.collaborationLedgerItemsAvailable).toBe(12);
+    expect(result.stats.collaborationLedgerItemsIncluded).toBeLessThan(12);
+    expect(result.stats.collaborationLedgerOmittedChars).toBeGreaterThan(0);
+  });
+
+  it('enforces a combined budget for always-included dynamic context', () => {
+    const largeTask: TaskPromptContext = {
+      id: 'task-1',
+      title: 'Context budget',
+      status: 'active',
+      goal: 'Keep dynamic prompt context bounded.',
+      repoPath: 'C:/repo',
+      acceptanceCriteria: 'Always-included context fits the configured budget.',
+      assignedAgents: ['codex'],
+      capabilityProfile: 'edit',
+      summary: 'A mission with enough checklist state to require context budgeting.',
+      missionControl: {
+        currentPhase: {
+          id: 'phase-1',
+          taskId: 'task-1',
+          planId: 'plan-1',
+          title: 'Budgeting',
+          description: '',
+          status: 'active',
+          gate: 'Dynamic context is bounded.',
+          sortOrder: 1,
+          createdAt: 1,
+          updatedAt: 1,
+        },
+        openChecklistItems: Array.from({ length: 20 }, (_, i) => ({
+          id: `item-${i}`,
+          taskId: 'task-1',
+          planId: 'plan-1',
+          phaseId: 'phase-1',
+          title: `Checklist item ${i}`,
+          detail: 'Detailed checklist state '.repeat(30),
+          status: 'open',
+          dependencyIds: [],
+          expectedTouches: ['server/src/transcript.ts'],
+          parallelism: 'parallel-safe',
+          conflictGroup: '',
+          workRole: 'implement',
+          ownerAgentId: 'codex',
+          statusNote: 'Status note '.repeat(30),
+          blockedReason: '',
+          councilRequired: false,
+          updatedBy: '',
+          completedAt: null,
+          sortOrder: i,
+          createdAt: 1,
+          updatedAt: 1,
+        })),
+        blockedChecklistItems: [],
+        activePlan: {
+          id: 'plan-1',
+          taskId: 'task-1',
+          title: 'Plan',
+          body: 'Plan body '.repeat(300),
+          status: 'active',
+          createdAt: 1,
+          updatedAt: 1,
+        },
+      },
+    };
+
+    const result = buildTurnPromptResult({
+      agentId: 'codex',
+      roomName: 'general',
+      history: [],
+      newMessage: { authorId: 'human', authorKind: 'human', text: 'continue' },
+      maxPromptChars: 40_000,
+      maxCollaborationLedgerChars: 1_200,
+      maxAlwaysIncludedContextChars: 2_200,
+      task: largeTask,
+      collaboration: Array.from({ length: 6 }, (_, i) => ({
+        kind: 'proposal',
+        status: 'open',
+        title: `Proposal ${i}`,
+        agentId: 'codex',
+        body: 'Ledger body detail '.repeat(30),
+      })),
+    });
+
+    const alwaysIncludedChars = result.stats.sections
+      .filter((section) => section.alwaysIncludedContext)
+      .reduce((sum, section) => sum + section.chars, 0);
+    expect(result.stats.alwaysIncludedContextChars).toBe(alwaysIncludedChars);
+    expect(result.stats.alwaysIncludedContextBudgetChars).toBe(2_200);
+    expect(result.stats.alwaysIncludedContextChars).toBeLessThanOrEqual(2_220);
+    expect(result.stats.alwaysIncludedContextOmittedChars).toBeGreaterThan(0);
+    expect(result.prompt).toContain('Mission state and protocol truncated');
+    expect(result.prompt).toContain('Active mission: Context budget');
   });
 
   it('includes recent history in chronological order followed by the new message', () => {
@@ -88,7 +415,9 @@ describe('buildTurnPrompt', () => {
     expect(prompt).toContain('Room roster: Claude Security');
     expect(prompt).toContain('codex-architecture');
     expect(prompt).toContain('Team lead: Codex Architecture (@codex-architecture)');
-    expect(prompt).toContain('Broker/system coordination requests may be routed to this agent first');
+    expect(prompt).toContain(
+      'Broker/system coordination requests may be routed to this agent first',
+    );
   });
 
   it('uses display names for transcript labels and handoff instructions when profiles are available', () => {
@@ -273,7 +602,9 @@ describe('buildTurnPrompt', () => {
       newMessage: { authorId: 'human', authorKind: 'human', text: 'coordinate' },
     });
 
-    expect(prompt).toContain('tag the exact @handle for one of these recipients: codex (@codex), gemini (@gemini)');
+    expect(prompt).toContain(
+      'tag the exact @handle for one of these recipients: codex (@codex), gemini (@gemini)',
+    );
     expect(prompt).toContain('Do not end with a bare agent label');
     expect(prompt).not.toContain('or "Claude:"');
   });
@@ -433,10 +764,6 @@ describe('buildTurnPrompt', () => {
         assignedAgents: ['claude', 'codex'],
         capabilityProfile: 'edit',
         summary: 'A mission with enough state to force prompt compression.',
-        recentActivity: Array.from(
-          { length: 8 },
-          (_, i) => `activity ${i}: ${'detail '.repeat(18)}`,
-        ),
         missionControl: {
           currentPhase: {
             id: 'phase-1',
@@ -563,6 +890,14 @@ describe('buildTurnPrompt', () => {
   it('includes active mission state and verification guidance when supplied', () => {
     const prompt = buildTurnPrompt({
       agentId: 'codex',
+      agentProfile: {
+        id: 'codex',
+        providerId: 'codex',
+        displayName: 'Codex',
+        personaId: 'project-manager',
+        personaName: 'Project Manager',
+        personaSummary: '',
+      },
       roomName: 'general',
       history: [],
       newMessage: { authorId: 'human', authorKind: 'human', text: 'verify this' },
@@ -576,7 +911,6 @@ describe('buildTurnPrompt', () => {
         assignedAgents: ['claude', 'codex'],
         capabilityProfile: 'edit',
         summary: 'Implementation is ready for review.',
-        recentActivity: ['claude: completed (3s, 1200 est tokens)'],
         missionControl: {
           currentPhase: {
             id: 'phase-1',
@@ -667,7 +1001,6 @@ describe('buildTurnPrompt', () => {
     expect(prompt).toContain('/mission-phase');
     expect(prompt).toContain('phase: optional phase id or title');
     expect(prompt).toContain('This mission is in verification');
-    expect(prompt).toContain('claude: completed');
     expect(prompt).toContain('Lane rule: all problems are shared responsibility');
     expect(prompt).toContain('record evidence, hand it off');
   });
@@ -675,6 +1008,14 @@ describe('buildTurnPrompt', () => {
   it('describes mission creation protocol when no active mission exists', () => {
     const prompt = buildTurnPrompt({
       agentId: 'claude',
+      agentProfile: {
+        id: 'claude',
+        providerId: 'claude',
+        displayName: 'Claude',
+        personaId: 'project-manager',
+        personaName: 'Project Manager',
+        personaSummary: '',
+      },
       roomName: 'general',
       roomAgents: ['claude', 'codex'],
       history: [],
@@ -692,5 +1033,210 @@ describe('buildTurnPrompt', () => {
     expect(prompt).toContain('/mission-plan');
     expect(prompt).toContain('/mission-phase');
     expect(prompt).toContain('/mission-task');
+  });
+});
+
+describe('role-sliced active-mission protocol', () => {
+  const baseTask = {
+    id: 'task-1',
+    title: 'Ship something',
+    status: 'active',
+    goal: 'Goal',
+    repoPath: 'C:/repo',
+    acceptanceCriteria: 'Acceptance',
+    assignedAgents: ['claude', 'codex'],
+    capabilityProfile: 'edit',
+    summary: '',
+  };
+
+  function build(args: { agentId: string; agentProfile?: any; roomLeadAgentId?: string }) {
+    return buildTurnPrompt({
+      agentId: args.agentId,
+      ...(args.agentProfile ? { agentProfile: args.agentProfile } : {}),
+      roomName: 'general',
+      ...(args.roomLeadAgentId ? { roomLeadAgentId: args.roomLeadAgentId } : {}),
+      history: [],
+      newMessage: { authorId: 'human', authorKind: 'human', text: 'hi' },
+      task: baseTask,
+    });
+  }
+
+  it('worker tier (implementer persona, not lead) skips plan and phase protocols', () => {
+    const prompt = build({
+      agentId: 'codex-principal-software',
+      agentProfile: {
+        id: 'codex-principal-software',
+        providerId: 'codex',
+        displayName: 'Codex',
+        personaId: 'principal-software-engineer',
+        personaName: 'Principal Software Engineer',
+        personaSummary: '',
+      },
+    });
+    expect(prompt).toContain('Mission checklist protocol:');
+    expect(prompt).toContain('/mission-task');
+    expect(prompt).toContain('Mission receipt protocol:');
+    expect(prompt).not.toContain('Mission plan protocol:');
+    expect(prompt).not.toContain('Mission phase protocol:');
+    expect(prompt).not.toContain('/mission-plan');
+    expect(prompt).not.toContain('/mission-phase');
+  });
+
+  it('worker tier compact form hands off plan/phase to coordinators', () => {
+    const prompt = buildTurnPrompt({
+      agentId: 'codex-worker',
+      agentProfile: {
+        id: 'codex-worker',
+        providerId: 'codex',
+        displayName: 'Codex Worker',
+        personaId: 'principal-software-engineer',
+        personaName: 'Principal Software Engineer',
+        personaSummary: '',
+      },
+      roomName: 'general',
+      history: [],
+      newMessage: { authorId: 'human', authorKind: 'human', text: 'hi' },
+      task: baseTask,
+      maxPromptChars: 2_500,
+    });
+    expect(prompt).toContain('Plan and phase changes belong to coordinators');
+    expect(prompt).not.toContain('/mission-plan');
+    expect(prompt).not.toContain('/mission-phase');
+  });
+
+  it('coordinator tier (orchestrator persona) gets plan, phase, task, and receipt', () => {
+    const prompt = build({
+      agentId: 'codex-pm',
+      agentProfile: {
+        id: 'codex-pm',
+        providerId: 'codex',
+        displayName: 'Codex PM',
+        personaId: 'project-manager',
+        personaName: 'Project Manager',
+        personaSummary: '',
+      },
+    });
+    expect(prompt).toContain('Mission plan protocol:');
+    expect(prompt).toContain('/mission-plan');
+    expect(prompt).toContain('Mission phase protocol:');
+    expect(prompt).toContain('/mission-phase');
+    expect(prompt).toContain('Mission checklist protocol:');
+    expect(prompt).toContain('/mission-task');
+    expect(prompt).toContain('Mission receipt protocol:');
+    expect(prompt).not.toContain('Plan and phase changes belong to coordinators');
+  });
+
+  it('lead tier (matches roomLeadAgentId) gets the full protocol regardless of persona', () => {
+    const prompt = build({
+      agentId: 'claude-principal-software',
+      roomLeadAgentId: 'claude-principal-software',
+      agentProfile: {
+        id: 'claude-principal-software',
+        providerId: 'claude',
+        displayName: 'Claude',
+        personaId: 'principal-software-engineer',
+        personaName: 'Principal Software Engineer',
+        personaSummary: '',
+      },
+    });
+    expect(prompt).toContain('Mission plan protocol:');
+    expect(prompt).toContain('Mission phase protocol:');
+    expect(prompt).toContain('/mission-plan');
+    expect(prompt).toContain('/mission-phase');
+    expect(prompt).toContain('/mission-task');
+  });
+
+  it('externalizes hidden-block protocols when contextFiles.protocolsPath is supplied', () => {
+    const prompt = buildTurnPrompt({
+      agentId: 'codex-pm',
+      agentProfile: {
+        id: 'codex-pm',
+        providerId: 'codex',
+        displayName: 'Codex PM',
+        personaId: 'project-manager',
+        personaName: 'Project Manager',
+        personaSummary: '',
+      },
+      roomName: 'general',
+      history: [],
+      newMessage: { authorId: 'human', authorKind: 'human', text: 'hi' },
+      task: baseTask,
+      contextFiles: {
+        transcriptPath: 'data/agent-context/r1/transcript.md',
+        recapPath: 'data/agent-context/r1/recap.md',
+        protocolsPath: 'data/agent-context/r1/protocols.md',
+        omittedMessages: 0,
+        recentMessages: 1,
+        totalMessages: 1,
+      },
+    });
+    expect(prompt).toContain('Hidden block protocols: data/agent-context/r1/protocols.md');
+    expect(prompt).toContain('Plan and phase protocols:');
+    expect(prompt).toContain('Task and receipt protocols:');
+    expect(prompt).toContain('See data/agent-context/r1/protocols.md');
+    // Full inline schemas should not be present
+    expect(prompt).not.toContain('## Direction');
+    expect(prompt).not.toContain('## Assumptions and Evidence');
+    expect(prompt).not.toContain('Mission plan protocol: when the team creates');
+    expect(prompt).not.toContain('Mission phase protocol: when you create or update');
+    expect(prompt).not.toContain('Mission checklist protocol: when you create, update, complete');
+    // Collaboration block also externalized
+    expect(prompt).not.toContain('kind: proposal\ntitle: concise claim');
+  });
+
+  it('re-injects full schemas when includeFullProtocols is true even with protocols.md present', () => {
+    const prompt = buildTurnPrompt({
+      agentId: 'codex-pm',
+      agentProfile: {
+        id: 'codex-pm',
+        providerId: 'codex',
+        displayName: 'Codex PM',
+        personaId: 'project-manager',
+        personaName: 'Project Manager',
+        personaSummary: '',
+      },
+      roomName: 'general',
+      history: [],
+      newMessage: { authorId: 'human', authorKind: 'human', text: 'hi' },
+      task: baseTask,
+      contextFiles: {
+        transcriptPath: 'data/agent-context/r1/transcript.md',
+        recapPath: 'data/agent-context/r1/recap.md',
+        protocolsPath: 'data/agent-context/r1/protocols.md',
+        omittedMessages: 0,
+        recentMessages: 1,
+        totalMessages: 1,
+      },
+      includeFullProtocols: true,
+    });
+    expect(prompt).toContain('Hidden block protocols: data/agent-context/r1/protocols.md');
+    expect(prompt).toContain('Mission plan protocol: when the team creates');
+    expect(prompt).toContain('Mission phase protocol:');
+    expect(prompt).toContain('Mission checklist protocol:');
+    expect(prompt).toContain('## Direction');
+  });
+
+  it('worker tier suppresses the no-task mission-create scaffold', () => {
+    const prompt = buildTurnPrompt({
+      agentId: 'codex-principal-software',
+      agentProfile: {
+        id: 'codex-principal-software',
+        providerId: 'codex',
+        displayName: 'Codex',
+        personaId: 'principal-software-engineer',
+        personaName: 'Principal Software Engineer',
+        personaSummary: '',
+      },
+      roomName: 'general',
+      roomAgents: ['claude', 'codex-principal-software'],
+      history: [],
+      newMessage: {
+        authorId: 'human',
+        authorKind: 'human',
+        text: 'create a mission for this',
+      },
+    });
+    expect(prompt).not.toContain('/mission-create');
+    expect(prompt).not.toContain('Active mission: none recorded.');
   });
 });

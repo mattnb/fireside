@@ -66,6 +66,8 @@ export async function start(config: Config = loadConfig()): Promise<FiresideServ
     autoCompactEnabled: config.autoCompactEnabled,
     autoCompactPercent: config.autoCompactPercent,
     autoCompactTokenLimit: config.autoCompactTokenLimit,
+    leadResetPercent: config.leadResetPercent,
+    leadResetDisabled: config.leadResetDisabled,
     getSpec: (id: AgentId) => {
       try {
         return getAgentSpec(id);

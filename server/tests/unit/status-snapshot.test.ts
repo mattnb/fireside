@@ -328,6 +328,229 @@ describe('status snapshot', () => {
     expect(snapshot.contextUsage.byAgent[0]?.usage.quotaOnly).toBeUndefined();
   });
 
+  it('does not carry stale weekly quota percentages across reset-only windows', () => {
+    const room = createRoom(db, { name: 'quota-room', agents: ['claude'] });
+    const run = insertRun(db, {
+      roomId: room.id,
+      triggerMessageId: 'msg-1',
+      agentId: 'claude',
+      status: 'completed',
+      completedAt: Date.now(),
+    });
+    vi.setSystemTime(new Date(1_800_000_000_100));
+    createAgentRunAction(db, {
+      roomId: room.id,
+      taskId: null,
+      runId: run.id,
+      agentId: 'claude',
+      kind: 'adapter',
+      status: 'completed',
+      label: 'claude result received',
+      detail: 'usage',
+      contextUsage: {
+        provider: 'claude',
+        model: 'claude-opus-4-7[1m]',
+        usedTokens: 50_000,
+        contextWindow: 1_000_000,
+        source: 'claude:usage',
+      },
+    });
+    vi.setSystemTime(new Date(1_800_000_000_200));
+    createAgentRunAction(db, {
+      roomId: room.id,
+      taskId: null,
+      runId: run.id,
+      agentId: 'claude',
+      kind: 'adapter',
+      status: 'info',
+      label: 'claude rate limit headers',
+      detail: 'quota 7d 74%',
+      contextUsage: {
+        provider: 'claude',
+        model: 'claude',
+        usedTokens: 0,
+        quotaOnly: true,
+        quota: {
+          sevenDay: { windowMinutes: 10_080, percent: 74 },
+          source: 'claude:debug-rate-limit-headers',
+        },
+        source: 'claude:debug-rate-limit-headers',
+      },
+    });
+    vi.setSystemTime(new Date(1_800_000_010_000));
+    createAgentRunAction(db, {
+      roomId: room.id,
+      taskId: null,
+      runId: run.id,
+      agentId: 'claude',
+      kind: 'adapter',
+      status: 'info',
+      label: 'claude rate limit update',
+      detail: 'quota 7d reset tracked',
+      contextUsage: {
+        provider: 'claude',
+        model: 'claude',
+        usedTokens: 0,
+        quotaOnly: true,
+        quota: {
+          sevenDay: {
+            windowMinutes: 10_080,
+            resetsAt: 1_800_000_005_000,
+            status: 'allowed',
+          },
+          source: 'claude:rate_limit_info',
+        },
+        source: 'claude:rate_limit_info',
+      },
+    });
+
+    const snapshot = buildStatusSnapshot({ db });
+
+    expect(snapshot.contextUsage.byAgent[0]?.usage.quota?.sevenDay).toBeUndefined();
+  });
+
+  it('keeps a reset-only weekly quota window without inheriting an older percentage', () => {
+    const room = createRoom(db, { name: 'quota-room', agents: ['claude'] });
+    const run = insertRun(db, {
+      roomId: room.id,
+      triggerMessageId: 'msg-1',
+      agentId: 'claude',
+      status: 'completed',
+      completedAt: Date.now(),
+    });
+    vi.setSystemTime(new Date(1_800_000_000_100));
+    createAgentRunAction(db, {
+      roomId: room.id,
+      taskId: null,
+      runId: run.id,
+      agentId: 'claude',
+      kind: 'adapter',
+      status: 'completed',
+      label: 'claude result received',
+      detail: 'usage',
+      contextUsage: {
+        provider: 'claude',
+        model: 'claude-opus-4-7[1m]',
+        usedTokens: 50_000,
+        contextWindow: 1_000_000,
+        source: 'claude:usage',
+      },
+    });
+    vi.setSystemTime(new Date(1_800_000_000_200));
+    createAgentRunAction(db, {
+      roomId: room.id,
+      taskId: null,
+      runId: run.id,
+      agentId: 'claude',
+      kind: 'adapter',
+      status: 'info',
+      label: 'claude rate limit headers',
+      detail: 'quota 7d 74%',
+      contextUsage: {
+        provider: 'claude',
+        model: 'claude',
+        usedTokens: 0,
+        quotaOnly: true,
+        quota: {
+          sevenDay: { windowMinutes: 10_080, percent: 74 },
+          source: 'claude:debug-rate-limit-headers',
+        },
+        source: 'claude:debug-rate-limit-headers',
+      },
+    });
+    vi.setSystemTime(new Date(1_800_000_000_300));
+    createAgentRunAction(db, {
+      roomId: room.id,
+      taskId: null,
+      runId: run.id,
+      agentId: 'claude',
+      kind: 'adapter',
+      status: 'info',
+      label: 'claude rate limit update',
+      detail: 'quota 7d reset tracked',
+      contextUsage: {
+        provider: 'claude',
+        model: 'claude',
+        usedTokens: 0,
+        quotaOnly: true,
+        quota: {
+          sevenDay: {
+            windowMinutes: 10_080,
+            resetsAt: 1_800_010_000_000,
+            status: 'allowed',
+          },
+          source: 'claude:rate_limit_info',
+        },
+        source: 'claude:rate_limit_info',
+      },
+    });
+
+    const snapshot = buildStatusSnapshot({ db });
+    const sevenDay = snapshot.contextUsage.byAgent[0]?.usage.quota?.sevenDay;
+
+    expect(sevenDay).toMatchObject({
+      windowMinutes: 10_080,
+      resetsAt: 1_800_010_000_000,
+      status: 'allowed',
+    });
+    expect(sevenDay?.percent).toBeUndefined();
+  });
+
+  it('expires stale percent-only quota fragments', () => {
+    const room = createRoom(db, { name: 'quota-room', agents: ['claude'] });
+    const run = insertRun(db, {
+      roomId: room.id,
+      triggerMessageId: 'msg-1',
+      agentId: 'claude',
+      status: 'completed',
+      completedAt: Date.now(),
+    });
+    vi.setSystemTime(new Date(1_800_000_000_100));
+    createAgentRunAction(db, {
+      roomId: room.id,
+      taskId: null,
+      runId: run.id,
+      agentId: 'claude',
+      kind: 'adapter',
+      status: 'completed',
+      label: 'claude result received',
+      detail: 'usage',
+      contextUsage: {
+        provider: 'claude',
+        model: 'claude-opus-4-7[1m]',
+        usedTokens: 50_000,
+        contextWindow: 1_000_000,
+        source: 'claude:usage',
+      },
+    });
+    createAgentRunAction(db, {
+      roomId: room.id,
+      taskId: null,
+      runId: run.id,
+      agentId: 'claude',
+      kind: 'adapter',
+      status: 'info',
+      label: 'claude rate limit headers',
+      detail: 'quota 7d 74%',
+      contextUsage: {
+        provider: 'claude',
+        model: 'claude',
+        usedTokens: 0,
+        quotaOnly: true,
+        quota: {
+          sevenDay: { windowMinutes: 10_080, percent: 74 },
+          source: 'claude:debug-rate-limit-headers',
+        },
+        source: 'claude:debug-rate-limit-headers',
+      },
+    });
+    vi.setSystemTime(new Date(1_800_000_000_100 + 31 * 60 * 1000));
+
+    const snapshot = buildStatusSnapshot({ db });
+
+    expect(snapshot.contextUsage.byAgent[0]?.usage.quota?.sevenDay).toBeUndefined();
+  });
+
   it('aggregates room and active-mission lifetime token usage', () => {
     const room = createRoom(db, { name: 'token-room', agents: ['claude', 'codex'] });
     const activeTask = createTask(db, {

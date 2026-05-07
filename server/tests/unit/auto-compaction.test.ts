@@ -81,4 +81,85 @@ describe('auto context maintenance policy', () => {
       thresholdTokens: 700_000,
     });
   });
+
+  describe('lead branch', () => {
+    it('returns reset-session at the lower lead threshold for the room lead', () => {
+      const decision = autoContextMaintenanceDecision(
+        { providerId: 'claude', modelId: 'claude-opus-4-7[1m]' },
+        {
+          provider: 'claude',
+          model: 'claude-opus-4-7[1m]',
+          usedTokens: 132_000,
+          source: 'test',
+        },
+        {
+          enabled: true,
+          percentThreshold: 70,
+          tokenThreshold: 220_000,
+          isLead: true,
+          leadResetPercent: 60,
+        },
+      );
+      expect(decision).toMatchObject({
+        action: 'reset-session',
+        // 220_000 * 0.6 = 132_000
+        thresholdTokens: 132_000,
+        contextWindow: 1_000_000,
+      });
+    });
+
+    it('does not fire the lead reset before the lead threshold is crossed', () => {
+      const decision = autoContextMaintenanceDecision(
+        { providerId: 'claude', modelId: 'claude-opus-4-7[1m]' },
+        {
+          provider: 'claude',
+          model: 'claude-opus-4-7[1m]',
+          usedTokens: 100_000,
+          source: 'test',
+        },
+        {
+          enabled: true,
+          percentThreshold: 70,
+          tokenThreshold: 220_000,
+          isLead: true,
+          leadResetPercent: 60,
+        },
+      );
+      expect(decision).toBeNull();
+    });
+
+    it('uses the standard compact threshold for non-lead workers (isLead defaults false)', () => {
+      const decision = autoContextMaintenanceDecision(
+        { providerId: 'claude', modelId: 'claude-opus-4-7[1m]' },
+        {
+          provider: 'claude',
+          model: 'claude-opus-4-7[1m]',
+          usedTokens: 132_000,
+          source: 'test',
+        },
+        {
+          enabled: true,
+          percentThreshold: 70,
+          tokenThreshold: 220_000,
+          leadResetPercent: 60,
+        },
+      );
+      // Worker still under the regular 220_000 compact threshold.
+      expect(decision).toBeNull();
+    });
+
+    it('falls back to action compact for the lead when leadResetPercent is omitted', () => {
+      const decision = autoContextMaintenanceDecision(
+        { providerId: 'claude', modelId: 'claude-opus-4-7[1m]' },
+        {
+          provider: 'claude',
+          model: 'claude-opus-4-7[1m]',
+          usedTokens: 230_000,
+          source: 'test',
+        },
+        { enabled: true, percentThreshold: 70, tokenThreshold: 220_000, isLead: true },
+      );
+      expect(decision).toMatchObject({ action: 'compact', thresholdTokens: 220_000 });
+    });
+  });
 });

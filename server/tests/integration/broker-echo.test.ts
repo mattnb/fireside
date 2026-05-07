@@ -13,7 +13,11 @@ import {
 import { openDatabase } from '../../src/db.js';
 import { createRoom, getRoom } from '../../src/repos/rooms.js';
 import { addMessage, listMessages } from '../../src/repos/messages.js';
-import { listAgentJobsForRoom } from '../../src/repos/agent-jobs.js';
+import {
+  attachAgentJobRun,
+  createAgentJob,
+  listAgentJobsForRoom,
+} from '../../src/repos/agent-jobs.js';
 import { listPendingDispatchQueueItemsForRoom } from '../../src/repos/dispatch-queue.js';
 import { listPermissionRequests } from '../../src/repos/permission-requests.js';
 import { createAgentRun, listAgentRuns, updateAgentRun } from '../../src/repos/agent-runs.js';
@@ -94,6 +98,38 @@ describe('Broker', () => {
       'claude:claude-says-hello',
     ]);
     expect(runs.map((r) => r.agentId)).toEqual(['claude']);
+  });
+
+  it('does not resume or persist run session ids for ephemeral session policy turns', async () => {
+    const room = createRoom(db, {
+      name: 'g',
+      agentProfiles: [
+        {
+          id: 'claude',
+          providerId: 'claude',
+          displayName: 'Claude',
+          personaId: 'generalist',
+          personaName: 'Generalist',
+          personaSummary: '',
+          sessionPolicy: 'ephemeral',
+        },
+      ],
+    });
+    upsertCliSessionId(db, room.id, 'claude', 'old-session', 'claude');
+
+    await broker.postHumanMessage(room.id, 'human', '@claude hey');
+
+    expect(runs).toMatchObject([{ agentId: 'claude', sessionId: null }]);
+    expect(listAgentRuns(db, room.id)[0]?.cliSessionId).toBeNull();
+    expect(getCliSessionId(db, room.id, 'claude')).toBe('old-session');
+    const promptAction = listAgentRunActionsForRoom(db, room.id).find(
+      (action) => action.label === 'prompt prepared',
+    );
+    expect(promptAction).toBeTruthy();
+    expect(JSON.parse(promptAction!.detail)).toMatchObject({
+      sessionPolicy: 'ephemeral',
+      resumeCliSession: false,
+    });
   });
 
   it('requires a named reference when multiple room participants share one provider', async () => {
@@ -269,15 +305,15 @@ describe('Broker', () => {
     const updated = getRoom(db, room.id)!;
     expect(updated.agents).toContain('codex-regression');
     expect(updated.yoloAgents).toContain('codex-regression');
-    expect(updated.agentProfiles.find((profile) => profile.id === 'codex-regression')).toMatchObject(
-      {
-        providerId: 'codex',
-        personaId: 'quality-assurance-engineer',
-        temporary: true,
-        spawnedBy: 'em',
-        maxTurns: 1,
-      },
-    );
+    expect(
+      updated.agentProfiles.find((profile) => profile.id === 'codex-regression'),
+    ).toMatchObject({
+      providerId: 'codex',
+      personaId: 'quality-assurance-engineer',
+      temporary: true,
+      spawnedBy: 'em',
+      maxTurns: 1,
+    });
     const runAgentIds = listAgentRuns(db, room.id, { limit: 10 }).map((run) => run.agentId);
     expect(runAgentIds).toEqual(expect.arrayContaining(['em', 'codex-regression']));
     expect(listMessages(db, room.id).map((message) => message.authorId)).toContain(
@@ -1255,10 +1291,7 @@ describe('Broker', () => {
     expect(runs.map((run) => run.agentId)).toEqual(['claude']);
     const actions = listAgentRuns(db, room.id).flatMap((run) => listAgentRunActions(db, run.id));
     expect(actions.map((action) => action.label)).toEqual(
-      expect.arrayContaining([
-        'reconciled checklist status note',
-        'mission control update only',
-      ]),
+      expect.arrayContaining(['reconciled checklist status note', 'mission control update only']),
     );
     expect(actions.map((action) => action.detail)).toContain(
       'mission receipt stored without progress',
@@ -1377,7 +1410,9 @@ describe('Broker', () => {
     });
 
     expect(runs.map((run) => run.agentId)).toEqual(['codex']);
-    expect(runs[0]!.prompt).toContain('produce only the next message to be sent by "codex-tech-lead"');
+    expect(runs[0]!.prompt).toContain(
+      'produce only the next message to be sent by "codex-tech-lead"',
+    );
     expect(runs[0]!.prompt).toContain('Team lead: Sean (@sean)');
   });
 
@@ -1424,10 +1459,9 @@ describe('Broker', () => {
 
     expect(runs.map((run) => run.agentId)).toEqual(['claude']);
     expect(runs[0]!.prompt).not.toContain('YOLO collaboration budget');
-    expect(listMessages(db, room.id).map((message) => `${message.authorId}:${message.text}`)).toEqual([
-      'human:@claude answer directly',
-      'claude:claude-saw-direct-mention',
-    ]);
+    expect(
+      listMessages(db, room.id).map((message) => `${message.authorId}:${message.text}`),
+    ).toEqual(['human:@claude answer directly', 'claude:claude-saw-direct-mention']);
   });
 
   it('pauses YOLO when the active mission is waiting on a human council item', async () => {
@@ -1475,12 +1509,11 @@ describe('Broker', () => {
     let createdPlan = false;
     let completedSeededOwners = 0;
     let roomId = '';
-    let yoloBroker: Broker;
-    yoloBroker = new Broker({
+    const yoloBroker: Broker = new Broker({
       db,
       runAgent: async (spec, prompt, sessionId, permission) => {
-        const agentId =
-          (prompt.match(/next message to be sent by "([^"]+)"/)?.[1] ?? spec.id) as AgentId;
+        const agentId = (prompt.match(/next message to be sent by "([^"]+)"/)?.[1] ??
+          spec.id) as AgentId;
         runs.push({
           agentId,
           prompt,
@@ -1618,17 +1651,15 @@ describe('Broker', () => {
 
     expect(runs[0]!.agentId).toBe('codex-project-manager');
     expect(runs.map((run) => run.agentId)).toEqual(
-      expect.arrayContaining([
-        'codex-project-manager',
-        'claude-technical-lead',
-        'gemini-qa-lead',
-      ]),
+      expect.arrayContaining(['codex-project-manager', 'claude-technical-lead', 'gemini-qa-lead']),
     );
     const laneJobs = listAgentJobsForRoom(db, room.id).filter((job) => job.checklistItemId);
     expect(laneJobs.map((job) => job.agentId)).toEqual(
       expect.arrayContaining(['claude-technical-lead', 'gemini-qa-lead']),
     );
-    for (const job of laneJobs.filter((candidate) => candidate.agentId !== 'codex-project-manager')) {
+    for (const job of laneJobs.filter(
+      (candidate) => candidate.agentId !== 'codex-project-manager',
+    )) {
       expect(job.status).toBe('completed');
     }
   });
@@ -2358,6 +2389,89 @@ describe('Broker', () => {
     expect(messages).toContain("matt stopped @claude's active run.");
   });
 
+  it('stopAgentRun clears a stale running row when no abort controller exists', () => {
+    const room = createRoom(db, { name: 'stop-stale-run', agents: ['codex'] });
+    const trigger = addMessage(db, {
+      roomId: room.id,
+      authorId: 'human',
+      authorKind: 'human',
+      text: '@codex start',
+    });
+    const job = createAgentJob(db, {
+      roomId: room.id,
+      taskId: null,
+      checklistItemId: null,
+      agentId: 'codex',
+      triggerMessageId: trigger.id,
+    });
+    const run = createAgentRun(db, {
+      agentJobId: job.id,
+      roomId: room.id,
+      agentId: 'codex',
+      triggerMessageId: trigger.id,
+      taskId: null,
+      promptText: '@codex start',
+      promptChars: 12,
+      estimatedPromptTokens: 3,
+      permissionMode: 'plan',
+      liveMessages: 1,
+      contextArtifacts: 0,
+    });
+    attachAgentJobRun(db, job.id, run.id, { leaseOwner: 'test', leaseMs: 60_000 });
+
+    const result = broker.stopAgentRun(room.id, run.id, 'matt');
+
+    expect(result.ok).toBe(true);
+    expect(result.run?.status).toBe('failed');
+    expect(result.run?.lifecycleState).toBe('canceled_by_user');
+    expect(result.run?.lifecycleReason).toBe('matt stopped this run');
+    expect(result.run?.completedAt).toEqual(expect.any(Number));
+    expect(listAgentJobsForRoom(db, room.id).find((item) => item.id === job.id)?.status).toBe(
+      'canceled',
+    );
+  });
+
+  it('stopRoomRuns clears stale running rows when their controllers are gone', () => {
+    const room = createRoom(db, { name: 'stop-room-stale-run', agents: ['codex'] });
+    const trigger = addMessage(db, {
+      roomId: room.id,
+      authorId: 'human',
+      authorKind: 'human',
+      text: '@codex start',
+    });
+    const job = createAgentJob(db, {
+      roomId: room.id,
+      taskId: null,
+      checklistItemId: null,
+      agentId: 'codex',
+      triggerMessageId: trigger.id,
+    });
+    const run = createAgentRun(db, {
+      agentJobId: job.id,
+      roomId: room.id,
+      agentId: 'codex',
+      triggerMessageId: trigger.id,
+      taskId: null,
+      promptText: '@codex start',
+      promptChars: 12,
+      estimatedPromptTokens: 3,
+      permissionMode: 'plan',
+      liveMessages: 1,
+      contextArtifacts: 0,
+    });
+    attachAgentJobRun(db, job.id, run.id, { leaseOwner: 'test', leaseMs: 60_000 });
+
+    const result = broker.stopRoomRuns(room.id, 'matt');
+
+    expect(result.stopped).toBe(1);
+    expect(listAgentRuns(db, room.id, { limit: 10 }).find((item) => item.id === run.id)?.status).toBe(
+      'failed',
+    );
+    expect(listAgentJobsForRoom(db, room.id).find((item) => item.id === job.id)?.status).toBe(
+      'canceled',
+    );
+  });
+
   it('stopAgentRun on an already-terminal run is a no-op success', () => {
     const room = createRoom(db, { name: 'stop-terminal', agents: ['claude'] });
     const trigger = addMessage(db, {
@@ -2461,7 +2575,7 @@ describe('Broker', () => {
         return map[id];
       },
     });
-    const room = createRoom(db, { name: 'g', agents: ['claude'] });
+    const room = createRoom(db, { name: 'g', agents: ['claude'], leadAgentId: 'claude' });
 
     await resumeBroker.postHumanMessage(room.id, 'human', '@claude hi');
     await resumeBroker.postHumanMessage(room.id, 'human', '@claude again');
@@ -2496,7 +2610,7 @@ describe('Broker', () => {
         return map[id];
       },
     });
-    const room = createRoom(db, { name: 'stale-session', agents: ['claude'] });
+    const room = createRoom(db, { name: 'stale-session', agents: ['claude'], leadAgentId: 'claude' });
     upsertCliSessionId(db, room.id, 'claude', 'stale-session', 'claude');
 
     await resumeBroker.postHumanMessage(room.id, 'human', '@claude recover');
@@ -2542,7 +2656,11 @@ describe('Broker', () => {
         return map[id];
       },
     });
-    const room = createRoom(db, { name: 'stale-codex-session', agents: ['codex'] });
+    const room = createRoom(db, {
+      name: 'stale-codex-session',
+      agents: ['codex'],
+      leadAgentId: 'codex',
+    });
     upsertCliSessionId(db, room.id, 'codex', 'stale-codex-session', 'codex');
 
     await resumeBroker.postHumanMessage(room.id, 'human', '@codex first');
@@ -2741,10 +2859,9 @@ describe('Broker', () => {
     );
 
     expect(routed.deliveryStatus).toBe('delivered');
-    expect(listAgentRuns(db, room.id).map((run) => run.agentId)).toEqual(expect.arrayContaining([
-      'gemini-quality-assurance',
-      'gemini-qa-lead',
-    ]));
+    expect(listAgentRuns(db, room.id).map((run) => run.agentId)).toEqual(
+      expect.arrayContaining(['gemini-quality-assurance', 'gemini-qa-lead']),
+    );
     expect(
       queueBroker.listMessages(room.id).find((message) => message.id === routed.id),
     ).not.toHaveProperty('deliveryStatus', 'queued');
@@ -2868,6 +2985,7 @@ describe('Broker', () => {
           personaSummary: '',
         },
       ],
+      leadAgentId: 'gemini-qa-lead',
     });
     const oldTrigger = addMessage(db, {
       roomId: room.id,
@@ -2982,9 +3100,10 @@ describe('Broker', () => {
     expect(runs[0]!.prompt).toContain('Mission goal: Add task execution controls');
     expect(runs[0]!.prompt).toContain('Mission summary: Task shell is ready for implementation.');
 
-    expect(runs[1]!.prompt).toContain('workflow contract repair');
+    // The reply text is purely conversational, so the broker auto-synthesizes a
+    // /mission-receipt no_update server-side and skips the legacy repair turn.
     const agentRuns = listAgentRuns(db, room.id);
-    expect(agentRuns).toHaveLength(2);
+    expect(agentRuns).toHaveLength(1);
     for (const run of agentRuns) {
       expect(run).toMatchObject({
         agentId: 'claude',
@@ -2998,7 +3117,9 @@ describe('Broker', () => {
     const actionLabels = agentRuns.flatMap((run) =>
       listAgentRunActions(db, run.id).map((action) => action.label),
     );
-    expect(actionLabels).toContain('workflow contract repair requested');
+    expect(actionLabels).toContain('workflow contract auto-repaired');
+    expect(actionLabels).toContain('mission receipt: no_update');
+    expect(actionLabels).not.toContain('workflow contract repair requested');
   });
 
   it('stores hidden mission plan, phase, and checklist updates from agent replies', async () => {
@@ -3102,8 +3223,8 @@ describe('Broker', () => {
       db,
       maxAgentRepliesPerThread: 1,
       runAgent: async (spec, prompt, sessionId) => {
-        const agentId =
-          (prompt.match(/next message to be sent by "([^"]+)"/)?.[1] ?? spec.id) as AgentId;
+        const agentId = (prompt.match(/next message to be sent by "([^"]+)"/)?.[1] ??
+          spec.id) as AgentId;
         runs.push({ agentId, prompt, sessionId });
         if (agentId === 'codex-project-manager') {
           return {
@@ -3523,6 +3644,140 @@ describe('Broker', () => {
     expect(runActions.map((action) => action.label)).toContain('mission receipt: no_update');
   });
 
+  it('collapses satisfied workflow-repair triggers in subsequent prompts', async () => {
+    let turn = 0;
+    const collapseBroker = new Broker({
+      db,
+      maxAgentRepliesPerThread: 1,
+      runAgent: async (spec, prompt, sessionId) => {
+        turn += 1;
+        runs.push({ agentId: spec.id, prompt, sessionId });
+        const text =
+          turn === 1
+            ? 'I finished wiring the handler.'
+            : turn === 2
+              ? [
+                  '/mission-receipt',
+                  'status: no_update',
+                  'summary: ack',
+                  '/end-mission-receipt',
+                ].join('\n')
+              : 'Acknowledged.';
+        return { text, sessionId: `${spec.id}-sess`, raw: { stdout: '', stderr: '' } };
+      },
+      getSpec: (id) => {
+        const map: Record<string, AgentSpec> = {
+          claude: fakeSpec('claude', 'claude reply'),
+        };
+        return map[id];
+      },
+    });
+    const room = createRoom(db, { name: 'collapse-repair', agents: ['claude'] });
+    collapseBroker.createTask(room.id, { title: 'Collapse mission' });
+
+    // Turn 1 lacks a receipt → broker fires repair trigger → turn 2 satisfies it.
+    await collapseBroker.postHumanMessage(room.id, 'human', '@claude proceed');
+    expect(turn).toBe(2);
+    expect(runs[1]!.prompt).toContain('workflow contract repair for');
+
+    // Turn 3 is a fresh human message — its prompt should render the prior
+    // repair as a collapsed marker, not the verbose body.
+    await collapseBroker.postHumanMessage(room.id, 'human', '@claude another check');
+    expect(turn).toBe(3);
+    const turn3Prompt = runs[2]!.prompt;
+    expect(turn3Prompt).not.toContain('Mission Control needs a state receipt');
+    expect(turn3Prompt).not.toContain('Required options:');
+    expect(turn3Prompt).toContain('workflow-repair @');
+    expect(turn3Prompt).toContain('status=satisfied');
+  });
+
+  it('auto-synthesizes a no-update mission receipt for purely conversational replies and skips the repair turn', async () => {
+    let turn = 0;
+    const conversationalBroker = new Broker({
+      db,
+      maxAgentRepliesPerThread: 1,
+      runAgent: async (spec, prompt, sessionId) => {
+        turn += 1;
+        runs.push({ agentId: spec.id, prompt, sessionId });
+        return {
+          text: 'Working on the analysis. I will ping you when results are ready.',
+          sessionId: `${spec.id}-sess`,
+          raw: { stdout: '', stderr: '' },
+        };
+      },
+      getSpec: (id) => {
+        const map: Record<string, AgentSpec> = {
+          claude: fakeSpec('claude', 'claude reply'),
+          codex: fakeSpec('codex', 'codex reply'),
+        };
+        return map[id];
+      },
+    });
+    const room = createRoom(db, { name: 'auto-repair', agents: ['claude'] });
+    conversationalBroker.createTask(room.id, { title: 'Conversational mission' });
+
+    await conversationalBroker.postHumanMessage(room.id, 'human', '@claude status?');
+
+    expect(turn).toBe(1);
+    expect(runs).toHaveLength(1);
+    expect(runs[0]!.prompt).not.toContain('workflow contract repair');
+
+    const runActions = listAgentRuns(db, room.id).flatMap((run) => listAgentRunActions(db, run.id));
+    const labels = runActions.map((action) => action.label);
+    expect(labels).toContain('mission receipt: no_update');
+    expect(labels).toContain('workflow contract auto-repaired');
+    expect(labels).not.toContain('workflow contract repair requested');
+
+    const outcomes = listAgentTurnOutcomesForRoom(db, room.id, 10);
+    expect(outcomes).toHaveLength(1);
+    expect(outcomes[0]!.runKind).toBe('normal.turn');
+    expect(outcomes[0]!.missionReceipts).toBe(1);
+  });
+
+  it('still triggers a repair turn when visible text claims completion without a mission update', async () => {
+    let turn = 0;
+    const completionClaimBroker = new Broker({
+      db,
+      maxAgentRepliesPerThread: 1,
+      runAgent: async (spec, prompt, sessionId) => {
+        turn += 1;
+        runs.push({ agentId: spec.id, prompt, sessionId });
+        return {
+          text:
+            turn === 1
+              ? 'I finished wiring the handler.'
+              : [
+                  '/mission-receipt',
+                  'status: no_update',
+                  'summary: acknowledged.',
+                  '/end-mission-receipt',
+                ].join('\n'),
+          sessionId: `${spec.id}-sess`,
+          raw: { stdout: '', stderr: '' },
+        };
+      },
+      getSpec: (id) => {
+        const map: Record<string, AgentSpec> = {
+          claude: fakeSpec('claude', 'claude reply'),
+        };
+        return map[id];
+      },
+    });
+    const room = createRoom(db, { name: 'completion-claim', agents: ['claude'] });
+    completionClaimBroker.createTask(room.id, { title: 'Completion claim mission' });
+
+    await completionClaimBroker.postHumanMessage(room.id, 'human', '@claude proceed');
+
+    // 'finished' triggers the work-lane signal — this case is NOT safe to auto-synth,
+    // so the repair turn must still fire so the agent can confirm or correct the claim.
+    expect(turn).toBe(2);
+    expect(runs[1]!.prompt).toContain('workflow contract repair');
+    const runActions = listAgentRuns(db, room.id).flatMap((run) => listAgentRunActions(db, run.id));
+    expect(runActions.map((action) => action.label)).toContain(
+      'workflow contract repair requested',
+    );
+  });
+
   it('does not keep YOLO alive when workflow repair only restates an open work lane', async () => {
     const agentId = 'codex-principal-software';
     let itemId = '';
@@ -3900,7 +4155,7 @@ describe('Broker', () => {
       replyText: 'diagnostic reply',
       stdout: expect.stringContaining('web_fetch_requests'),
       stderr: 'minor warning',
-      cliSessionId: 'claude-session',
+      cliSessionId: null,
     });
     expect(detail!.run.promptText).toContain('@claude inspect this');
     expect(detail!.triggerMessage?.text).toBe('@claude inspect this');
@@ -4727,9 +4982,8 @@ describe('Broker', () => {
     });
 
     it('Gemini probe with fresh quota clears existing blocks', async () => {
-      const { resetGeminiStatsSamplerForTesting } = await import(
-        '../../src/agents/gemini-quota.js'
-      );
+      const { resetGeminiStatsSamplerForTesting } =
+        await import('../../src/agents/gemini-quota.js');
       resetGeminiStatsSamplerForTesting();
       const room = createRoom(db, { name: 'g', agents: ['gemini'] });
       const trigger = addMessage(db, {
@@ -4786,9 +5040,8 @@ describe('Broker', () => {
     });
 
     it('Gemini probe with still-exhausted quota leaves the block in place', async () => {
-      const { resetGeminiStatsSamplerForTesting } = await import(
-        '../../src/agents/gemini-quota.js'
-      );
+      const { resetGeminiStatsSamplerForTesting } =
+        await import('../../src/agents/gemini-quota.js');
       resetGeminiStatsSamplerForTesting();
       const exhaustedOutput =
         'TerminalQuotaError: you have exhausted your capacity on this model. quota will reset in 4h.';

@@ -211,6 +211,7 @@ describe('manual agent compaction', () => {
           autoCompactPercent: 55,
         },
       ],
+      leadAgentId: 'codex',
     });
     const priorTrigger = addMessage(db, {
       roomId: room.id,
@@ -260,6 +261,7 @@ describe('manual agent compaction', () => {
       resumeCliSessions: true,
       autoCompactEnabled: true,
       autoCompactTokenLimit: 220_000,
+      leadResetDisabled: true,
       getSpec: (id) => (id === 'codex' ? fakeSpec('codex') : undefined),
       runAgent: async (_spec, prompt, sessionId) => {
         calls.push({ prompt, sessionId });
@@ -287,7 +289,7 @@ describe('manual agent compaction', () => {
 
   it('auto-compresses a Gemini resumable session before the next turn once context crosses threshold', async () => {
     const db = openDatabase(':memory:');
-    const room = createRoom(db, { name: 'camp', agents: ['gemini'] });
+    const room = createRoom(db, { name: 'camp', agents: ['gemini'], leadAgentId: 'gemini' });
     const priorTrigger = addMessage(db, {
       roomId: room.id,
       authorId: 'human',
@@ -333,6 +335,7 @@ describe('manual agent compaction', () => {
       resumeCliSessions: true,
       autoCompactEnabled: true,
       autoCompactPercent: 70,
+      leadResetDisabled: true,
       getSpec: (id) => (id === 'gemini' ? fakeSpec('gemini') : undefined),
       runAgent: async (_spec, prompt, sessionId) => {
         calls.push({ prompt, sessionId });

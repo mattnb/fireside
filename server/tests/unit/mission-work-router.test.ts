@@ -91,6 +91,23 @@ describe('routeMissionWorkUpdates', () => {
     );
   });
 
+  it('dispatches at most one changed work item per owner in a routing pass', () => {
+    const decision = route({
+      changedItems: [item('first-owned'), item('second-owned')],
+    });
+
+    expect(decision.dispatches).toHaveLength(1);
+    expect(decision.dispatches[0]).toMatchObject({
+      agentId: 'claude-technical-lead',
+      item: { id: 'first-owned' },
+    });
+    expect(decision.trace).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: 'mission-work-agent-dedupe', result: 'skipped' }),
+      ]),
+    );
+  });
+
   it('blocks items whose dependencies are not complete', () => {
     const dependency = item('dependency', { status: 'open', ownerAgentId: 'codex-project-manager' });
     const dependent = item('dependent', { dependencyIds: ['dependency'] });

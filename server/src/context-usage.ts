@@ -850,6 +850,10 @@ export function claudeDebugQuotaUsage(raw: string, model = 'claude'): AgentConte
 export function geminiContextUsage(obj: Record<string, unknown>): AgentContextUsage | null {
   const stats = asRecord(obj.stats) ?? obj;
   const usage = asRecord(stats.usage_metadata) ?? asRecord(stats.usageMetadata);
+  const models = asRecord(stats.models);
+  const firstModelEntry = models
+    ? Object.entries(models).find(([, value]) => asRecord(value))
+    : undefined;
   if (usage) {
     const inputTokens =
       numberFromRecord(usage, 'input_token_count') ?? numberFromRecord(usage, 'inputTokenCount');
@@ -878,17 +882,61 @@ export function geminiContextUsage(obj: Record<string, unknown>): AgentContextUs
     }
   }
 
-  const models = asRecord(stats.models);
+  const directInputTokens =
+    numberFromRecord(stats, 'input_tokens') ??
+    numberFromRecord(stats, 'inputTokenCount') ??
+    numberFromRecord(stats, 'input');
+  const directOutputTokens =
+    numberFromRecord(stats, 'output_tokens') ??
+    numberFromRecord(stats, 'outputTokenCount') ??
+    numberFromRecord(stats, 'output');
+  const directCachedInputTokens =
+    numberFromRecord(stats, 'cached_content_token_count') ??
+    numberFromRecord(stats, 'cachedContentTokenCount') ??
+    numberFromRecord(stats, 'cached_input_tokens') ??
+    numberFromRecord(stats, 'cachedInputTokens') ??
+    numberFromRecord(stats, 'cached');
+  const directUsedTokens =
+    numberFromRecord(stats, 'total_tokens') ??
+    numberFromRecord(stats, 'totalTokenCount') ??
+    numberFromRecord(stats, 'total') ??
+    Math.max(0, (directInputTokens ?? 0) + (directOutputTokens ?? 0));
+  if (directUsedTokens > 0) {
+    const model =
+      stringValue(stats.model) ??
+      stringValue(obj.model) ??
+      (firstModelEntry ? firstModelEntry[0] : undefined) ??
+      'gemini';
+    const contextWindow = geminiContextWindowForModel(model);
+    return addWindowFields({
+      provider: 'gemini',
+      model,
+      usedTokens: directUsedTokens,
+      ...(directInputTokens !== undefined ? { inputTokens: directInputTokens } : {}),
+      ...(directCachedInputTokens !== undefined
+        ? { cachedInputTokens: directCachedInputTokens }
+        : {}),
+      ...(directOutputTokens !== undefined ? { outputTokens: directOutputTokens } : {}),
+      ...(contextWindow !== undefined ? { contextWindow } : {}),
+      source: 'gemini:stats.token_counts',
+    });
+  }
+
   if (!models) return null;
   for (const [model, rawModelStats] of Object.entries(models)) {
     const modelStats = asRecord(rawModelStats);
-    const tokens = asRecord(modelStats?.tokens);
+    const tokens = asRecord(modelStats?.tokens) ?? modelStats;
     if (!tokens) continue;
-    const inputTokens = numberFromRecord(tokens, 'input');
-    const outputTokens = numberFromRecord(tokens, 'output');
-    const cachedInputTokens = numberFromRecord(tokens, 'cached');
+    const inputTokens =
+      numberFromRecord(tokens, 'input') ?? numberFromRecord(tokens, 'input_tokens');
+    const outputTokens =
+      numberFromRecord(tokens, 'output') ?? numberFromRecord(tokens, 'output_tokens');
+    const cachedInputTokens =
+      numberFromRecord(tokens, 'cached') ?? numberFromRecord(tokens, 'cached_input_tokens');
     const usedTokens =
-      numberFromRecord(tokens, 'total') ?? Math.max(0, (inputTokens ?? 0) + (outputTokens ?? 0));
+      numberFromRecord(tokens, 'total') ??
+      numberFromRecord(tokens, 'total_tokens') ??
+      Math.max(0, (inputTokens ?? 0) + (outputTokens ?? 0));
     if (usedTokens <= 0) continue;
     const contextWindow = geminiContextWindowForModel(model);
     return addWindowFields({
@@ -911,7 +959,14 @@ export function formatContextUsage(usage: AgentContextUsage): string {
   const used = `${usage.usedTokens}${usage.estimated ? ' estimated' : ''} used`;
   const window = usage.contextWindow ? `${usage.contextWindow} window` : 'window unknown';
   const model = usage.reasoningEffort ? `${usage.model}/${usage.reasoningEffort}` : usage.model;
-  return `${model}: ${used} / ${window}${quota ? ` / ${quota}` : ''}`;
+  const cacheParts = [
+    usage.cacheReadInputTokens ? `cache_read_input_tokens ${usage.cacheReadInputTokens}` : '',
+    usage.cacheCreationInputTokens
+      ? `cache_creation_input_tokens ${usage.cacheCreationInputTokens}`
+      : '',
+  ].filter(Boolean);
+  const cache = cacheParts.length > 0 ? ` / ${cacheParts.join(' / ')}` : '';
+  return `${model}: ${used} / ${window}${cache}${quota ? ` / ${quota}` : ''}`;
 }
 
 export function formatQuotaUsage(quota: AgentQuotaUsage): string {

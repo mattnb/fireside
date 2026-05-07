@@ -42,6 +42,9 @@ describe('start() / shutdown()', () => {
         autoCompactEnabled: false,
         autoCompactPercent: 70,
         autoCompactTokenLimit: 220_000,
+        leadResetPercent: 60,
+        leadResetDisabled: false,
+        claudeMcpConfigPath: null,
       });
 
       // Server is up — REST returns the empty room list.

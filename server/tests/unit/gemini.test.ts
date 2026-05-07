@@ -244,6 +244,55 @@ describe('gemini adapter', () => {
     ]);
   });
 
+  it('emits context usage from current stream-json token count stats', () => {
+    expect(
+      geminiSpec.parseStreamLine?.(
+        JSON.stringify({
+          type: 'result',
+          status: 'success',
+          stats: {
+            total_tokens: 16770,
+            input_tokens: 16499,
+            output_tokens: 39,
+            cached: 0,
+            input: 16499,
+            duration_ms: 11686,
+            tool_calls: 0,
+            models: {
+              'gemini-3.1-pro-preview': {
+                total_tokens: 16770,
+                input_tokens: 16499,
+                output_tokens: 39,
+                cached: 0,
+                input: 16499,
+              },
+            },
+          },
+        }),
+        'stdout',
+      ),
+    ).toEqual([
+      {
+        kind: 'usage',
+        status: 'completed',
+        label: 'gemini result received',
+        detail: 'gemini-3.1-pro-preview: 16770 used / 1000000 window',
+        contextUsage: {
+          provider: 'gemini',
+          model: 'gemini-3.1-pro-preview',
+          usedTokens: 16770,
+          inputTokens: 16499,
+          cachedInputTokens: 0,
+          outputTokens: 39,
+          contextWindow: 1000000,
+          remainingTokens: 983230,
+          percentUsed: 1.677,
+          source: 'gemini:stats.token_counts',
+        },
+      },
+    ]);
+  });
+
   it('emits context usage from legacy model token stats', () => {
     expect(
       geminiSpec.parseStreamLine?.(

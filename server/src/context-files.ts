@@ -11,6 +11,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import type { Message } from './repos/messages.js';
+import { PROTOCOLS_MARKDOWN } from './protocols-document.js';
 
 export interface MessageArtifact {
   messageId: string;
@@ -22,6 +23,7 @@ export interface MessageArtifact {
 export interface ConversationContextFiles {
   transcriptPath: string;
   recapPath: string;
+  protocolsPath: string;
   artifactsDir: string;
   fixtureManifestPath: string;
   fixturesDir: string;
@@ -76,13 +78,25 @@ export interface ConversationArtifactListing {
 
 const DEFAULT_LARGE_MESSAGE_THRESHOLD_CHARS = 6_000;
 const DEFAULT_ARTIFACT_EXCERPT_CHARS = 1_200;
-const DEFAULT_MAX_RECAP_CHARS = 12_000;
-const DEFAULT_MAX_TRANSCRIPT_CHARS = 64_000;
+export const DEFAULT_MAX_RECAP_CHARS = 12_000;
+export const DEFAULT_MAX_TRANSCRIPT_CHARS = 64_000;
 const DEFAULT_FIXTURE_PREVIEW_BYTES = 16_384;
 const DEFAULT_MAX_FIXTURE_BYTES = 25 * 1024 * 1024;
 
 function safeSegment(input: string): string {
   return input.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 80) || 'room';
+}
+
+function writeProtocolsDocumentIfChanged(target: string): void {
+  try {
+    if (existsSync(target)) {
+      const existing = readFileSync(target, 'utf8');
+      if (existing === PROTOCOLS_MARKDOWN) return;
+    }
+  } catch {
+    // fall through to write
+  }
+  writeFileSync(target, PROTOCOLS_MARKDOWN, 'utf8');
 }
 
 export function contextRoomDirectory(contextDir: string, roomId: string): string {
@@ -401,7 +415,13 @@ export function messageTextForPrompt(
   return artifact ? messageArtifactStub(artifact) : message.text;
 }
 
-function textForContextFile(message: Message, artifacts: Record<string, MessageArtifact>): string {
+function textForContextFile(
+  message: Message,
+  artifacts: Record<string, MessageArtifact>,
+  collapsedText?: Map<string, string> | undefined,
+): string {
+  const collapsed = collapsedText?.get(message.id);
+  if (collapsed) return collapsed;
   const artifact = artifacts[message.id];
   return artifact
     ? `[Large message artifact: ${artifact.chars} chars at ${artifact.path}. Excerpt: ${oneLine(artifact.excerpt, 320)}]`
@@ -412,7 +432,12 @@ function formatMessage(
   message: Message,
   artifacts: Record<string, MessageArtifact>,
   maxInlineChars = 1_200,
+  collapsedText?: Map<string, string> | undefined,
 ): string {
+  const collapsed = collapsedText?.get(message.id);
+  if (collapsed) {
+    return `- ${new Date(message.createdAt).toISOString()} ${message.authorId} (${message.authorKind}): ${collapsed}`;
+  }
   const text = textForContextFile(message, artifacts);
   const body = artifacts[message.id] ? text : excerptText(text, maxInlineChars);
   return `- ${new Date(message.createdAt).toISOString()} ${message.authorId} (${message.authorKind}): ${body}`;
@@ -503,6 +528,9 @@ export function writeConversationContextFiles(opts: {
   artifactExcerptChars?: number;
   maxRecapChars?: number;
   maxTranscriptChars?: number;
+  /** Per-message replacement text (one-line markers) for messages that should be
+   *  rendered collapsed in the bounded transcript and recap files. */
+  collapsedMessageText?: Map<string, string>;
 }): ConversationContextFiles {
   const totalMessages = opts.messages.length;
   const omittedMessages = Math.max(0, totalMessages - opts.recentMessages);
@@ -525,6 +553,7 @@ export function writeConversationContextFiles(opts: {
 
   const transcriptPath = path.join(roomDir, 'transcript.md');
   const recapPath = path.join(roomDir, 'recap.md');
+  const protocolsPath = path.join(roomDir, 'protocols.md');
   const fixtureMdPath = fixtureManifestPath(opts.contextDir, opts.roomId);
   const fixturesDir = fixtureDirectory(opts.contextDir, opts.roomId);
   const fixtureSummaryText = fixtureSummary(fixtures);
@@ -540,7 +569,10 @@ export function writeConversationContextFiles(opts: {
     `## Messages`,
     ``,
   ];
-  const transcriptLines = opts.messages.map((m) => formatMessage(m, messageArtifacts));
+  const collapsedMessageText = opts.collapsedMessageText;
+  const transcriptLines = opts.messages.map((m) =>
+    formatMessage(m, messageArtifacts, undefined, collapsedMessageText),
+  );
   const selectedTranscriptLines = boundedTailLines(
     transcriptLines,
     transcriptHeader,
@@ -591,7 +623,9 @@ export function writeConversationContextFiles(opts: {
       `## Recent Omitted Message Excerpts`,
       ``,
       olderTail.length > 0
-        ? olderTail.map((m) => formatMessage(m, messageArtifacts, 360)).join('\n')
+        ? olderTail
+            .map((m) => formatMessage(m, messageArtifacts, 360, collapsedMessageText))
+            .join('\n')
         : 'No messages have been omitted from the live prompt yet.',
       ``,
     ].join('\n'),
@@ -615,10 +649,12 @@ export function writeConversationContextFiles(opts: {
   writeFileSync(transcriptPath, transcript, 'utf8');
   writeFileSync(recapPath, recap, 'utf8');
   writeFileSync(manifestPath, manifest, 'utf8');
+  writeProtocolsDocumentIfChanged(protocolsPath);
 
   return {
     transcriptPath,
     recapPath,
+    protocolsPath,
     artifactsDir,
     fixtureManifestPath: fixtureMdPath,
     fixturesDir,

@@ -254,6 +254,10 @@ CREATE INDEX IF NOT EXISTS idx_agent_jobs_room_status_updated
 CREATE INDEX IF NOT EXISTS idx_agent_jobs_run
   ON agent_jobs(run_id);
 
+CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_jobs_active_single_flight
+  ON agent_jobs(room_id, agent_id, trigger_message_id)
+  WHERE status IN ('queued', 'leased', 'running');
+
 CREATE TABLE IF NOT EXISTS collaboration_items (
   id TEXT PRIMARY KEY,
   room_id TEXT NOT NULL REFERENCES rooms(id) ON DELETE CASCADE,
@@ -393,6 +397,7 @@ CREATE TABLE IF NOT EXISTS agent_turn_outcomes (
   id TEXT PRIMARY KEY,
   room_id TEXT NOT NULL REFERENCES rooms(id) ON DELETE CASCADE,
   task_id TEXT REFERENCES tasks(id) ON DELETE SET NULL,
+  phase_id TEXT REFERENCES task_phases(id) ON DELETE SET NULL,
   run_id TEXT NOT NULL UNIQUE REFERENCES agent_runs(id) ON DELETE CASCADE,
   agent_id TEXT NOT NULL,
   visible_message_id TEXT REFERENCES messages(id) ON DELETE SET NULL,
@@ -411,6 +416,7 @@ CREATE TABLE IF NOT EXISTS agent_turn_outcomes (
   work_dispatches_json TEXT NOT NULL DEFAULT '[]',
   next_agents_json TEXT NOT NULL DEFAULT '[]',
   summary TEXT NOT NULL DEFAULT '',
+  run_kind TEXT,
   created_at INTEGER NOT NULL
 );
 
@@ -605,6 +611,10 @@ function ensureAgentJobTables(db: DbType): void {
 
     CREATE INDEX IF NOT EXISTS idx_agent_jobs_run
       ON agent_jobs(run_id);
+
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_jobs_active_single_flight
+      ON agent_jobs(room_id, agent_id, trigger_message_id)
+      WHERE status IN ('queued', 'leased', 'running');
   `);
 }
 
@@ -729,6 +739,7 @@ function ensureAgentTurnOutcomeTables(db: DbType): void {
       id TEXT PRIMARY KEY,
       room_id TEXT NOT NULL REFERENCES rooms(id) ON DELETE CASCADE,
       task_id TEXT REFERENCES tasks(id) ON DELETE SET NULL,
+      phase_id TEXT REFERENCES task_phases(id) ON DELETE SET NULL,
       run_id TEXT NOT NULL UNIQUE REFERENCES agent_runs(id) ON DELETE CASCADE,
       agent_id TEXT NOT NULL,
       visible_message_id TEXT REFERENCES messages(id) ON DELETE SET NULL,
@@ -747,6 +758,7 @@ function ensureAgentTurnOutcomeTables(db: DbType): void {
       work_dispatches_json TEXT NOT NULL DEFAULT '[]',
       next_agents_json TEXT NOT NULL DEFAULT '[]',
       summary TEXT NOT NULL DEFAULT '',
+      run_kind TEXT,
       created_at INTEGER NOT NULL
     );
 
@@ -755,6 +767,22 @@ function ensureAgentTurnOutcomeTables(db: DbType): void {
 
     CREATE INDEX IF NOT EXISTS idx_agent_turn_outcomes_task_created
       ON agent_turn_outcomes(task_id, created_at);
+  `);
+  const columns = columnNames(db, 'agent_turn_outcomes');
+  if (!columns.has('phase_id')) {
+    db.prepare(
+      `ALTER TABLE agent_turn_outcomes ADD COLUMN phase_id TEXT REFERENCES task_phases(id) ON DELETE SET NULL`,
+    ).run();
+  }
+  if (!columns.has('run_kind')) {
+    db.prepare(`ALTER TABLE agent_turn_outcomes ADD COLUMN run_kind TEXT`).run();
+  }
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_agent_turn_outcomes_phase_created
+      ON agent_turn_outcomes(phase_id, created_at);
+
+    CREATE INDEX IF NOT EXISTS idx_agent_turn_outcomes_run_kind_created
+      ON agent_turn_outcomes(run_kind, created_at);
   `);
 }
 
@@ -1048,7 +1076,10 @@ function bounded(text: string, maxChars: number): string {
   return text.length <= maxChars ? text : text.slice(0, maxChars);
 }
 
-function missionReceiptDetail(receipt: ParsedMissionReceipt, fallback = 'Mission receipt recorded.'): string {
+function missionReceiptDetail(
+  receipt: ParsedMissionReceipt,
+  fallback = 'Mission receipt recorded.',
+): string {
   const refs = [
     receipt.planRef ? `plan ${receipt.planRef}` : '',
     receipt.phaseRef ? `phase ${receipt.phaseRef}` : '',

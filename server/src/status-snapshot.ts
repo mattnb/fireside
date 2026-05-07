@@ -60,6 +60,7 @@ const ACTION_KINDS = [
 
 const DEFAULT_RECENT_LIMIT = 10;
 const STALE_RUN_MS = 5 * 60 * 1000;
+const QUOTA_PERCENT_ONLY_TTL_MS = 30 * 60 * 1000;
 
 export interface BuildStatusSnapshotInput {
   db: Database;
@@ -714,7 +715,7 @@ function contextUsageEntry(
     actionId: action.id,
     runId: action.runId,
     createdAt: action.createdAt,
-    usage: action.contextUsage,
+    usage: sanitizeContextUsageQuota(action.contextUsage, action.createdAt),
   };
 }
 
@@ -743,10 +744,116 @@ function mergeQuotaWindow(
   existing: AgentQuotaWindow | undefined,
   incoming: AgentQuotaWindow | undefined,
   preferIncoming: boolean,
+  allowPartialFragmentMerge: boolean,
 ): AgentQuotaWindow | undefined {
-  if (!incoming) return existing;
-  if (!existing) return incoming;
-  return preferIncoming ? { ...existing, ...incoming } : { ...incoming, ...existing };
+  const isExpired = (window: AgentQuotaWindow | undefined): boolean =>
+    window?.resetsAt !== undefined && window.resetsAt <= Date.now();
+  const newer = preferIncoming ? incoming : existing;
+  const older = preferIncoming ? existing : incoming;
+  if (newer && isExpired(newer)) return undefined;
+  if (older && isExpired(older) && !newer) return undefined;
+  if (!incoming) return isExpired(existing) ? undefined : existing;
+  if (!existing) return isExpired(incoming) ? undefined : incoming;
+
+  if (
+    newer?.resetsAt !== undefined &&
+    newer.percent === undefined &&
+    older?.percent !== undefined &&
+    older.resetsAt !== newer.resetsAt &&
+    !allowPartialFragmentMerge
+  ) {
+    return newer;
+  }
+
+  const merged = preferIncoming ? { ...existing, ...incoming } : { ...incoming, ...existing };
+  return isExpired(merged) ? undefined : merged;
+}
+
+function sanitizeQuotaWindowForAction(
+  window: AgentQuotaWindow | undefined,
+  actionCreatedAt: number,
+): AgentQuotaWindow | undefined {
+  if (!window) return undefined;
+  if (
+    window.percent !== undefined &&
+    window.resetsAt === undefined &&
+    Date.now() - actionCreatedAt > QUOTA_PERCENT_ONLY_TTL_MS
+  ) {
+    return undefined;
+  }
+  return window;
+}
+
+function pruneQuotaWindowForOutput(window: AgentQuotaWindow | undefined): AgentQuotaWindow | undefined {
+  if (!window) return undefined;
+  if (window.resetsAt !== undefined && window.resetsAt <= Date.now()) return undefined;
+  return window;
+}
+
+function sanitizeQuotaForAction(
+  quota: AgentContextUsage['quota'] | undefined,
+  actionCreatedAt: number,
+): AgentContextUsage['quota'] | undefined {
+  if (!quota) return undefined;
+  const sanitized = { ...quota };
+  delete sanitized.fiveHour;
+  delete sanitized.sevenDay;
+  delete sanitized.daily;
+  const fiveHour = sanitizeQuotaWindowForAction(quota.fiveHour, actionCreatedAt);
+  const sevenDay = sanitizeQuotaWindowForAction(quota.sevenDay, actionCreatedAt);
+  const daily = sanitizeQuotaWindowForAction(quota.daily, actionCreatedAt);
+  if (fiveHour) sanitized.fiveHour = fiveHour;
+  if (sevenDay) sanitized.sevenDay = sevenDay;
+  if (daily) sanitized.daily = daily;
+  const hasWindow = Boolean(fiveHour || sevenDay || daily);
+  const hasMetadata = Boolean(
+    sanitized.planType ||
+      sanitized.rateLimitReachedType ||
+      sanitized.representativeClaim ||
+      sanitized.overageStatus,
+  );
+  return hasWindow || hasMetadata ? sanitized : undefined;
+}
+
+function pruneQuotaForOutput(
+  quota: AgentContextUsage['quota'] | undefined,
+): AgentContextUsage['quota'] | undefined {
+  if (!quota) return undefined;
+  const pruned = { ...quota };
+  delete pruned.fiveHour;
+  delete pruned.sevenDay;
+  delete pruned.daily;
+  const fiveHour = pruneQuotaWindowForOutput(quota.fiveHour);
+  const sevenDay = pruneQuotaWindowForOutput(quota.sevenDay);
+  const daily = pruneQuotaWindowForOutput(quota.daily);
+  if (fiveHour) pruned.fiveHour = fiveHour;
+  if (sevenDay) pruned.sevenDay = sevenDay;
+  if (daily) pruned.daily = daily;
+  const hasWindow = Boolean(fiveHour || sevenDay || daily);
+  const hasMetadata = Boolean(
+    pruned.planType ||
+      pruned.rateLimitReachedType ||
+      pruned.representativeClaim ||
+      pruned.overageStatus,
+  );
+  return hasWindow || hasMetadata ? pruned : undefined;
+}
+
+function sanitizeContextUsageQuota(
+  usage: AgentContextUsage,
+  actionCreatedAt: number,
+): AgentContextUsage {
+  const quota = sanitizeQuotaForAction(usage.quota, actionCreatedAt);
+  if (quota) return { ...usage, quota };
+  const { quota: _quota, ...rest } = usage;
+  return rest;
+}
+
+function pruneContextUsageQuotaForOutput(usage: AgentContextUsage): AgentContextUsage {
+  const quota = pruneQuotaForOutput(usage.quota);
+  if (quota) return { ...usage, quota };
+  const { quota: _quota, ...rest } = usage;
+  return rest;
 }
 
 function mergeQuota(
@@ -759,12 +866,39 @@ function mergeQuota(
   const merged = preferIncoming
     ? { ...existing, ...incoming, source: incoming.source }
     : { ...incoming, ...existing, source: existing.source };
-  const fiveHour = mergeQuotaWindow(existing.fiveHour, incoming.fiveHour, preferIncoming);
-  const sevenDay = mergeQuotaWindow(existing.sevenDay, incoming.sevenDay, preferIncoming);
-  const daily = mergeQuotaWindow(existing.daily, incoming.daily, preferIncoming);
+  delete merged.fiveHour;
+  delete merged.sevenDay;
+  delete merged.daily;
+  const allowPartialFragmentMerge = existing.source === incoming.source;
+  const fiveHour = mergeQuotaWindow(
+    existing.fiveHour,
+    incoming.fiveHour,
+    preferIncoming,
+    allowPartialFragmentMerge,
+  );
+  const sevenDay = mergeQuotaWindow(
+    existing.sevenDay,
+    incoming.sevenDay,
+    preferIncoming,
+    allowPartialFragmentMerge,
+  );
+  const daily = mergeQuotaWindow(
+    existing.daily,
+    incoming.daily,
+    preferIncoming,
+    allowPartialFragmentMerge,
+  );
   if (fiveHour) merged.fiveHour = fiveHour;
   if (sevenDay) merged.sevenDay = sevenDay;
   if (daily) merged.daily = daily;
+  const hasWindow = Boolean(fiveHour || sevenDay || daily);
+  const hasMetadata = Boolean(
+    merged.planType ||
+      merged.rateLimitReachedType ||
+      merged.representativeClaim ||
+      merged.overageStatus,
+  );
+  if (!hasWindow && !hasMetadata) return undefined;
   return merged;
 }
 
@@ -775,7 +909,10 @@ function mergeQuotaUsage(
 ): AgentContextUsage {
   if (!quota) return usage;
   const mergedQuota = mergeQuota(usage.quota, quota, preferIncoming);
-  if (!mergedQuota) return usage;
+  if (!mergedQuota) {
+    const { quota: _quota, ...rest } = usage;
+    return rest;
+  }
   return {
     ...usage,
     quota: mergedQuota,
@@ -788,7 +925,7 @@ function buildSharedProviderQuotas(
 ): Map<string, SharedProviderQuota> {
   const byProvider = new Map<string, SharedProviderQuota>();
   for (const action of actions) {
-    const quota = action.contextUsage?.quota;
+    const quota = sanitizeQuotaForAction(action.contextUsage?.quota, action.createdAt);
     if (!quota) continue;
     const providerId = providerIdForAgent(action.agentId, options.agentProviderById);
     if (providerId !== 'claude' && providerId !== 'gemini') continue;
@@ -803,7 +940,12 @@ function buildSharedProviderQuotas(
       });
       continue;
     }
-    existing.quota = mergeQuota(existing.quota, quota, false) ?? existing.quota;
+    const merged = mergeQuota(existing.quota, quota, false);
+    if (merged) {
+      existing.quota = merged;
+    } else {
+      byProvider.delete(providerId);
+    }
   }
   return byProvider;
 }
@@ -869,7 +1011,13 @@ function buildContextUsage(
     }
   }
   applySharedProviderQuotas(byAgent, buildSharedProviderQuotas(withUsage, options), options);
-  return { latest, byAgent: Array.from(byAgent.values()) };
+  return {
+    latest: latest ? { ...latest, usage: pruneContextUsageQuotaForOutput(latest.usage) } : null,
+    byAgent: Array.from(byAgent.values()).map((entry) => ({
+      ...entry,
+      usage: pruneContextUsageQuotaForOutput(entry.usage),
+    })),
+  };
 }
 
 function checklistItemsForTasks(db: Database, tasks: Task[]): TaskChecklistItem[] {

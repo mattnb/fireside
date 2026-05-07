@@ -1,11 +1,14 @@
+import { createHash } from 'node:crypto';
 import type { Database } from 'better-sqlite3';
-import type { AgentId, RoomAgentProfile } from '../agents/types.js';
+import type { AgentId, RoomAgentProfile, SessionPolicy } from '../agents/types.js';
 import { defaultAgentProfile } from '../agents/profiles.js';
+import { policyAllowsSessionResume } from './session-policy.js';
 import {
   messageTextForPrompt,
   writeConversationContextFiles,
   type ConversationContextFiles,
 } from '../context-files.js';
+import { classifyWorkflowRepairCollapse } from './workflow-repair-collapse.js';
 import type { PermissionGrant } from '../permissions.js';
 import { buildPermissionGrant } from '../permissions.js';
 import { buildRoomYoloPermissionGrant } from './permission-orchestrator.js';
@@ -15,7 +18,6 @@ import {
   getActiveTask,
   type Task,
 } from '../repos/tasks.js';
-import { listRecentAgentRunsForTask } from '../repos/agent-runs.js';
 import type { Room } from '../repos/rooms.js';
 import {
   buildTaskPromptContext,
@@ -25,6 +27,7 @@ import {
 import {
   buildTurnPromptResult,
   type BuildTurnPromptStats,
+  type PromptSectionStats,
   type WorkLanePromptItem,
   type WorkflowProfilePromptItem,
 } from '../transcript.js';
@@ -56,7 +59,13 @@ export interface PrepareAgentTurnContextInput {
   artifactExcerptChars?: number;
   maxRecapChars?: number;
   maxTranscriptChars?: number;
-  resumeCliSessions: boolean;
+  maxCollaborationLedgerChars?: number;
+  maxAlwaysIncludedContextChars?: number;
+  sessionPolicy: SessionPolicy;
+  /** When present, prepended verbatim to the prompt before any other context.
+   *  Used by the lead-reset path to rehydrate canonical mission state into the
+   *  fresh CLI session's first turn. */
+  leadRehydrationBlock?: string;
   getResumableCliSessionId: (roomId: string, agentId: AgentId) => string | null;
   loadWorkflowProfileForTask: (task: Task | null) => WorkflowProfile | null;
   buildTaskControl: (task: Task) => MissionControlSnapshot;
@@ -83,6 +92,7 @@ export interface PreparedAgentTurnContext {
   prompt: string;
   promptStats: BuildTurnPromptStats;
   sessionId: string | null;
+  sessionPolicy: SessionPolicy;
   liveMessageChars: number[];
   contextArtifactCount: number;
 }
@@ -100,6 +110,53 @@ function latestMessageTextForPrompt(
   ].join('\n');
 }
 
+function estimatePromptTokens(chars: number): number {
+  return Math.ceil(chars / 4);
+}
+
+function emptyPromptPrefixHash(): string {
+  return createHash('sha256').update('', 'utf8').digest('hex');
+}
+
+function prependLeadRehydrationBlock(
+  prompt: string,
+  stats: BuildTurnPromptStats,
+  block: string,
+): { prompt: string; stats: BuildTurnPromptStats } {
+  const prefix = `${block}\n\n`;
+  const finalPrompt = `${prefix}${prompt}`;
+  const maxPromptChars = stats.maxPromptChars ?? finalPrompt.length;
+  const leadSection: PromptSectionStats = {
+    id: 'leadRehydration',
+    label: 'Lead rehydration block',
+    chars: prefix.length,
+    estimatedTokens: estimatePromptTokens(prefix.length),
+    lineCount: block.split('\n').length + 1,
+    stablePrefix: false,
+    alwaysIncludedContext: true,
+  };
+
+  return {
+    prompt: finalPrompt,
+    stats: {
+      ...stats,
+      promptChars: finalPrompt.length,
+      estimatedPromptTokens: estimatePromptTokens(finalPrompt.length),
+      stablePrefixChars: 0,
+      stablePrefixEstimatedTokens: 0,
+      stablePrefixHash: emptyPromptPrefixHash(),
+      sections: [
+        leadSection,
+        ...stats.sections.map((section) =>
+          section.stablePrefix ? { ...section, stablePrefix: false } : section,
+        ),
+      ],
+      alwaysIncludedContextChars: stats.alwaysIncludedContextChars + prefix.length,
+      overBudgetChars: Math.max(0, finalPrompt.length - maxPromptChars),
+    },
+  };
+}
+
 export function prepareAgentTurnContext(
   input: PrepareAgentTurnContextInput,
 ): PreparedAgentTurnContext {
@@ -111,6 +168,9 @@ export function prepareAgentTurnContext(
   const history =
     triggerIndex >= 0 ? allMessages.slice(0, triggerIndex) : allMessages.slice(0, -1);
   const promptHistory = history.slice(-input.maxHistory);
+  const repairCollapse = classifyWorkflowRepairCollapse(input.db, allMessages, {
+    excludeMessageId: input.trigger.id,
+  });
   const contextFiles = input.contextDir
     ? writeConversationContextFiles({
         contextDir: input.contextDir,
@@ -118,6 +178,7 @@ export function prepareAgentTurnContext(
         roomName: input.room.name,
         messages: allMessages,
         recentMessages: promptHistory.length + 1,
+        collapsedMessageText: repairCollapse.collapsedText,
         ...(input.largeMessageThresholdChars !== undefined
           ? { largeMessageThresholdChars: input.largeMessageThresholdChars }
           : {}),
@@ -148,8 +209,6 @@ export function prepareAgentTurnContext(
   const taskContext = activeTask
     ? buildTaskPromptContext({
         task: activeTask,
-        recentMessages: allMessages.slice(-8),
-        recentRuns: listRecentAgentRunsForTask(input.db, input.room.id, activeTask.id, 6),
         missionControl: input.buildTaskControl(activeTask),
       })
     : undefined;
@@ -224,7 +283,9 @@ export function prepareAgentTurnContext(
     history: promptHistory.map((message) => ({
       authorId: message.authorId,
       authorKind: message.authorKind,
-      text: messageTextForPrompt(message, contextFiles),
+      text:
+        repairCollapse.collapsedText.get(message.id) ??
+        messageTextForPrompt(message, contextFiles),
     })),
     newMessage: {
       authorId: input.trigger.authorId,
@@ -233,6 +294,12 @@ export function prepareAgentTurnContext(
     },
     maxHistory: input.maxHistory,
     maxPromptChars: workflowProfile?.promptBudgetChars ?? input.maxPromptChars,
+    ...(input.maxCollaborationLedgerChars !== undefined
+      ? { maxCollaborationLedgerChars: input.maxCollaborationLedgerChars }
+      : {}),
+    ...(input.maxAlwaysIncludedContextChars !== undefined
+      ? { maxAlwaysIncludedContextChars: input.maxAlwaysIncludedContextChars }
+      : {}),
     ...(promptContextFiles !== undefined ? { contextFiles: promptContextFiles } : {}),
     ...(input.discussion !== undefined ? { discussion: input.discussion } : {}),
     ...(effectivePermission !== undefined ? { permission: effectivePermission } : {}),
@@ -246,12 +313,25 @@ export function prepareAgentTurnContext(
     collaboration: collaborationItems,
   });
   const liveMessageChars = [
-    ...promptHistory.map((message) => messageTextForPrompt(message, contextFiles).length),
+    ...promptHistory.map(
+      (message) =>
+        (
+          repairCollapse.collapsedText.get(message.id) ??
+          messageTextForPrompt(message, contextFiles)
+        ).length,
+    ),
     latestMessageText.length,
   ];
   const contextArtifactCount = contextFiles
     ? Object.keys(contextFiles.messageArtifacts).length + contextFiles.fixtureCount
     : 0;
+  const finalPromptResult = input.leadRehydrationBlock
+    ? prependLeadRehydrationBlock(
+        promptResult.prompt,
+        promptResult.stats,
+        input.leadRehydrationBlock,
+      )
+    : promptResult;
   return {
     agentProfile,
     allMessages,
@@ -261,11 +341,12 @@ export function prepareAgentTurnContext(
     taskContext,
     effectivePermission,
     workflowWorkspacePath: workspacePath,
-    prompt: promptResult.prompt,
-    promptStats: promptResult.stats,
-    sessionId: input.resumeCliSessions
+    prompt: finalPromptResult.prompt,
+    promptStats: finalPromptResult.stats,
+    sessionId: policyAllowsSessionResume(input.sessionPolicy)
       ? input.getResumableCliSessionId(input.room.id, input.agentId)
       : null,
+    sessionPolicy: input.sessionPolicy,
     liveMessageChars,
     contextArtifactCount,
   };

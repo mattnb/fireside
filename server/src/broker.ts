@@ -32,7 +32,7 @@ import {
   type Project,
 } from './repos/projects.js';
 import { deleteCliSessionId, getCliSession, upsertCliSessionId } from './repos/sessions.js';
-import type { WorkLanePromptItem } from './transcript.js';
+import type { PromptSectionStats, WorkLanePromptItem } from './transcript.js';
 import {
   listConversationArtifacts,
   attachConversationFixture,
@@ -73,7 +73,6 @@ import {
   getAgentRun,
   listAllAgentRunsForRoom,
   listAgentRuns as listAgentRunsRepo,
-  listRecentAgentRunsForTask,
   listRunningAgentRunsForRoom,
   recoverInterruptedAgentRuns,
   updateAgentRun,
@@ -85,7 +84,7 @@ import {
   attachAgentJobRun,
   cancelAgentJob,
   completeAgentJob,
-  createAgentJob,
+  createAgentJobIfAvailable,
   failAgentJob,
   getAgentJobByRunId,
   leaseAgentJob,
@@ -164,9 +163,10 @@ import {
 import {
   getAgentTurnOutcome,
   listAgentTurnOutcomesForRoom,
+  listNoProgressTurnStreakAgents,
   recordAgentTurnOutcome,
   type AgentTurnOutcome,
-  type AgentTurnOutcomeStatus,
+  type AgentTurnRunKind,
   type RecordAgentTurnOutcomeInput,
 } from './repos/turn-outcomes.js';
 import {
@@ -188,6 +188,7 @@ import type {
   AgentTurnKind,
   ProviderId,
   RoomAgentProfile,
+  SessionPolicy,
 } from './agents/types.js';
 import { logger } from './logger.js';
 import { buildRunDiagnostics, type RunDiagnostics } from './run-diagnostics.js';
@@ -248,6 +249,17 @@ import {
   waitForRetryDelay,
 } from './orchestration/agent-turn-executor.js';
 import { prepareAgentTurnContext } from './orchestration/agent-turn-context.js';
+import { LeadResetScheduler } from './orchestration/lead-reset-scheduler.js';
+import {
+  buildLeadRehydrationCheckpoint,
+  renderLeadRehydrationBlock,
+} from './orchestration/lead-rehydration.js';
+import {
+  policyAllowsSessionResume,
+  policyClearsSessionAfterLane,
+  policyEnablesAutoCompaction,
+  resolveSessionPolicy,
+} from './orchestration/session-policy.js';
 import {
   inferRunExecutionSnapshot,
   type RunExecutionSnapshot,
@@ -260,6 +272,7 @@ import {
 import { applyMissionCreateUpdates as applyMissionCreateUpdatesState } from './mission-state/mission-create-applicator.js';
 import { applyMissionPlanUpdates as applyMissionPlanUpdatesState } from './mission-state/mission-plan-applicator.js';
 import { applyMissionPhaseUpdates as applyMissionPhaseUpdatesState } from './mission-state/mission-phase-applicator.js';
+import { inferChecklistCompletion } from './mission-state/mission-state-helpers.js';
 import { unfinishedChecklistItemsForPhase } from './mission-state/phase-completion.js';
 import {
   autoAdvancePhase as autoAdvanceMissionPhase,
@@ -309,6 +322,12 @@ export interface BrokerDeps {
   autoCompactEnabled?: boolean;
   autoCompactPercent?: number;
   autoCompactTokenLimit?: number;
+  /** Percentage of the standard auto-compact threshold at which the room
+   *  lead deterministically resets its CLI session. Defaults to 60. */
+  leadResetPercent?: number;
+  /** Kill-switch for the deterministic lead reset path. When true, the lead
+   *  falls back to legacy `/compact` behaviour. Defaults to false. */
+  leadResetDisabled?: boolean;
 }
 
 const DEFAULT_MAX_AGENT_REPLIES_PER_THREAD = 5;
@@ -458,6 +477,11 @@ interface WorkflowContractValidation {
   repairPrompt: string;
 }
 
+interface WorkflowContractRepairOutcome {
+  result: AgentTurnResult | null;
+  syntheticReceiptCount: number;
+}
+
 export interface TaskControl {
   task: Task;
   phases: TaskPhase[];
@@ -492,10 +516,6 @@ function agentModelSettings(profile: RoomAgentProfile): AgentModelSettings | und
 
 function compactPromptForProvider(providerId: ProviderId): string {
   return providerId === 'gemini' ? GEMINI_COMPACT_PROMPT : COMPACT_PROMPT;
-}
-
-function terminalRunStatus(status: AgentRun['status'] | undefined): boolean {
-  return status === 'completed' || status === 'failed' || status === 'empty';
 }
 
 function isBrokerInternalSystemMessage(message: Message): boolean {
@@ -589,6 +609,7 @@ export class Broker extends EventEmitter {
   private queuedHumanMessageIds = new Map<string, Set<string>>();
   private yoloLaunchRepairInFlight = new Set<string>();
   private yoloSequence = 0;
+  private leadResetScheduler = new LeadResetScheduler();
 
   constructor(private deps: BrokerDeps) {
     super();
@@ -747,8 +768,35 @@ export class Broker extends EventEmitter {
       cancelledYolo = true;
       stopped += 1;
     }
-    for (const { roomId: activeRoomId, controller } of this.activeRunAbortControllers.values()) {
-      if (activeRoomId !== roomId || controller.signal.aborted) continue;
+    const stoppedRunIds = new Set<string>();
+    for (const run of listRunningAgentRunsForRoom(this.deps.db, roomId)) {
+      const reason = `${authorId || 'human'} stopped room runs`;
+      const active = this.activeRunAbortControllers.get(run.id);
+      if (active && active.roomId === roomId && !active.controller.signal.aborted) {
+        this.userStoppedRuns.set(run.id, reason);
+        active.controller.abort();
+      }
+      const updated = this.markRunCanceledByUser(run, reason);
+      if (updated) {
+        stopped += 1;
+        stoppedRunIds.add(run.id);
+        this.recordRunAction({
+          roomId,
+          taskId: run.taskId,
+          runId: run.id,
+          agentId: run.agentId,
+          kind: 'run',
+          status: 'failed',
+          label: 'run stopped',
+          detail: reason,
+        });
+      }
+    }
+    for (const [runId, { roomId: activeRoomId, controller }] of this.activeRunAbortControllers) {
+      if (activeRoomId !== roomId || controller.signal.aborted || stoppedRunIds.has(runId)) {
+        continue;
+      }
+      this.userStoppedRuns.set(runId, `${authorId || 'human'} stopped room runs`);
       controller.abort();
       stopped += 1;
     }
@@ -1178,6 +1226,26 @@ export class Broker extends EventEmitter {
     return updated;
   }
 
+  private markRunCanceledByUser(
+    run: AgentRunSummary,
+    reason: string,
+  ): AgentRunSummary | null {
+    const now = Date.now();
+    const updated = updateAgentRun(this.deps.db, run.id, {
+      status: 'failed',
+      completedAt: now,
+      error: reason,
+      lifecycleState: 'canceled_by_user',
+      lifecycleReason: reason,
+      lifecycleUpdatedAt: now,
+    });
+    const jobId = run.agentJobId || getAgentJobByRunId(this.deps.db, run.id)?.id;
+    if (jobId) cancelAgentJob(this.deps.db, jobId, reason, now);
+    this.userStoppedRuns.delete(run.id);
+    if (updated) this.emit('agentRunUpdated', updated);
+    return updated;
+  }
+
   // Targeted stop for a single in-flight run. Different from `dismissAgentRun`,
   // which only marks the database row terminal — `stopAgentRun` actually
   // aborts the active subprocess so the provider CLI exits and the agent
@@ -1217,17 +1285,8 @@ export class Broker extends EventEmitter {
       // 'canceled_by_reconciliation' + provider error.
       this.userStoppedRuns.set(run.id, reason);
       active.controller.abort();
-    } else {
-      // No live controller (already aborted, or the row is stuck running
-      // without one — both edge cases). Write the lifecycle directly so the
-      // run history is honest about who ended it.
-      this.updateRunLifecycle({
-        runId: run.id,
-        state: 'canceled_by_user',
-        reason,
-      });
-      this.userStoppedRuns.delete(run.id);
     }
+    const stoppedRun = this.markRunCanceledByUser(run, reason);
 
     this.recordRunAction({
       roomId,
@@ -1247,7 +1306,7 @@ export class Broker extends EventEmitter {
       `${authorId || 'human'} stopped @${run.agentId}'s active run.`,
     );
 
-    const refreshed = getAgentRun(this.deps.db, run.id);
+    const refreshed = stoppedRun ?? getAgentRun(this.deps.db, run.id);
     return { ok: true, statusCode: 200, ...(refreshed ? { run: refreshed } : {}) };
   }
 
@@ -1489,15 +1548,21 @@ export class Broker extends EventEmitter {
     };
   }
 
-  private autoCompactionConfig(profile: RoomAgentProfile): AutoCompactionConfig {
+  private autoCompactionConfig(
+    profile: RoomAgentProfile,
+    sessionPolicy: SessionPolicy,
+    isLead: boolean,
+  ): AutoCompactionConfig {
     const agentPercent = profile.autoCompactPercent;
+    const leadResetEnabled = isLead && this.deps.leadResetDisabled !== true;
     return {
       enabled:
-        this.deps.resumeCliSessions === true &&
+        policyEnablesAutoCompaction(sessionPolicy) &&
         this.deps.autoCompactEnabled !== false &&
         profile.autoCompactEnabled !== false,
       percentThreshold: agentPercent ?? this.deps.autoCompactPercent ?? 70,
       tokenThreshold: agentPercent !== undefined ? 0 : (this.deps.autoCompactTokenLimit ?? 220_000),
+      ...(leadResetEnabled ? { isLead: true, leadResetPercent: this.deps.leadResetPercent ?? 60 } : {}),
     };
   }
 
@@ -1539,8 +1604,10 @@ export class Broker extends EventEmitter {
     trigger: Message;
     profile: RoomAgentProfile;
     spec: AgentSpec;
+    sessionPolicy: SessionPolicy;
+    isLead: boolean;
   }): Promise<void> {
-    const config = this.autoCompactionConfig(input.profile);
+    const config = this.autoCompactionConfig(input.profile, input.sessionPolicy, input.isLead);
     if (!config.enabled) return;
     const sessionId = this.getResumableCliSessionId(input.roomId, input.agentId);
     if (!sessionId) return;
@@ -1571,6 +1638,11 @@ export class Broker extends EventEmitter {
       await this.runAutoAgentCompaction({ ...input, sessionId, decision });
     } else {
       this.resetAgentContextSessionBeforeTurn({ ...input, sessionId, decision });
+      if (input.isLead) {
+        this.leadResetScheduler.markPendingReset(input.roomId, input.agentId, {
+          reason: decision.reason,
+        });
+      }
     }
   }
 
@@ -2273,6 +2345,9 @@ export class Broker extends EventEmitter {
   ): Promise<AgentTurnResult> {
     if (cancelSignal?.aborted) return { message: null, progressed: false };
     const effectiveWorkflowRepair = workflowRepair || isWorkflowRepairTrigger(trigger);
+    let turnRunKind: AgentTurnRunKind = effectiveWorkflowRepair
+      ? 'workflow.repair'
+      : 'normal.turn';
     const room = getRoom(this.deps.db, roomId);
     if (!room) {
       // The room was created before this call ran; it should still exist. Defensive guard.
@@ -2280,6 +2355,24 @@ export class Broker extends EventEmitter {
     }
     const agentProfile =
       room.agentProfiles.find((profile) => profile.id === agentId) ?? defaultAgentProfile(agentId);
+    const turnSessionPolicy = resolveSessionPolicy({
+      profile: agentProfile,
+      roomLeadAgentId: room.leadAgentId,
+      globalResumeCliSessions: this.deps.resumeCliSessions === true,
+    });
+    if (turnSessionPolicy !== 'ephemeral' && agentId !== room.leadAgentId) {
+      logger.warn(
+        {
+          roomId,
+          agentId,
+          providerId: agentProfile.providerId,
+          leadAgentId: room.leadAgentId,
+          resolvedPolicy: turnSessionPolicy,
+          explicitProfilePolicy: agentProfile.sessionPolicy ?? null,
+        },
+        'non-lead agent resolved to resumable session policy — provider amplifier will accumulate across turns',
+      );
+    }
     const spec = this.deps.getSpec(agentProfile.providerId);
     if (!spec) {
       this.appendDirect(roomId, 'system', 'system', `(no adapter for agent "${agentId}")`);
@@ -2346,13 +2439,32 @@ export class Broker extends EventEmitter {
       });
       return { message: null, progressed: false };
     }
+    const isRoomLead = agentId === room.leadAgentId;
     await this.maybeMaintainAgentContextBeforeTurn({
       roomId,
       agentId,
       trigger,
       profile: agentProfile,
       spec,
+      sessionPolicy: turnSessionPolicy,
+      isLead: isRoomLead,
     });
+    const consumedLeadReset = this.leadResetScheduler.consumePendingReset(roomId, agentId);
+    let leadRehydrationBlock: string | undefined;
+    if (consumedLeadReset) {
+      turnRunKind = 'post-reset.first-turn';
+      const checkpoint = buildLeadRehydrationCheckpoint(this.deps.db, roomId, agentId);
+      leadRehydrationBlock = renderLeadRehydrationBlock(checkpoint);
+      logger.info(
+        {
+          roomId,
+          agentId,
+          reason: consumedLeadReset.reason,
+          blockChars: leadRehydrationBlock.length,
+        },
+        'lead rehydration block injected for first-turn-after-reset',
+      );
+    }
     if (cancelSignal?.aborted) return { message: null, progressed: false };
     const maxHistory = this.deps.maxHistory ?? DEFAULT_PROMPT_HISTORY;
     const preparedContext = prepareAgentTurnContext({
@@ -2376,7 +2488,8 @@ export class Broker extends EventEmitter {
       ...(this.deps.maxTranscriptChars !== undefined
         ? { maxTranscriptChars: this.deps.maxTranscriptChars }
         : {}),
-      resumeCliSessions: this.deps.resumeCliSessions === true,
+      sessionPolicy: turnSessionPolicy,
+      ...(leadRehydrationBlock ? { leadRehydrationBlock } : {}),
       getResumableCliSessionId: (targetRoomId, targetAgentId) =>
         this.getResumableCliSessionId(targetRoomId, targetAgentId),
       loadWorkflowProfileForTask: (task) => this.loadWorkflowProfileForTask(task),
@@ -2408,6 +2521,9 @@ export class Broker extends EventEmitter {
         agentId,
         promptChars: promptResult.stats.promptChars,
         estimatedPromptTokens: promptResult.stats.estimatedPromptTokens,
+        stablePrefixChars: promptResult.stats.stablePrefixChars,
+        stablePrefixEstimatedTokens: promptResult.stats.stablePrefixEstimatedTokens,
+        stablePrefixHash: promptResult.stats.stablePrefixHash,
         maxPromptChars: promptResult.stats.maxPromptChars,
         totalMessages: allMessages.length,
         liveHistoryMessages: promptResult.stats.historyMessagesIncluded,
@@ -2417,15 +2533,17 @@ export class Broker extends EventEmitter {
         promptDetailLevel: promptResult.stats.detailLevel,
         overBudgetChars: promptResult.stats.overBudgetChars,
         budgetNotices: promptResult.stats.budgetNotices,
+        promptSections: promptResult.stats.sections,
         largestLiveMessageChars: Math.max(0, ...liveMessageChars),
         contextArtifacts: contextArtifactCount,
         resumeCliSession: Boolean(sessionId),
+        sessionPolicy: turnSessionPolicy,
         taskId: activeTask?.id ?? null,
       },
       'agent prompt context',
     );
 
-    const agentJob = createAgentJob(this.deps.db, {
+    const agentJobReservation = createAgentJobIfAvailable(this.deps.db, {
       roomId,
       taskId: activeTask?.id ?? null,
       checklistItemId: workLane?.item.id ?? null,
@@ -2445,6 +2563,44 @@ export class Broker extends EventEmitter {
       attempt,
       maxAttempts: discussion?.mode === 'yolo' ? 3 : 1,
     });
+    if (!agentJobReservation.created) {
+      const existing = agentJobReservation.job;
+      const reason = existing.runId
+        ? `agent job ${existing.id} is already ${existing.status} as run ${existing.runId}`
+        : `agent job ${existing.id} is already ${existing.status}`;
+      logger.info(
+        {
+          roomId,
+          taskId: activeTask?.id ?? null,
+          agentId,
+          triggerMessageId: trigger.id,
+          existingJobId: existing.id,
+          existingRunId: existing.runId,
+          existingStatus: existing.status,
+        },
+        'agent turn suppressed by durable single-flight guard',
+      );
+      createRoutingDecision(this.deps.db, {
+        roomId,
+        taskId: activeTask?.id ?? null,
+        messageId: trigger.id,
+        authorId: 'fireside',
+        kind: 'agent-message',
+        action: 'single-flight-skip',
+        reason: `${agentId} already has active work for this trigger: ${reason}`,
+        responders: [agentId],
+        trace: [
+          {
+            id: 'agent-job-single-flight',
+            result: 'blocked',
+            reason,
+            agents: [agentId],
+          },
+        ],
+      });
+      return { message: null, progressed: false };
+    }
+    const agentJob = agentJobReservation.job;
     leaseAgentJob(this.deps.db, agentJob.id, {
       leaseOwner: this.agentJobLeaseOwner(),
       leaseMs: AGENT_JOB_LEASE_MS,
@@ -2511,6 +2667,9 @@ export class Broker extends EventEmitter {
       detail: JSON.stringify({
         estimatedTokens: promptResult.stats.estimatedPromptTokens,
         promptChars: promptResult.stats.promptChars,
+        stablePrefixChars: promptResult.stats.stablePrefixChars,
+        stablePrefixEstimatedTokens: promptResult.stats.stablePrefixEstimatedTokens,
+        stablePrefixHash: promptResult.stats.stablePrefixHash,
         maxPromptChars: promptResult.stats.maxPromptChars,
         overBudgetChars: promptResult.stats.overBudgetChars,
         detailLevel: promptResult.stats.detailLevel,
@@ -2521,6 +2680,9 @@ export class Broker extends EventEmitter {
         latestMessageOriginalChars: promptResult.stats.latestMessageOriginalChars,
         latestMessageChars: promptResult.stats.latestMessageChars,
         latestMessageTruncated: promptResult.stats.latestMessageTruncated,
+        promptSections: promptResult.stats.sections,
+        sessionPolicy: turnSessionPolicy,
+        resumeCliSession: Boolean(sessionId),
         contextArtifacts: contextArtifactCount,
         notices: promptResult.stats.budgetNotices,
       }),
@@ -2619,6 +2781,18 @@ export class Broker extends EventEmitter {
       turnKind,
       ...(modelSettings ? { modelSettings } : {}),
     });
+    const currentRun = getAgentRun(this.deps.db, run.id);
+    if (currentRun && currentRun.status !== 'running') {
+      return {
+        message: null,
+        progressed: false,
+        runId: run.id,
+        failed: currentRun.status === 'failed',
+        ...(currentRun.error || currentRun.lifecycleReason
+          ? { error: currentRun.error || currentRun.lifecycleReason }
+          : {}),
+      };
+    }
     if (!providerTurn.ok) {
       const errMsg = providerTurn.error;
       const raw = { stdout: providerTurn.stdout, stderr: providerTurn.stderr };
@@ -2676,8 +2850,11 @@ export class Broker extends EventEmitter {
       }
       const promptTooLong = isProviderPromptTooLong(errMsg, raw.stdout);
       const canRetryWithoutStaleSession =
-        promptTooLong && Boolean(sessionId) && this.deps.resumeCliSessions === true && attempt < 2;
-      if (promptTooLong && sessionId && this.deps.resumeCliSessions === true) {
+        promptTooLong &&
+        Boolean(sessionId) &&
+        policyAllowsSessionResume(turnSessionPolicy) &&
+        attempt < 2;
+      if (promptTooLong && sessionId && policyAllowsSessionResume(turnSessionPolicy)) {
         deleteCliSessionId(this.deps.db, roomId, agentId);
         this.recordRunAction({
           roomId,
@@ -2734,6 +2911,7 @@ export class Broker extends EventEmitter {
           error: errMsg,
           summary: `provider turn failed; retrying attempt ${retryDecision.nextAttempt}`,
           nextAgents: [agentId],
+          runKind: turnRunKind,
         });
         const shouldContinue = await waitForRetryDelay(retryDecision.delayMs, cancelSignal);
         if (!shouldContinue) return { message: null, progressed: false, runId: run.id };
@@ -2766,6 +2944,7 @@ export class Broker extends EventEmitter {
         failed: !canceled,
         error: errMsg,
         summary: canceled ? 'provider turn canceled' : 'provider turn failed',
+        runKind: turnRunKind,
       });
       return { message: null, progressed: false, runId: run.id, failed: !canceled, error: errMsg };
     }
@@ -2778,10 +2957,12 @@ export class Broker extends EventEmitter {
 
     const staleCodexSession =
       agentProfile.providerId === 'codex' && isCodexRolloutThreadMissing(reply.raw.stderr);
-    const replySessionIdForStorage = staleCodexSession ? null : reply.sessionId;
-    if (this.deps.resumeCliSessions && reply.sessionId && !staleCodexSession) {
+    const turnAllowsSessionResume = policyAllowsSessionResume(turnSessionPolicy);
+    const replySessionIdForStorage =
+      turnAllowsSessionResume && !staleCodexSession ? reply.sessionId : null;
+    if (turnAllowsSessionResume && reply.sessionId && !staleCodexSession) {
       upsertCliSessionId(this.deps.db, roomId, agentId, reply.sessionId, agentProfile.providerId);
-    } else if (this.deps.resumeCliSessions && staleCodexSession) {
+    } else if (turnAllowsSessionResume && staleCodexSession) {
       deleteCliSessionId(this.deps.db, roomId, agentId);
       this.recordRunAction({
         roomId,
@@ -2946,6 +3127,23 @@ export class Broker extends EventEmitter {
       defaultPlanId: defaultPlan?.id ?? null,
       forcePlanOnUpdates: sameTurnPlan !== null,
     });
+    if (
+      missionTaskResult.applied > 0 &&
+      policyClearsSessionAfterLane(turnSessionPolicy) &&
+      extractedMissionTasks.updates.some((update) => inferChecklistCompletion(update))
+    ) {
+      deleteCliSessionId(this.deps.db, roomId, agentId);
+      this.recordRunAction({
+        roomId,
+        taskId: missionTask?.id ?? null,
+        runId: run.id,
+        agentId,
+        kind: 'diagnostic',
+        status: 'info',
+        label: 'session reset after lane',
+        detail: `Session policy reset-after-lane cleared the stored CLI session for ${agentId} after a checklist item was marked done.`,
+      });
+    }
     this.recordMissionCommandEvents({
       roomId,
       taskId: missionTask?.id ?? null,
@@ -3083,7 +3281,7 @@ export class Broker extends EventEmitter {
               : 'agent declined to add a chat message',
       });
       completeAgentJob(this.deps.db, agentJob.id);
-      const repairResult = await this.maybeRunWorkflowContractRepair({
+      const repairOutcome = await this.maybeRunWorkflowContractRepair({
         roomId,
         agentId,
         trigger,
@@ -3102,6 +3300,9 @@ export class Broker extends EventEmitter {
         reconciliation,
         visibleText: textAfterMissionReceipts,
       });
+      const repairResult = repairOutcome.result;
+      const effectiveMissionReceiptCount =
+        missionReceiptCount + repairOutcome.syntheticReceiptCount;
       await this.runAgentRosterFollowups(roomId, rosterResult.followups);
       const finalWorkDispatches = this.evaluateMissionLivenessDispatches({
         roomId,
@@ -3124,7 +3325,7 @@ export class Broker extends EventEmitter {
         status: hiddenMissionRecordCount > 0 ? 'completed' : 'empty',
         progressed,
         missionUpdates: missionStateUpdateCount,
-        missionReceipts: missionReceiptCount,
+        missionReceipts: effectiveMissionReceiptCount,
         missionReconciliations: reconciliation.applied,
         draftArtifacts: extractedDrafts.drafts.length,
         workDispatches: finalWorkDispatches,
@@ -3134,6 +3335,7 @@ export class Broker extends EventEmitter {
             : hiddenMissionRecordCount > 0
               ? 'mission receipt stored without progress'
               : 'agent declined to add a chat message',
+        runKind: turnRunKind,
       });
       return {
         message: null,
@@ -3245,6 +3447,7 @@ export class Broker extends EventEmitter {
             permissionAutoApproved: true,
             workDispatches: finalWorkDispatches,
             summary: 'YOLO permission auto-approval limit reached',
+            runKind: turnRunKind,
           });
           return {
             message,
@@ -3272,6 +3475,7 @@ export class Broker extends EventEmitter {
           workDispatches: missionWorkDispatches,
           nextAgents: [agentId],
           summary: 'YOLO permission request auto-approved; launching approved follow-up turn',
+          runKind: turnRunKind,
         });
         return this.runAgentReply(
           roomId,
@@ -3343,6 +3547,7 @@ export class Broker extends EventEmitter {
         permissionRequestId: request.id,
         workDispatches: finalWorkDispatches,
         summary: `${permissionRequest.mode} permission requested; waiting on human approval`,
+        runKind: turnRunKind,
       });
       return {
         message: null,
@@ -3391,7 +3596,7 @@ export class Broker extends EventEmitter {
       detail: message ? message.text : 'collaboration note stored without visible chat text',
     });
     completeAgentJob(this.deps.db, agentJob.id);
-    const repairResult = await this.maybeRunWorkflowContractRepair({
+    const repairOutcome = await this.maybeRunWorkflowContractRepair({
       roomId,
       agentId,
       trigger,
@@ -3410,6 +3615,9 @@ export class Broker extends EventEmitter {
       reconciliation,
       visibleText,
     });
+    const repairResult = repairOutcome.result;
+    const effectiveMissionReceiptCount =
+      missionReceiptCount + repairOutcome.syntheticReceiptCount;
     await this.runAgentRosterFollowups(roomId, rosterResult.followups);
     const finalWorkDispatches = this.evaluateMissionLivenessDispatches({
       roomId,
@@ -3441,7 +3649,7 @@ export class Broker extends EventEmitter {
       status: message || extracted.notes.length > 0 ? 'completed' : 'empty',
       progressed,
       missionUpdates: missionStateUpdateCount,
-      missionReceipts: missionReceiptCount,
+      missionReceipts: effectiveMissionReceiptCount,
       missionReconciliations: reconciliation.applied,
       collaborationNotes: extracted.notes.length,
       draftArtifacts: extractedDrafts.drafts.length,
@@ -3455,6 +3663,7 @@ export class Broker extends EventEmitter {
         : extracted.notes.length > 0
           ? 'collaboration note stored without visible chat text'
           : 'no visible message emitted',
+      runKind: turnRunKind,
     });
     return {
       message,
@@ -3511,7 +3720,7 @@ export class Broker extends EventEmitter {
         runAbortController.signal,
         recordProviderSignal,
         undefined,
-        undefined,
+        'maintenance-compaction',
         input.modelSettings,
       );
     } catch (err) {
@@ -3548,6 +3757,17 @@ export class Broker extends EventEmitter {
         status: 'failed',
         label: canceled ? 'compaction canceled' : 'compaction failed',
         detail: errMsg,
+      });
+      this.recordTurnOutcome({
+        roomId: input.roomId,
+        taskId: input.taskId,
+        runId: input.runId,
+        agentId: input.agentId,
+        status: canceled ? 'canceled' : 'failed',
+        failed: !canceled,
+        error: errMsg,
+        summary: canceled ? 'compaction canceled' : 'compaction failed',
+        runKind: 'maintenance.compaction',
       });
       if (input.drainQueuedAfter !== false) void this.drainDispatchQueue(input.roomId);
       return;
@@ -3603,6 +3823,16 @@ export class Broker extends EventEmitter {
           ? `session ${reply.sessionId} compacted`
           : 'provider completed compaction without returning a session id',
     });
+    this.recordTurnOutcome({
+      roomId: input.roomId,
+      taskId: input.taskId,
+      runId: input.runId,
+      agentId: input.agentId,
+      status: 'completed',
+      progressed: false,
+      summary: warning ? `context compacted (${warning})` : 'context compacted',
+      runKind: 'maintenance.compaction',
+    });
     if (input.drainQueuedAfter !== false) void this.drainDispatchQueue(input.roomId);
   }
 
@@ -3612,8 +3842,23 @@ export class Broker extends EventEmitter {
     return action;
   }
 
+  private currentMissionPhaseId(taskId: string | null | undefined): string | null {
+    if (!taskId) return null;
+    const phases = listTaskPhases(this.deps.db, taskId);
+    return (
+      (
+        phases.find((phase) => phase.status === 'active') ??
+        phases.find((phase) => phase.status === 'blocked') ??
+        null
+      )?.id ?? null
+    );
+  }
+
   private recordTurnOutcome(input: RecordAgentTurnOutcomeInput): AgentTurnOutcome {
-    const outcome = recordAgentTurnOutcome(this.deps.db, input);
+    const outcome = recordAgentTurnOutcome(this.deps.db, {
+      ...input,
+      phaseId: input.phaseId ?? this.currentMissionPhaseId(input.taskId),
+    });
     this.recordRunAction({
       roomId: input.roomId,
       taskId: input.taskId ?? null,
@@ -3679,12 +3924,16 @@ export class Broker extends EventEmitter {
     promptStats: {
       promptChars: number;
       estimatedPromptTokens: number;
+      stablePrefixChars: number;
+      stablePrefixEstimatedTokens: number;
+      stablePrefixHash: string;
       historyMessagesIncluded: number;
       historyMessagesDroppedByCount: number;
       historyMessagesDroppedByBudget: number;
       latestMessageChars: number;
       maxPromptChars: number | null;
       latestMessageTruncated: boolean;
+      sections: PromptSectionStats[];
     };
   }): unknown {
     return {
@@ -4002,8 +4251,10 @@ export class Broker extends EventEmitter {
     missionReceiptCount: number;
     reconciliation: MissionReconciliationResult;
     visibleText: string;
-  }): Promise<AgentTurnResult | null> {
-    if (input.workflowRepair || input.cancelSignal?.aborted) return null;
+  }): Promise<WorkflowContractRepairOutcome> {
+    if (input.workflowRepair || input.cancelSignal?.aborted) {
+      return { result: null, syntheticReceiptCount: 0 };
+    }
     const validation = this.validateWorkflowContract({
       task: input.task,
       agentId: input.agentId,
@@ -4014,7 +4265,47 @@ export class Broker extends EventEmitter {
       visibleText: input.visibleText,
       workLane: input.workLane,
     });
-    if (!validation) return null;
+    if (!validation) return { result: null, syntheticReceiptCount: 0 };
+
+    // Safe auto-repair envelope: the only violation is the base "no mission receipt".
+    // That implies visible text is non-empty, work-lane signal is 'none' (purely
+    // conversational), and any assigned lane is already closed. In that case we can
+    // synthesize a /mission-receipt status: no_update server-side and skip the repair
+    // turn — saving a full provider round-trip whose only purpose is to file an empty
+    // acknowledgement. Anything else (claimed completion, blocked claim, empty reply,
+    // open lane left open) still requires the agent to disambiguate via repair.
+    if (input.task && validation.violations.length === 1) {
+      const synth: ParsedMissionReceipt = {
+        status: 'no_update',
+        itemRef: '',
+        phaseRef: '',
+        planRef: '',
+        summary: oneLine(input.visibleText, 240),
+        evidence: '',
+        next: '',
+      };
+      this.recordMissionReceipts({
+        roomId: input.roomId,
+        task: input.task,
+        runId: input.runId,
+        agentId: input.agentId,
+        receipts: [synth],
+      });
+      this.recordRunAction({
+        roomId: input.roomId,
+        taskId: input.task.id,
+        runId: input.runId,
+        agentId: input.agentId,
+        kind: 'ledger',
+        status: 'info',
+        label: 'workflow contract auto-repaired',
+        detail: JSON.stringify({
+          reason: 'visible reply was conversational; synthesized no_update receipt',
+          violations: validation.violations,
+        }),
+      });
+      return { result: null, syntheticReceiptCount: 1 };
+    }
 
     if (input.task) {
       this.recordMissingMissionReceipt({
@@ -4041,7 +4332,7 @@ export class Broker extends EventEmitter {
       'system',
       validation.repairPrompt,
     );
-    return this.runAgentReply(
+    const result = await this.runAgentReply(
       input.roomId,
       input.agentId,
       repairTrigger,
@@ -4054,6 +4345,7 @@ export class Broker extends EventEmitter {
       input.retryOfRunId,
       true,
     );
+    return { result, syntheticReceiptCount: 0 };
   }
 
   private missionReceiptDetail(
@@ -4251,11 +4543,27 @@ export class Broker extends EventEmitter {
     agentId: AgentId;
     completedPhase: TaskPhase | null;
   }): void {
+    const beforeActiveId =
+      listTaskPhases(this.deps.db, input.task.id).find((phase) => phase.status === 'active')?.id ??
+      null;
     autoAdvanceMissionPhase({
       db: this.deps.db,
       ...input,
       recordRunAction: (action) => this.recordRunAction(action),
     });
+    const afterActiveId =
+      listTaskPhases(this.deps.db, input.task.id).find((phase) => phase.status === 'active')?.id ??
+      null;
+    const phaseAdvanced = afterActiveId !== null && afterActiveId !== beforeActiveId;
+    if (phaseAdvanced && this.deps.leadResetDisabled !== true) {
+      const room = getRoom(this.deps.db, input.roomId);
+      const leadAgentId = room?.leadAgentId ?? null;
+      if (leadAgentId) {
+        this.leadResetScheduler.markPendingReset(input.roomId, leadAgentId, {
+          reason: `phase boundary advance to ${afterActiveId}`,
+        });
+      }
+    }
   }
 
   private temporaryAgentLimitPerLead(): number {
@@ -5345,13 +5653,7 @@ export class Broker extends EventEmitter {
     allowedAgents?: Set<AgentId>,
   ): AgentId[] {
     if (!message) return [];
-    return this.pickAgentHandoffResponders(
-      room,
-      message.text,
-      authorId,
-      allowedAgents,
-      message.id,
-    );
+    return this.pickAgentHandoffResponders(room, message.text, authorId, allowedAgents, message.id);
   }
 
   private async runAgentHandoffs(
@@ -5421,6 +5723,20 @@ export class Broker extends EventEmitter {
     const isCancelled = (): boolean => options.yoloState?.cancelled === true;
     const room = getRoom(this.deps.db, roomId);
     const roomAgents = room?.agents ?? responders;
+    const activeTaskForDiscussion = getActiveTask(this.deps.db, roomId);
+    const activePhaseIdForDiscussion = this.currentMissionPhaseId(activeTaskForDiscussion?.id);
+    const noOpQuarantineCandidates =
+      options.handoffPool && options.handoffPool.length > 0 ? options.handoffPool : roomAgents;
+    const opportunisticQuarantinedAgents =
+      options.mode === 'yolo' && activeTaskForDiscussion
+        ? listNoProgressTurnStreakAgents(this.deps.db, {
+            roomId,
+            taskId: activeTaskForDiscussion.id,
+            phaseId: activePhaseIdForDiscussion,
+            agentIds: noOpQuarantineCandidates,
+            threshold: 2,
+          })
+        : [];
     const maxReplies = Math.max(
       1,
       Math.floor(options.maxRepliesPerAgent ?? this.maxAgentRepliesPerThread()),
@@ -5432,6 +5748,8 @@ export class Broker extends EventEmitter {
       handoffPool: options.handoffPool,
       preferResponderPool: options.responders !== undefined,
       maxRepliesPerAgent: maxReplies,
+      leadAgentId: room?.leadAgentId ?? null,
+      opportunisticQuarantinedAgents,
       ...(options.maxTotalReplies !== undefined
         ? { maxTotalReplies: options.maxTotalReplies }
         : {}),
@@ -5531,6 +5849,21 @@ export class Broker extends EventEmitter {
             ...Array.from(pendingDispatchTriggers.keys()),
           ],
         });
+        const opportunisticSuppressionTrace = roundPlan.trace.filter(
+          (entry) => entry.id === 'discussion-opportunistic-suppression',
+        );
+        if (opportunisticSuppressionTrace.length > 0) {
+          createRoutingDecision(this.deps.db, {
+            roomId,
+            taskId: activeTaskForDiscussion?.id ?? null,
+            authorId: 'fireside',
+            kind: 'agent-message',
+            action: 'discussion-opportunistic-suppression',
+            reason: opportunisticSuppressionTrace[0]?.reason ?? 'opportunistic dispatch suppressed',
+            responders: roundPlan.eligibleAgents,
+            trace: opportunisticSuppressionTrace,
+          });
+        }
         const busyAgentsForRound = this.busyAgentsInRoom(roomId);
         const capacityBlockedAgentsForRound = room
           ? this.capacityBlockedAgents(room, roundPlan.eligibleAgents)
@@ -5644,12 +5977,7 @@ export class Broker extends EventEmitter {
         const resultSummaries: DiscussionResultSummary[] = [];
         const nextSuppressedOpenLaneIdsByAgent = new Map<AgentId, Set<string>>();
         for (const { agentId, pendingDispatch, result } of results) {
-          this.markPendingDispatchDelivered(
-            roomId,
-            agentId,
-            pendingDispatch,
-            result.runId,
-          );
+          this.markPendingDispatchDelivered(roomId, agentId, pendingDispatch, result.runId);
           const assignedLane = laneAssignments.get(agentId);
           if (assignedLane) {
             const freshAssignedItem = getTaskChecklistItem(this.deps.db, assignedLane.item.id);

@@ -101,11 +101,8 @@ describe('mission liveness policy', () => {
       action: 'dispatch-ready-work',
       reason: '2 ready owned agent(s) can be nudged',
     });
-    expect(decision.dispatches.map((dispatch) => dispatch.agentId)).toEqual([
-      'codex',
-      'claude',
-    ]);
-    expect(decision.trace.map((entry) => entry.id)).toContain('liveness-dedupe-agent');
+    expect(decision.dispatches.map((dispatch) => dispatch.agentId)).toEqual(['codex', 'claude']);
+    expect(decision.trace.map((entry) => entry.id)).toContain('mission-work-agent-dedupe');
   });
 
   it('does not immediately re-dispatch the agent that just completed a turn', () => {
@@ -119,9 +116,7 @@ describe('mission liveness policy', () => {
 
     expect(decision.action).toBe('wait-for-agent');
     expect(decision.dispatches).toEqual([]);
-    expect(decision.trace.map((entry) => entry.id)).toContain(
-      'liveness-suppress-current-agent',
-    );
+    expect(decision.trace.map((entry) => entry.id)).toContain('liveness-suppress-current-agent');
   });
 
   it('waits when owned work is already attached to active jobs', () => {

@@ -171,6 +171,57 @@ describe('openDatabase', () => {
     db.close();
   });
 
+  it('migrates legacy turn outcomes before creating phase indexes', () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), 'fireside-legacy-outcomes-'));
+    const filename = path.join(dir, 'fireside.sqlite');
+    const legacy = new Database(filename);
+    legacy.exec(`
+      CREATE TABLE rooms (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        agents_json TEXT NOT NULL DEFAULT '[]'
+      );
+      CREATE TABLE agent_turn_outcomes (
+        id TEXT PRIMARY KEY,
+        room_id TEXT NOT NULL REFERENCES rooms(id) ON DELETE CASCADE,
+        task_id TEXT REFERENCES tasks(id) ON DELETE SET NULL,
+        run_id TEXT NOT NULL UNIQUE REFERENCES agent_runs(id) ON DELETE CASCADE,
+        agent_id TEXT NOT NULL,
+        visible_message_id TEXT REFERENCES messages(id) ON DELETE SET NULL,
+        visible_message_emitted INTEGER NOT NULL DEFAULT 0,
+        status TEXT NOT NULL CHECK (status IN ('completed', 'failed', 'canceled', 'empty', 'permission-requested', 'retry-scheduled')),
+        progressed INTEGER NOT NULL DEFAULT 0,
+        failed INTEGER NOT NULL DEFAULT 0,
+        error TEXT NOT NULL DEFAULT '',
+        mission_updates INTEGER NOT NULL DEFAULT 0,
+        mission_receipts INTEGER NOT NULL DEFAULT 0,
+        mission_reconciliations INTEGER NOT NULL DEFAULT 0,
+        collaboration_notes INTEGER NOT NULL DEFAULT 0,
+        draft_artifacts INTEGER NOT NULL DEFAULT 0,
+        permission_request_id TEXT REFERENCES permission_requests(id) ON DELETE SET NULL,
+        permission_auto_approved INTEGER NOT NULL DEFAULT 0,
+        work_dispatches_json TEXT NOT NULL DEFAULT '[]',
+        next_agents_json TEXT NOT NULL DEFAULT '[]',
+        summary TEXT NOT NULL DEFAULT '',
+        created_at INTEGER NOT NULL
+      );
+    `);
+    legacy.close();
+
+    const db = openDatabase(filename);
+    const columns = db.prepare(`PRAGMA table_info(agent_turn_outcomes)`).all() as Array<{
+      name: string;
+    }>;
+    const indexes = db.prepare(`PRAGMA index_list(agent_turn_outcomes)`).all() as Array<{
+      name: string;
+    }>;
+
+    expect(columns.map((row) => row.name)).toContain('phase_id');
+    expect(indexes.map((row) => row.name)).toContain('idx_agent_turn_outcomes_phase_created');
+    db.close();
+  });
+
   it('accepts blocked collaboration ledger status', () => {
     const db = openDatabase(':memory:');
     db.prepare(

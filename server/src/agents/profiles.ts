@@ -1,4 +1,5 @@
 import { getAgentPersona, isProviderId, providerDisplayName } from './personas.js';
+import { isSessionPolicy } from '../orchestration/session-policy.js';
 import type { AgentId, ProviderId, RoomAgentProfile } from './types.js';
 
 const DEFAULT_AUTO_COMPACT_PERCENT = 70;
@@ -14,6 +15,7 @@ interface RawRoomAgentProfile {
   effort?: unknown;
   autoCompactEnabled?: unknown;
   autoCompactPercent?: unknown;
+  sessionPolicy?: unknown;
   temporary?: unknown;
   spawnedBy?: unknown;
   spawnedByPersonaId?: unknown;
@@ -234,6 +236,7 @@ export function normalizeRoomAgentProfiles(input: {
       const autoCompactPercent = cleanPercent(raw.autoCompactPercent);
       const autoCompactEnabled =
         typeof raw.autoCompactEnabled === 'boolean' ? raw.autoCompactEnabled : true;
+      const sessionPolicy = isSessionPolicy(raw.sessionPolicy) ? raw.sessionPolicy : undefined;
       profiles.push({
         id,
         providerId,
@@ -245,6 +248,7 @@ export function normalizeRoomAgentProfiles(input: {
         ...(reasoningEffort ? { reasoningEffort } : {}),
         autoCompactEnabled,
         autoCompactPercent: autoCompactPercent ?? DEFAULT_AUTO_COMPACT_PERCENT,
+        ...(sessionPolicy ? { sessionPolicy } : {}),
         ...(raw.temporary === true ? { temporary: true } : {}),
         ...(raw.spawnedBy ? { spawnedBy: cleanText(raw.spawnedBy, 80) } : {}),
         ...(raw.spawnedByPersonaId

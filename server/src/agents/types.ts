@@ -5,6 +5,20 @@ import type { AgentContextUsage } from '../context-usage.js';
 export type ProviderId = 'claude' | 'codex' | 'gemini' | 'echo';
 export type AgentId = string;
 
+/**
+ * Per-turn provider session lifecycle:
+ *
+ * - `persistent`     keep the resumed CLI session across turns indefinitely.
+ *                    Cheapest live prompt; pays the full provider amplifier.
+ * - `compacting`     keep the resumed session, run /compact when the
+ *                    context-usage threshold is crossed.
+ * - `ephemeral`      always start a fresh provider session; no resume.
+ *                    Highest live prompt cost but no provider-side accumulation.
+ * - `reset-after-lane` resume within a checklist lane, then drop the session
+ *                    once the agent marks that lane done.
+ */
+export type SessionPolicy = 'persistent' | 'compacting' | 'ephemeral' | 'reset-after-lane';
+
 export interface AgentPersona {
   id: string;
   name: string;
@@ -24,6 +38,7 @@ export interface RoomAgentProfile {
   reasoningEffort?: string;
   autoCompactEnabled?: boolean;
   autoCompactPercent?: number;
+  sessionPolicy?: SessionPolicy;
   temporary?: boolean;
   spawnedBy?: AgentId;
   spawnedByPersonaId?: string;
@@ -34,7 +49,24 @@ export interface RoomAgentProfile {
   maxTurns?: number;
 }
 
-export type AgentTurnKind = 'chat' | 'permission-operation' | 'work-lane' | 'workflow-repair';
+export type AgentTurnKind =
+  | 'chat'
+  | 'permission-operation'
+  | 'work-lane'
+  | 'workflow-repair'
+  | 'maintenance-compaction';
+
+/** Turn kinds that are mechanical bookkeeping rather than reasoning work.
+ *  These are eligible for the cheap-model routing in provider adapters
+ *  (e.g. Haiku 4.5 for the Claude provider). */
+export const MECHANICAL_TURN_KINDS: ReadonlySet<AgentTurnKind> = new Set([
+  'workflow-repair',
+  'maintenance-compaction',
+]);
+
+export function isMechanicalTurnKind(kind: AgentTurnKind | undefined): boolean {
+  return kind !== undefined && MECHANICAL_TURN_KINDS.has(kind);
+}
 
 export interface AgentRunContext {
   permission?: PermissionGrant;

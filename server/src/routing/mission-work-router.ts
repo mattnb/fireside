@@ -40,6 +40,7 @@ export function routeMissionWorkUpdates(
   const roomAgents = new Set(input.roomAgents);
   const itemsById = new Map(input.allItems.map((item) => [item.id, item]));
   const seen = new Set<string>();
+  const dispatchedAgents = new Set<AgentId>();
 
   for (const changed of input.changedItems) {
     const item = itemsById.get(changed.id) ?? changed;
@@ -99,6 +100,15 @@ export function routeMissionWorkUpdates(
       });
       continue;
     }
+    if (dispatchedAgents.has(owner)) {
+      trace.push({
+        id: 'mission-work-agent-dedupe',
+        result: 'skipped',
+        reason: `${owner} already has a mission work dispatch in this routing pass`,
+        agents: [owner],
+      });
+      continue;
+    }
     if (!dependenciesSatisfied(item, itemsById)) {
       trace.push({
         id: 'mission-work-dependencies',
@@ -113,6 +123,7 @@ export function routeMissionWorkUpdates(
       item,
       reason: `assigned open checklist item ${item.id}`,
     });
+    dispatchedAgents.add(owner);
     trace.push({
       id: 'mission-work-dispatch',
       result: 'matched',

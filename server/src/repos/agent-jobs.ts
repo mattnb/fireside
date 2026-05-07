@@ -76,6 +76,11 @@ export interface CreateAgentJobInput {
   maxAttempts?: number;
 }
 
+export interface CreateAgentJobIfAvailableResult {
+  job: AgentJob;
+  created: boolean;
+}
+
 export interface LeaseAgentJobInput {
   leaseOwner: string;
   leaseMs: number;
@@ -137,6 +142,24 @@ function normalizeLeaseMs(value: number): number {
   return Number.isFinite(value) && value > 0 ? Math.trunc(value) : 5 * 60_000;
 }
 
+export function getActiveAgentJobForTrigger(
+  db: Database,
+  input: { roomId: string; agentId: AgentId; triggerMessageId: string },
+): AgentJob | null {
+  const row = db
+    .prepare(
+      `SELECT * FROM agent_jobs
+       WHERE room_id = ?
+         AND agent_id = ?
+         AND trigger_message_id = ?
+         AND status IN ('queued', 'leased', 'running')
+       ORDER BY created_at ASC, id ASC
+       LIMIT 1`,
+    )
+    .get(input.roomId, input.agentId, input.triggerMessageId) as AgentJobRow | undefined;
+  return row ? rowToAgentJob(row) : null;
+}
+
 export function createAgentJob(db: Database, input: CreateAgentJobInput): AgentJob {
   const id = nanoid(16);
   const now = Date.now();
@@ -161,6 +184,53 @@ export function createAgentJob(db: Database, input: CreateAgentJobInput): AgentJ
     now,
   );
   return getAgentJob(db, id)!;
+}
+
+export function createAgentJobIfAvailable(
+  db: Database,
+  input: CreateAgentJobInput,
+): CreateAgentJobIfAvailableResult {
+  const tx = db.transaction((): CreateAgentJobIfAvailableResult => {
+    const id = nanoid(16);
+    const now = Date.now();
+    const result = db
+      .prepare(
+        `INSERT OR IGNORE INTO agent_jobs (
+          id, room_id, task_id, checklist_item_id, agent_id, trigger_message_id, run_id, status,
+          work_packet_json, permission_json, lease_owner, lease_expires_at, attempt, max_attempts,
+          error, created_at, updated_at, completed_at
+        ) VALUES (?, ?, ?, ?, ?, ?, NULL, 'queued', ?, ?, '', 0, ?, ?, '', ?, ?, NULL)`,
+      )
+      .run(
+        id,
+        input.roomId,
+        input.taskId ?? null,
+        input.checklistItemId ?? null,
+        input.agentId,
+        input.triggerMessageId,
+        input.workPacketJson ?? '{}',
+        input.permissionJson ?? '{}',
+        normalizeAttempt(input.attempt, 1),
+        normalizeAttempt(input.maxAttempts, 3),
+        now,
+        now,
+      );
+    if (result.changes === 1) {
+      return { job: getAgentJob(db, id)!, created: true };
+    }
+    const existing = getActiveAgentJobForTrigger(db, {
+      roomId: input.roomId,
+      agentId: input.agentId,
+      triggerMessageId: input.triggerMessageId,
+    });
+    if (existing) return { job: existing, created: false };
+
+    // A generated id collision is vanishingly unlikely, but retry once so callers
+    // only see false when there is a real active single-flight job.
+    const retry = createAgentJob(db, input);
+    return { job: retry, created: true };
+  });
+  return tx();
 }
 
 export function getAgentJob(db: Database, id: string): AgentJob | null {
