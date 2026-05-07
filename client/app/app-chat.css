@@ -90,6 +90,18 @@
   font-style: normal;
 }
 
+.msg__seen-separator {
+  width: 1px;
+  height: 11px;
+  margin: 0 2px;
+  background: rgba(255, 255, 255, 0.14);
+}
+
+.msg__worked-duration {
+  color: var(--text-muted);
+  font-weight: 700;
+}
+
 .msg__human-ping {
   display: inline-flex;
   align-items: center;

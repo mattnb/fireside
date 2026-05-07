@@ -12,6 +12,7 @@
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
   min-width: 340px;
+  max-width: 560px;
   min-height: 0;
   margin-bottom: 24px;
   background: rgba(20, 16, 20, 0.62);

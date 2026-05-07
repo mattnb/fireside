@@ -150,6 +150,10 @@
         </span>
         } @else {
         <em>nobody</em>
+        } @if (item.workedFor; as workedFor) {
+        <span class="msg__seen-separator" aria-hidden="true"></span>
+        <span>Worked for</span>
+        <strong class="msg__worked-duration">{{ workedFor }}</strong>
         }
       </div>
       }

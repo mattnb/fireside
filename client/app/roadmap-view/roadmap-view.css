@@ -21,6 +21,10 @@
   padding: 0;
 }
 
+.mission-roadmap > .empty-copy {
+  padding: 18px 22px 24px;
+}
+
 .mission-roadmap__head {
   display: flex;
   align-items: flex-end;

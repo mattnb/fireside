@@ -516,21 +516,32 @@ export class App implements OnDestroy {
     // rendered window doesn't show orphaned events from the deep past. When the
     // chat is short (< cap) this is a no-op since oldestVisibleAt is 0.
     const oldestVisibleAt = cappedMessages[0]?.createdAt ?? 0;
+    const runByReplyMessageId = new Map(
+      this.runs()
+        .filter((run) => run.replyMessageId)
+        .map((run) => [run.replyMessageId as string, run]),
+    );
 
     const rawItems: ChatTimelineItem[] = [
-      ...cappedMessages.map((message) => ({
-        id: `message:${message.id}`,
-        kind: 'message' as const,
-        createdAt: message.createdAt,
-        message,
-        grouped: false,
-        html: this.renderMessageHtml(message.text),
-        isError: message.authorKind === 'system' && /failed|timed out|error/i.test(message.text),
-        humanMentioned: this.messageMentionsHuman(message),
-        ...(message.authorKind === 'system'
-          ? {}
-          : { seenAgents: this.display.messageSeenAgents(message) }),
-      })),
+      ...cappedMessages.map((message) => {
+        const run =
+          message.authorKind === 'agent' ? runByReplyMessageId.get(message.id) : undefined;
+        const workedFor = this.workedForLabel(run);
+        return {
+          id: `message:${message.id}`,
+          kind: 'message' as const,
+          createdAt: message.createdAt,
+          message,
+          grouped: false,
+          html: this.renderMessageHtml(message.text),
+          isError: message.authorKind === 'system' && /failed|timed out|error/i.test(message.text),
+          humanMentioned: this.messageMentionsHuman(message),
+          ...(workedFor ? { workedFor } : {}),
+          ...(message.authorKind === 'system'
+            ? {}
+            : { seenAgents: this.display.messageSeenAgents(message) }),
+        };
+      }),
       ...this.permissionRequests()
         .filter((request) => request.createdAt >= oldestVisibleAt)
         .map((request) => ({
@@ -563,6 +574,13 @@ export class App implements OnDestroy {
       return { ...item, grouped };
     });
   });
+
+  private workedForLabel(run: AgentRun | undefined): string | undefined {
+    if (!run?.startedAt) return undefined;
+    const now = run.completedAt ?? this.now();
+    return fmtElapsedLabel(run.startedAt, run.completedAt ?? now, now);
+  }
+
   readonly missionReceiptActions = computed(() => {
     const taskId = this.activeTask()?.id;
     return this.runActions()

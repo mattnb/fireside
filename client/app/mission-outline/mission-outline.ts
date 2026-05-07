@@ -8,6 +8,7 @@
 import {
   ChangeDetectionStrategy,
   Component,
+  DestroyRef,
   computed,
   inject,
   output,
@@ -32,6 +33,8 @@ export class MissionOutline {
   protected readonly display = inject(AgentDisplayService);
   protected readonly graph = inject(MissionGraphService);
   protected readonly store = inject(MissionStore);
+  private readonly destroyRef = inject(DestroyRef);
+  private readonly now = signal(Date.now());
 
   readonly runOpened = output<string>();
   readonly runStopRequested = output<string>();
@@ -62,8 +65,13 @@ export class MissionOutline {
       .filter((run) => run.status === 'running' && !linkedRunIds.has(run.id));
   });
 
+  constructor() {
+    const timer = window.setInterval(() => this.now.set(Date.now()), 1000);
+    this.destroyRef.onDestroy(() => window.clearInterval(timer));
+  }
+
   protected runDuration(run: AgentRun): string {
-    return fmtElapsedLabel(run.startedAt, run.completedAt, Date.now());
+    return fmtElapsedLabel(run.startedAt, run.completedAt, this.now());
   }
 
   protected ownerAgentId(card: MissionGraphCard): AgentId | null {
