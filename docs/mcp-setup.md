@@ -76,6 +76,64 @@ A loopback call without the flag set returns 404 (the route is not
 registered). A non-loopback call without the key configured returns 403; a
 non-loopback call with a wrong/missing bearer returns 401.
 
+## Tool Calls
+
+`tools/call` follows the MCP spec
+([2025-06-18 schema](https://modelcontextprotocol.io/specification/2025-06-18/server/tools)).
+A successful response wraps engine output in the standard MCP result envelope:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 2,
+  "result": {
+    "content": [{ "type": "text", "text": "applied: updated checklist item …" }],
+    "isError": false,
+    "structuredContent": {
+      "callId": "…",
+      "toolName": "mission.task.update",
+      "status": "applied",
+      "summary": "applied: updated checklist item …",
+      "duplicateOfCallId": null,
+      "result": { "applied": 1, "progressed": 0 }
+    }
+  }
+}
+```
+
+`structuredContent` carries Fireside-specific fields (`callId`, `status`,
+`duplicateOfCallId`, `result`) for native callers. Standard MCP clients can
+ignore it and read the human-readable text from `content[0].text`.
+
+Tool *execution* failures (rejected, denied, timeout) are reported per the
+spec inside the result envelope with `isError: true`, **not** as JSON-RPC
+errors. Only protocol-level failures (unknown method, malformed params,
+unknown room, denied tool) come back as JSON-RPC `error` objects.
+
+### Idempotency
+
+Idempotency keys are an MCP extension, not part of the standard request
+shape. The adapter accepts them in two locations:
+
+1. `params.idempotencyKey` — Fireside-native callers.
+2. `params._meta.idempotencyKey` — MCP convention for protocol metadata.
+
+If the caller supplies neither, the adapter mints a deterministic key from
+the canonical `(agentId, roomId, toolName, arguments)` tuple, hashed with
+SHA-256. Standard MCP clients that send no key still get duplicate-collapse:
+identical retries fold into a single applied call.
+
+```bash
+# spec-compliant call (no idempotencyKey; the server mints one)
+curl -sS http://127.0.0.1:8787/api/mcp \
+  -H 'content-type: application/json' \
+  -H 'x-fireside-room-id: <room>' \
+  -d '{
+    "jsonrpc":"2.0","id":2,"method":"tools/call",
+    "params":{"name":"mission.task.update","arguments":{"action":"create","title":"hello","status":"open"}}
+  }'
+```
+
 ## Out of Scope
 
 The current implementation is intentionally minimal:

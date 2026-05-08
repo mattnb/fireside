@@ -176,12 +176,41 @@ allowlist constant in the adapter.
 
 ### Idempotency
 
-MCP clients are expected to send their own `idempotencyKey` per
-`tools/call`. If they don't, the adapter rejects with a structured
-error rather than minting one — the engine relies on idempotency keys
-being meaningful, and a server-minted key from a non-broker source
-(no `runId`, no `messageId`) defeats the duplicate-collapse semantic.
-This matches how the spec describes idempotency at the tool boundary.
+**Revised 2026-05-08 after dogfood verification against the
+[2025-06-18 MCP spec](https://modelcontextprotocol.io/specification/2025-06-18/server/tools).**
+Idempotency keys are not part of the standard `tools/call` params; the
+spec defines `params: { name, arguments }` only. The original "reject
+when absent" rule blocked every spec-compliant client. The adapter now:
+
+1. Accepts a caller-supplied key from `params.idempotencyKey`
+   (Fireside-native callers) or `params._meta.idempotencyKey` (MCP
+   convention for protocol metadata).
+2. If neither is present, mints a deterministic key from the canonical
+   `(agentId, roomId, toolName, arguments)` tuple, SHA-256 hashed.
+   Identical retries still collapse to `duplicate` — the original
+   concern about random server-minted keys defeating duplicate-collapse
+   doesn't apply when the key is content-derived.
+
+Source tagging continues to mark these calls as `source: 'mcp'` so
+audit/run-detail surfaces can render them distinctly.
+
+### Result envelope
+
+`tools/call` results follow the spec's "Tool Result" shape:
+
+```
+{
+  content: [{ type: "text", text: <summary> }],
+  isError: <bool>,
+  structuredContent: { callId, toolName, status, summary, duplicateOfCallId, result, error? }
+}
+```
+
+Engine domain-level failures (`rejected`, `denied`, `timeout`) come back
+inside the result with `isError: true`, **not** as JSON-RPC errors,
+matching the spec's "Tool Execution Errors" guidance. Only
+protocol-level failures (unknown method, invalid envelope, unknown
+tool, missing routing context) become JSON-RPC `error` envelopes.
 
 ### Source tagging
 
@@ -199,13 +228,15 @@ Unit:
   shape; `tools/call` for `mission.task.update` produces an applied
   outcome with the same audit row a hidden-command call would.
 - Method dispatch errors: unknown method → JSON-RPC `-32601`, malformed
-  params → `-32602`, internal failures → `-32000` with the engine's
-  error message.
+  params → `-32602`. Engine-level tool execution failures are surfaced
+  inside the result envelope with `isError: true`, per the MCP spec's
+  "Tool Execution Errors" rule, not as JSON-RPC errors.
 - Allowlist enforcement: `tools/call` for a denied tool name
   (`agent.set_status`, `permission.request`) returns
   `application/error` with reason "tool not exposed via MCP".
-- Idempotency-key required: `tools/call` without a key → JSON-RPC
-  invalid-params with a clear message.
+- Idempotency-key minting: `tools/call` without a caller-supplied key
+  mints a deterministic content-hash key, and a second identical call
+  collapses to `duplicate`.
 
 Integration (Milestone 6 only):
 

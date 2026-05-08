@@ -9,6 +9,7 @@
 //
 // See docs/phase-6-mcp-endpoint-design-2026-05-07.md for the full design.
 
+import { createHash } from 'node:crypto';
 import type { Database } from 'better-sqlite3';
 import { nanoid } from 'nanoid';
 import type { AgentId } from '../../agents/types.js';
@@ -52,8 +53,6 @@ export const MCP_ERROR = {
   methodNotFound: -32601,
   invalidParams: -32602,
   internalError: -32603,
-  /** Application-defined: tool execution returned a non-applied terminal status. */
-  toolFailed: -32000,
   /** Application-defined: caller tried to invoke a tool not on the allowlist. */
   toolNotExposed: -32001,
 } as const;
@@ -206,10 +205,16 @@ async function runToolsCall(
 
   const now = ctx.now ?? Date.now;
   const newCallId = ctx.newCallId ?? (() => nanoid(16));
+  const effectiveKey = idempotencyKey ?? deriveMcpIdempotencyKey({
+    toolName: name,
+    args,
+    agentId: ctx.agentId,
+    roomId: ctx.roomId,
+  });
   const call: AgentToolCall = {
     id: newCallId(),
     tool: name,
-    idempotencyKey,
+    idempotencyKey: effectiveKey,
     args,
     source: 'mcp',
     roomId: ctx.roomId,
@@ -235,7 +240,7 @@ async function runToolsCall(
 function parseToolsCallParams(
   rawParams: unknown,
 ):
-  | { ok: true; value: { name: string; arguments: Record<string, unknown>; idempotencyKey: string } }
+  | { ok: true; value: { name: string; arguments: Record<string, unknown>; idempotencyKey: string | null } }
   | { ok: false; error: string } {
   if (!rawParams || typeof rawParams !== 'object' || Array.isArray(rawParams)) {
     return { ok: false, error: 'tools/call params must be an object' };
@@ -245,12 +250,22 @@ function parseToolsCallParams(
   if (typeof name !== 'string' || !name.trim()) {
     return { ok: false, error: 'tools/call requires string `name`' };
   }
-  const idempotencyKey = candidate.idempotencyKey;
-  if (typeof idempotencyKey !== 'string' || !idempotencyKey.trim()) {
-    return {
-      ok: false,
-      error: 'tools/call requires string `idempotencyKey` (server-minted keys defeat duplicate collapse)',
-    };
+  // The MCP spec defines tools/call params as { name, arguments }; idempotency
+  // is an extension. Accept it from the top-level (Fireside-native callers) or
+  // from `_meta.idempotencyKey` (the MCP convention for protocol metadata). If
+  // neither is present, the dispatcher mints a deterministic key from the
+  // canonical (caller, tool, args) tuple so retries with identical inputs
+  // still collapse to `duplicate` exactly like a caller-supplied key would.
+  const meta = (candidate._meta && typeof candidate._meta === 'object' && !Array.isArray(candidate._meta))
+    ? (candidate._meta as Record<string, unknown>)
+    : null;
+  const rawKey = candidate.idempotencyKey ?? meta?.idempotencyKey;
+  let idempotencyKey: string | null = null;
+  if (rawKey !== undefined && rawKey !== null) {
+    if (typeof rawKey !== 'string' || !rawKey.trim()) {
+      return { ok: false, error: 'tools/call `idempotencyKey` must be a non-empty string when provided' };
+    }
+    idempotencyKey = rawKey.trim();
   }
   const argsRaw = candidate.arguments ?? {};
   if (typeof argsRaw !== 'object' || argsRaw === null || Array.isArray(argsRaw)) {
@@ -261,29 +276,72 @@ function parseToolsCallParams(
     value: {
       name: name.trim(),
       arguments: argsRaw as Record<string, unknown>,
-      idempotencyKey: idempotencyKey.trim(),
+      idempotencyKey,
     },
   };
 }
 
+/**
+ * Stable JSON serialization with sorted object keys, so two argument objects
+ * that differ only by key order hash to the same idempotency key.
+ */
+function canonicalJson(value: unknown): string {
+  if (value === null || typeof value !== 'object') return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
+  const entries = Object.entries(value as Record<string, unknown>)
+    .filter(([, v]) => v !== undefined)
+    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+  return `{${entries.map(([k, v]) => `${JSON.stringify(k)}:${canonicalJson(v)}`).join(',')}}`;
+}
+
+function deriveMcpIdempotencyKey(input: {
+  toolName: string;
+  args: Record<string, unknown>;
+  agentId: AgentId;
+  roomId: string;
+}): string {
+  const hash = createHash('sha256')
+    .update(canonicalJson({ tool: input.toolName, args: input.args }))
+    .digest('hex')
+    .slice(0, 24);
+  return `mcp:${input.agentId}:${input.roomId}:${hash}`;
+}
+
+/**
+ * Translate an engine outcome into an MCP-spec-compliant `tools/call` result.
+ *
+ * Per https://modelcontextprotocol.io/specification/2025-06-18/server/tools §
+ * "Tool Result" and "Error Handling": tool *execution* failures are reported
+ * inside the result envelope with `isError: true`, not as JSON-RPC errors.
+ * Only protocol-level failures (unknown method, invalid request, unknown tool
+ * from the caller's perspective) become JSON-RPC errors. So every engine
+ * outcome — applied, duplicate, rejected, denied, timeout, etc. — flows back
+ * through the success channel here, with `isError` flipped for non-success
+ * terminal states. Fireside-specific fields (`callId`, `status`, `result`,
+ * `duplicateOfCallId`, `error`) ride along in `structuredContent` so native
+ * callers can still read them.
+ */
 function outcomeToJsonRpc(
   id: JsonRpcSuccessResponse['id'],
   outcome: ExecuteToolCallOutcome,
 ): JsonRpcResponse {
-  if (outcome.status === 'applied' || outcome.status === 'duplicate') {
-    return successResponse(id, {
-      callId: outcome.callId,
-      toolName: outcome.toolName,
-      status: outcome.status,
-      summary: outcome.summary,
-      duplicateOfCallId: outcome.duplicateOfCallId,
-      result: outcome.result ?? null,
-    });
-  }
-  return errorResponse(id, MCP_ERROR.toolFailed, outcome.error || outcome.summary || outcome.status, {
+  const isError = outcome.status !== 'applied' && outcome.status !== 'duplicate';
+  const text = isError
+    ? (outcome.error || outcome.summary || outcome.status)
+    : (outcome.summary ?? outcome.status);
+  const structuredContent: Record<string, unknown> = {
     callId: outcome.callId,
     toolName: outcome.toolName,
     status: outcome.status,
+    summary: outcome.summary ?? null,
+    duplicateOfCallId: outcome.duplicateOfCallId ?? null,
+    result: outcome.result ?? null,
+  };
+  if (outcome.error) structuredContent.error = outcome.error;
+  return successResponse(id, {
+    content: [{ type: 'text', text }],
+    isError,
+    structuredContent,
   });
 }
 

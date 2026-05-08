@@ -144,24 +144,106 @@ describe('dispatchMcpRequest', () => {
     db.close();
   });
 
-  it('tools/call refuses to mint an idempotency key on the caller behalf', async () => {
+  it('tools/call mints a deterministic idempotency key when caller omits one, so retries collapse to duplicate', async () => {
+    const handlerCalls: number[] = [];
     const { db, registry } = makeRegistryWith(
-      stub('mission.task.update', 'update task', ['mission:write']),
+      registerTool<{ taskId: string }>({
+        name: 'mission.task.update',
+        summary: 'update task',
+        requiredPermissions: ['mission:write'],
+        schema: {
+          parse(input) {
+            const candidate = input as { taskId?: unknown };
+            if (typeof candidate.taskId !== 'string' || !candidate.taskId) {
+              throw new Error('taskId required');
+            }
+            return { taskId: candidate.taskId.trim() };
+          },
+        },
+        handler: ({ args }) => {
+          handlerCalls.push(1);
+          return {
+            status: 'applied',
+            summary: `updated ${args.taskId}`,
+            effects: [{ kind: 'task-updated', targetId: args.taskId, summary: 'ok' }],
+          };
+        },
+      }),
+    );
+
+    const params = {
+      name: 'mission.task.update',
+      arguments: { taskId: 'task-7' },
+    };
+    const ctx = {
+      db,
+      registry,
+      agentId: 'mcp-client' as const,
+      roomId: 'room-1',
+      missionId: 'mission-1',
+      statePermissions: ['mission:write' as const],
+    };
+
+    const first = await dispatchMcpRequest(
+      { jsonrpc: '2.0', id: 'mint-1', method: 'tools/call', params },
+      ctx,
+    );
+    const second = await dispatchMcpRequest(
+      { jsonrpc: '2.0', id: 'mint-2', method: 'tools/call', params },
+      ctx,
+    );
+
+    expect('result' in first).toBe(true);
+    expect('result' in second).toBe(true);
+    if ('result' in first && 'result' in second) {
+      const firstStructured = (first.result as { structuredContent: { status: string } }).structuredContent;
+      const secondStructured = (second.result as {
+        structuredContent: { status: string; duplicateOfCallId: string | null };
+      }).structuredContent;
+      expect(firstStructured.status).toBe('applied');
+      expect(secondStructured.status).toBe('duplicate');
+      expect(secondStructured.duplicateOfCallId).toBeTruthy();
+    }
+    expect(handlerCalls).toHaveLength(1);
+    db.close();
+  });
+
+  it('tools/call accepts an idempotency key supplied via _meta.idempotencyKey', async () => {
+    const { db, registry } = makeRegistryWith(
+      registerTool<{ taskId: string }>({
+        name: 'mission.task.update',
+        summary: 'update task',
+        requiredPermissions: ['mission:write'],
+        schema: { parse: (input) => input as { taskId: string } },
+        handler: () => ({ status: 'applied', summary: 'ok', effects: [] }),
+      }),
     );
     const response = await dispatchMcpRequest(
       {
         jsonrpc: '2.0',
-        id: 'b',
+        id: 'meta',
         method: 'tools/call',
-        params: { name: 'mission.task.update', arguments: { taskId: 'task-1' } },
+        params: {
+          name: 'mission.task.update',
+          arguments: { taskId: 'task-1' },
+          _meta: { idempotencyKey: 'caller-supplied:via-meta' },
+        },
       },
-      { db, registry, agentId: 'mcp-client', roomId: 'room-1', missionId: 'mission-1' },
+      {
+        db,
+        registry,
+        agentId: 'mcp-client',
+        roomId: 'room-1',
+        missionId: 'mission-1',
+        statePermissions: ['mission:write'],
+      },
     );
-    expect('error' in response).toBe(true);
-    if ('error' in response) {
-      expect(response.error.code).toBe(MCP_ERROR.invalidParams);
-      expect(response.error.message).toMatch(/idempotencyKey/);
-    }
+
+    expect('result' in response).toBe(true);
+    const row = db
+      .prepare('SELECT idempotency_key FROM agent_tool_calls')
+      .get() as { idempotency_key: string };
+    expect(row.idempotency_key).toBe('caller-supplied:via-meta');
     db.close();
   });
 
@@ -273,9 +355,20 @@ describe('dispatchMcpRequest', () => {
     expect(handlerCalls).toHaveLength(1);
     expect('result' in response).toBe(true);
     if ('result' in response) {
-      const result = response.result as Record<string, unknown>;
-      expect(result.status).toBe('applied');
-      expect(result.toolName).toBe('mission.task.update');
+      const result = response.result as {
+        content: { type: string; text: string }[];
+        isError: boolean;
+        structuredContent: Record<string, unknown>;
+      };
+      // MCP spec compliance: applied → unstructured text content + isError: false.
+      expect(result.isError).toBe(false);
+      expect(Array.isArray(result.content)).toBe(true);
+      expect(result.content[0]).toMatchObject({ type: 'text' });
+      expect(typeof result.content[0]?.text).toBe('string');
+      // Fireside-specific fields ride along on structuredContent.
+      expect(result.structuredContent.status).toBe('applied');
+      expect(result.structuredContent.toolName).toBe('mission.task.update');
+      expect(result.structuredContent.callId).toBe('call-fixed-1');
     }
 
     const row = db.prepare('SELECT source, status FROM agent_tool_calls').get() as {
@@ -287,7 +380,7 @@ describe('dispatchMcpRequest', () => {
     db.close();
   });
 
-  it('tools/call surfaces engine rejections as -32000 with audit context', async () => {
+  it('tools/call returns engine rejections as result.isError: true (MCP spec puts tool-execution errors inside the result, not the JSON-RPC envelope)', async () => {
     const { db, registry } = makeRegistryWith(
       registerTool<Record<string, unknown>>({
         name: 'mission.task.update',
@@ -323,13 +416,18 @@ describe('dispatchMcpRequest', () => {
       },
     );
 
-    expect('error' in response).toBe(true);
-    if ('error' in response) {
-      expect(response.error.code).toBe(MCP_ERROR.toolFailed);
-      expect(response.error.message).toMatch(/taskId required/);
-      const data = response.error.data as { status: string; toolName: string };
-      expect(data.status).toBe('rejected');
-      expect(data.toolName).toBe('mission.task.update');
+    expect('result' in response).toBe(true);
+    if ('result' in response) {
+      const result = response.result as {
+        content: { type: string; text: string }[];
+        isError: boolean;
+        structuredContent: { status: string; toolName: string; error?: string };
+      };
+      expect(result.isError).toBe(true);
+      expect(result.content[0]?.text).toMatch(/taskId required/);
+      expect(result.structuredContent.status).toBe('rejected');
+      expect(result.structuredContent.toolName).toBe('mission.task.update');
+      expect(result.structuredContent.error).toMatch(/taskId required/);
     }
     db.close();
   });

@@ -105,6 +105,12 @@ try {
   // 2 & 3. tools/call applied + duplicate. With routing headers the call
   // creates a real checklist item the first time, then collapses to duplicate
   // on retry — this is the idempotency property the spec promises.
+  //
+  // The result envelope is MCP-spec-compliant per
+  // https://modelcontextprotocol.io/specification/2025-06-18/server/tools §
+  // "Tool Result": { content: [{type:"text", text}], isError, structuredContent }.
+  // Fireside-specific fields (callId, status, duplicateOfCallId) live under
+  // structuredContent for native callers.
   const idemKey = `smoke-${Date.now()}`;
   const callBody = {
     jsonrpc: '2.0',
@@ -122,18 +128,26 @@ try {
   };
 
   const first = await jsonRpc(url, callBody, routingHeaders);
-  const firstResultStatus = first.body?.result?.status ?? null;
-  const firstError = first.body?.error?.message ?? null;
-  const firstOk = first.status === 200 && firstResultStatus === 'applied';
-  record('tools/call applies on first invocation', firstOk,
-    `http=${first.status} resultStatus=${firstResultStatus ?? 'none'} err=${firstError ?? 'none'}`);
+  const firstStructured = first.body?.result?.structuredContent ?? null;
+  const firstIsError = first.body?.result?.isError ?? null;
+  const firstHasContent = Array.isArray(first.body?.result?.content)
+    && first.body.result.content[0]?.type === 'text'
+    && typeof first.body.result.content[0]?.text === 'string';
+  const firstOk = first.status === 200
+    && firstHasContent
+    && firstIsError === false
+    && firstStructured?.status === 'applied';
+  record('tools/call applies on first invocation (MCP-shaped result)', firstOk,
+    `http=${first.status} isError=${firstIsError} status=${firstStructured?.status ?? 'none'}`);
 
   const second = await jsonRpc(url, { ...callBody, id: 3 }, routingHeaders);
-  const secondResultStatus = second.body?.result?.status ?? null;
-  const secondDup = second.body?.result?.duplicateOfCallId ?? null;
-  const dupOk = second.status === 200 && secondResultStatus === 'duplicate' && !!secondDup;
+  const secondStructured = second.body?.result?.structuredContent ?? null;
+  const dupOk = second.status === 200
+    && second.body?.result?.isError === false
+    && secondStructured?.status === 'duplicate'
+    && !!secondStructured?.duplicateOfCallId;
   record('tools/call collapses to duplicate on retry', dupOk,
-    `http=${second.status} resultStatus=${secondResultStatus ?? 'none'} duplicateOf=${secondDup ?? 'none'}`);
+    `http=${second.status} status=${secondStructured?.status ?? 'none'} duplicateOf=${secondStructured?.duplicateOfCallId ?? 'none'}`);
 
   // 4. unknown method → method not found
   {
@@ -171,6 +185,33 @@ try {
     const ok = r.status === 200 && r.body?.error?.code === -32602;
     record('missing routing context returns -32602', ok,
       `status=${r.status} code=${r.body?.error?.code ?? 'n/a'}`);
+  }
+
+  // 7. spec compliance: standard MCP clients send no `idempotencyKey`. The
+  // adapter mints a deterministic key from the (caller, tool, args) tuple, so
+  // identical retries collapse exactly like a caller-supplied key.
+  {
+    const noKeyBody = {
+      jsonrpc: '2.0',
+      id: 7,
+      method: 'tools/call',
+      params: {
+        name: 'mission.task.update',
+        arguments: {
+          action: 'create',
+          title: 'mcp smoke no-key item',
+          status: 'open',
+        },
+      },
+    };
+    const a = await jsonRpc(url, noKeyBody, routingHeaders);
+    const b = await jsonRpc(url, { ...noKeyBody, id: 8 }, routingHeaders);
+    const aStatus = a.body?.result?.structuredContent?.status ?? null;
+    const bStatus = b.body?.result?.structuredContent?.status ?? null;
+    const ok = a.status === 200 && b.status === 200
+      && aStatus === 'applied' && bStatus === 'duplicate';
+    record('tools/call mints idempotency key when caller omits it (spec-compliant clients still get duplicate-collapse)', ok,
+      `first=${aStatus ?? 'none'} second=${bStatus ?? 'none'}`);
   }
 } catch (err) {
   console.error('smoke: harness error', err);
