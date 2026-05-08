@@ -38,19 +38,18 @@ args:
   includeSchemas: true
 \`\`\`
 
-For text-only providers that cannot emit native structured calls, use one generic hidden tool block per state action:
+For text-only providers that cannot emit native structured calls, use the slash-block fallback required by the live turn. These blocks are parsed as text input and routed through the structured tool engine:
 
-\`\`\`html
-<!-- fireside-tool
-tool: mission.task.update
-args:
-  taskId: abc
-  status: done
-  note: Verified with tests.
-/fireside-tool -->
+\`\`\`text
+/mission-task
+action: update
+id: abc
+status: done
+note: Verified with tests.
+/end-mission-task
 \`\`\`
 
-Compatibility fallback: if a turn's direct instructions require legacy slash blocks such as \`/mission-task\`, \`/mission-receipt\`, \`/permission-request\`, or \`/collab-note\`, emit the required legacy block exactly as instructed by the live turn. Prefer the structured form everywhere else.
+Compatibility note: slash blocks such as \`/mission-task\`, \`/mission-receipt\`, \`/permission-request\`, or \`/collab-note\` are the supported text-input adapter. Prefer native structured calls when available; otherwise emit the slash block required by the live turn.
 `;
 
 export const PROTOCOLS_MARKDOWN = `# Fireside Protocols
