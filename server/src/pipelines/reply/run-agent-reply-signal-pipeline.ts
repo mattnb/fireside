@@ -8,12 +8,14 @@ import { extractMissionPlansStep } from './steps/extract-mission-plans.js';
 import { extractMissionReceiptsStep } from './steps/extract-mission-receipts.js';
 import { extractMissionTasksStep } from './steps/extract-mission-tasks.js';
 import { extractPermissionRequestStep } from './steps/extract-permission-request.js';
+import { stripFiresideToolEnvelopesStep } from './steps/strip-fireside-tool-envelopes.js';
 import type {
   AgentReplySignalPipelineContext,
   AgentReplySignalPipelineInput,
 } from './types.js';
 
 export const AGENT_REPLY_SIGNAL_PIPELINE_STEPS = [
+  stripFiresideToolEnvelopesStep,
   extractMissionCreatesStep,
   extractMissionPlansStep,
   extractMissionPhasesStep,
