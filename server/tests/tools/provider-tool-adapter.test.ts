@@ -177,6 +177,92 @@ describe('provider tool adapter', () => {
     ]);
     db.close();
   });
+
+  it('routes Codex/OpenAI function_call items through idempotency, permission, handler, and audit', async () => {
+    const db = testDb();
+    const item = createTaskChecklistItem(db, {
+      taskId: 'mission-1',
+      title: 'Bridge Codex native provider call',
+      status: 'open',
+    });
+
+    const stdout = JSON.stringify({
+      type: 'item.completed',
+      item: {
+        id: 'fc_1',
+        type: 'function_call',
+        call_id: 'call_codex_bridge',
+        name: 'mission_task_update',
+        arguments: JSON.stringify({
+          taskId: item.id,
+          status: 'done',
+          note: 'Applied through Codex provider bridge.',
+        }),
+      },
+    });
+
+    const first = await routeProviderToolCalls({
+      db,
+      providerId: 'codex',
+      stdout,
+      roomId: 'room-1',
+      mission: getTask(db, 'mission-1'),
+      runId: 'run-1',
+      agentId: 'codex',
+      permission: {
+        source: 'yolo',
+        mode: 'full-auto',
+        target: 'unrestricted filesystem',
+        reason: 'test grant',
+      },
+      now: () => 30,
+      newCallId: () => 'codex-provider-call-1',
+    });
+    const second = await routeProviderToolCalls({
+      db,
+      providerId: 'codex',
+      stdout,
+      roomId: 'room-1',
+      mission: getTask(db, 'mission-1'),
+      runId: 'run-1',
+      agentId: 'codex',
+      permission: {
+        source: 'yolo',
+        mode: 'full-auto',
+        target: 'unrestricted filesystem',
+        reason: 'test grant',
+      },
+      now: () => 31,
+      newCallId: () => 'codex-provider-call-2',
+    });
+
+    expect(first.toolCalls[0]).toMatchObject({ status: 'applied' });
+    expect(second.toolCalls[0]).toMatchObject({
+      status: 'duplicate',
+      duplicateOfCallId: first.toolCalls[0]!.callId,
+    });
+    expect(first.missionTaskResult).toMatchObject({ applied: 1, progressed: 1 });
+    expect(getTaskChecklistItem(db, item.id)).toMatchObject({
+      status: 'done',
+      statusNote: 'Applied through Codex provider bridge.',
+    });
+    expect(auditRows(db)).toMatchObject([
+      {
+        id: 'codex-provider-call-1',
+        tool_name: 'mission.task.update',
+        source: 'provider-tool-call',
+        status: 'applied',
+        idempotency_key: 'run-1:provider-tool-call:call_codex_bridge',
+      },
+      {
+        tool_name: 'mission.task.update',
+        source: 'provider-tool-call',
+        status: 'duplicate',
+        idempotency_key: 'run-1:provider-tool-call:call_codex_bridge',
+      },
+    ]);
+    db.close();
+  });
 });
 
 function testDb() {

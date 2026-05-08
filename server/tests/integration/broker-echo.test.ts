@@ -3338,6 +3338,81 @@ describe('Broker', () => {
     );
   });
 
+  it('routes Codex/OpenAI native provider calls from raw JSONL through the broker', async () => {
+    let itemId = '';
+    const providerBroker = new Broker({
+      db,
+      maxAgentRepliesPerThread: 1,
+      runAgent: async (spec) => ({
+        text: 'Completed via Codex native tool.',
+        sessionId: `${spec.id}-sess`,
+        raw: {
+          stdout: JSON.stringify({
+            type: 'item.completed',
+            item: {
+              id: 'fc_1',
+              type: 'function_call',
+              call_id: 'call_codex_broker_bridge',
+              name: 'mission_task_update',
+              arguments: JSON.stringify({
+                taskId: itemId,
+                status: 'done',
+                note: 'Codex native provider call applied.',
+              }),
+            },
+          }),
+          stderr: '',
+        },
+      }),
+      getSpec: (id) => {
+        const map: Record<string, AgentSpec> = {
+          claude: fakeSpec('claude', 'claude reply'),
+          codex: fakeSpec('codex', 'codex reply'),
+          gemini: fakeSpec('gemini', 'gemini reply'),
+          echo: fakeSpec('echo', 'echo reply'),
+        };
+        return map[id];
+      },
+    });
+    const room = createRoom(db, { name: 'codex-provider-tool-bridge', agents: ['codex'] });
+    const task = providerBroker.createTask(room.id, { title: 'Codex provider bridge mission' });
+    const item = createTaskChecklistItem(db, {
+      taskId: task!.id,
+      title: 'Exercise Codex native provider bridge',
+      status: 'open',
+    });
+    itemId = item.id;
+
+    await providerBroker.postHumanMessage(room.id, 'human', '@codex finish the item');
+
+    expect(listTaskChecklistItems(db, task!.id)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: item.id,
+          status: 'done',
+          statusNote: 'Codex native provider call applied.',
+        }),
+      ]),
+    );
+    const [run] = listAgentRuns(db, room.id);
+    const auditRows = db
+      .prepare(
+        `SELECT tool_name, source, status, idempotency_key
+         FROM agent_tool_calls
+         WHERE run_id = ?
+         ORDER BY created_at ASC`,
+      )
+      .all(run!.id);
+    expect(auditRows).toEqual([
+      {
+        tool_name: 'mission.task.update',
+        source: 'provider-tool-call',
+        status: 'applied',
+        idempotency_key: `${run!.id}:provider-tool-call:call_codex_broker_bridge`,
+      },
+    ]);
+  });
+
   it('dispatches newly assigned checklist work to the owner without a visible handoff', async () => {
     const dispatchBroker = new Broker({
       db,
