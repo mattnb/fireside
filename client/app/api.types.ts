@@ -645,6 +645,56 @@ export interface RunDiagnostics {
   }>;
 }
 
+export type AgentToolCallStatus =
+  | 'decoded'
+  | 'validated'
+  | 'applied'
+  | 'rejected'
+  | 'duplicate'
+  | 'permission_pending'
+  | 'permission_denied'
+  | 'failed';
+
+export type AgentToolSource =
+  | 'hidden-command'
+  | 'provider-tool-call'
+  | 'mcp'
+  | 'system'
+  | 'replay';
+
+export interface AgentToolEffect {
+  kind: string;
+  targetType?: string;
+  targetId?: string;
+  summary: string;
+  payload?: unknown;
+}
+
+export interface AgentToolResult {
+  status: string;
+  summary: string;
+  data?: unknown;
+  effects: AgentToolEffect[];
+}
+
+export interface AgentToolCallView {
+  id: string;
+  toolName: string;
+  status: AgentToolCallStatus;
+  source: AgentToolSource;
+  agentId: AgentId;
+  idempotencyKey: string;
+  target: string;
+  summary: string;
+  error: string;
+  args: Record<string, unknown>;
+  normalizedArgs: Record<string, unknown>;
+  result: AgentToolResult | null;
+  effects: AgentToolEffect[];
+  createdAt: number;
+  appliedAt: number | null;
+}
+
 export interface AgentRunDetail {
   run: AgentRun;
   execution?: {
@@ -691,6 +741,7 @@ export interface AgentRunDetail {
   replyMessage: Message | null;
   diagnostics: RunDiagnostics;
   actions: AgentRunAction[];
+  toolCalls: AgentToolCallView[];
 }
 
 export interface RoutingRuleTrace {

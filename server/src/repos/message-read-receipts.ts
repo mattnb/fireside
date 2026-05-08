@@ -32,7 +32,7 @@ export function recordMessageReadReceipts(
   input: {
     roomId: string;
     agentId: AgentId;
-    runId: string;
+    runId: string | null;
     messageIds: string[];
     seenAt?: number;
   },

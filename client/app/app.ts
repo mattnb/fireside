@@ -440,6 +440,13 @@ export class App implements OnDestroy {
   get roomYoloAgents() {
     return this.store.roomYoloAgents;
   }
+  readonly selectedRoomYoloStatus = computed(() => {
+    const status = this.yoloStatus();
+    return status?.roomId === this.selectedRoomId() ? status : null;
+  });
+  readonly yoloBankVisible = computed(
+    () => this.roomYoloAgents().length > 0 || this.selectedRoomYoloStatus()?.active === true,
+  );
   readonly agentProviders = computed(() => this.agentCatalog().providers);
   readonly agentPersonas = computed(() => this.agentCatalog().personas);
   readonly latestContextUsageByAgent = computed(() => {
@@ -2398,7 +2405,7 @@ export class App implements OnDestroy {
   }
 
   yoloTurnCounterText(): string {
-    const status = this.yoloStatus();
+    const status = this.selectedRoomYoloStatus();
     if (!status) return 'YOLO ready';
     if (!status.active) return `${status.maxTotalReplies ?? 100} turns ready`;
     const max = Math.max(1, status.maxTotalReplies ?? 100);
@@ -2407,7 +2414,7 @@ export class App implements OnDestroy {
   }
 
   yoloTurnPercentRemaining(): number {
-    const status = this.yoloStatus();
+    const status = this.selectedRoomYoloStatus();
     if (!status?.active) return 100;
     const max = Math.max(1, status.maxTotalReplies ?? 100);
     const remaining = Math.max(0, status.remainingReplies ?? max - (status.totalRepliesUsed ?? 0));
@@ -2415,7 +2422,7 @@ export class App implements OnDestroy {
   }
 
   yoloTurnTone(): 'ready' | 'green' | 'yellow' | 'red' {
-    const status = this.yoloStatus();
+    const status = this.selectedRoomYoloStatus();
     if (!status?.active) return 'ready';
     const percent = this.yoloTurnPercentRemaining();
     if (percent <= 20) return 'red';
@@ -2425,7 +2432,7 @@ export class App implements OnDestroy {
 
   addYoloTurns(): void {
     const roomId = this.selectedRoomId();
-    const status = this.yoloStatus();
+    const status = this.selectedRoomYoloStatus();
     if (!roomId || !status?.active) return;
     const defaultTurns = Math.max(1, status.maxTotalReplies ?? 100);
     const raw = window.prompt('Add how many YOLO turns?', String(defaultTurns));

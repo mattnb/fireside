@@ -77,7 +77,13 @@ export async function start(config: Config = loadConfig()): Promise<FiresideServ
     },
   });
 
-  const app = buildHttpServer({ db, broker, uiDir: config.uiDir });
+  const app = buildHttpServer({
+    db,
+    broker,
+    uiDir: config.uiDir,
+    enableMcp: config.enableMcp,
+    mcpApiKey: config.mcpApiKey,
+  });
   await app.ready();
   attachWebSocketServer(app.server, broker);
 

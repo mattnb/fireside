@@ -30,6 +30,177 @@ export interface MissionReconciliationResult {
   laneUpdates: number;
 }
 
+export interface ApplyReceiptResult {
+  applied: number;
+  progressed: number;
+  itemTouched: boolean;
+  phaseTouched: boolean;
+  /** Resolved checklist item id when itemTouched is true. Surfaced so that
+   * upstream adapters (e.g. the hidden-command broker path) can suppress the
+   * work-lane fallback when the lane was already mutated. */
+  resolvedItemId?: string;
+}
+
+export interface ApplySingleReceiptInput {
+  db: Database;
+  roomId: string;
+  task: Task;
+  runId: string;
+  agentId: AgentId;
+  receipt: ParsedMissionReceipt;
+  workLane?: WorkLaneAssignment | undefined;
+  recordRunAction: (input: CreateAgentRunActionInput) => void;
+}
+
+/**
+ * Apply the per-receipt portion of mission reconciliation: resolve the
+ * checklist item and/or phase referenced by this receipt, then run the same
+ * mutations the legacy reconciler runs for one receipt. Cross-cutting work
+ * (work-lane fallback when no explicit updates, phase-from-checklist sweep,
+ * auto-advance) is intentionally NOT included here; callers should run those
+ * passes once after dispatching all receipts.
+ */
+export function applySingleReceipt(input: ApplySingleReceiptInput): ApplyReceiptResult {
+  const result: ApplyReceiptResult = {
+    applied: 0,
+    progressed: 0,
+    itemTouched: false,
+    phaseTouched: false,
+  };
+
+  const item = resolveReceiptChecklistItem(input.db, input.task, input.receipt, input.workLane);
+  if (item) {
+    const updated = reconcileChecklistItemFromReceipt({
+      db: input.db,
+      roomId: input.roomId,
+      task: input.task,
+      runId: input.runId,
+      agentId: input.agentId,
+      receipt: input.receipt,
+      item,
+      recordRunAction: input.recordRunAction,
+    });
+    if (updated > 0) {
+      result.applied += updated;
+      result.itemTouched = true;
+      result.resolvedItemId = item.id;
+      if (receiptChecklistUpdateCountsAsProgress(input.receipt, item)) {
+        result.progressed += updated;
+      }
+    }
+  }
+
+  const phase = input.receipt.phaseRef
+    ? resolvePhase(listTaskPhases(input.db, input.task.id), input.receipt.phaseRef)
+    : null;
+  if (phase) {
+    const updated = reconcilePhaseFromReceipt({
+      db: input.db,
+      roomId: input.roomId,
+      task: input.task,
+      runId: input.runId,
+      agentId: input.agentId,
+      receipt: input.receipt,
+      phase,
+      recordRunAction: input.recordRunAction,
+    });
+    if (updated > 0) {
+      result.applied += updated;
+      result.progressed += updated;
+      result.phaseTouched = true;
+    }
+  }
+
+  return result;
+}
+
+export interface ReconciliationFallbacksInput {
+  db: Database;
+  roomId: string;
+  task: Task | null;
+  runId: string;
+  agentId: AgentId;
+  visibleText: string;
+  workLane: WorkLaneAssignment | undefined;
+  explicitMissionUpdates: number;
+  /**
+   * IDs of checklist items already mutated by the per-receipt tool engine pass.
+   * Used to suppress the work-lane fallback when the lane was already touched
+   * by a receipt this turn.
+   */
+  receiptTouchedItemIds: ReadonlySet<string>;
+  recordRunAction: (input: CreateAgentRunActionInput) => void;
+  onTaskUpdated?: (task: Task) => void;
+}
+
+export interface ReconciliationFallbacksResult {
+  applied: number;
+  progressed: number;
+  laneUpdates: number;
+  phaseFromChecklistUpdates: number;
+}
+
+/**
+ * Run only the cross-cutting reconciliation passes — work-lane fallback when
+ * no explicit mission updates were emitted, and the phase-from-checklist
+ * sweep. Per-receipt mutations are handled upstream by the structured tool
+ * engine via `mission.receipt.submit` (see `applySingleReceipt`).
+ */
+export function applyReconciliationFallbacks(
+  input: ReconciliationFallbacksInput,
+): ReconciliationFallbacksResult {
+  const result: ReconciliationFallbacksResult = {
+    applied: 0,
+    progressed: 0,
+    laneUpdates: 0,
+    phaseFromChecklistUpdates: 0,
+  };
+  if (!input.task) return result;
+
+  if (
+    input.workLane &&
+    input.explicitMissionUpdates === 0 &&
+    !input.receiptTouchedItemIds.has(input.workLane.item.id)
+  ) {
+    const updated = reconcileWorkLaneFromVisibleText({
+      db: input.db,
+      roomId: input.roomId,
+      task: input.task,
+      runId: input.runId,
+      agentId: input.agentId,
+      visibleText: input.visibleText,
+      workLane: input.workLane,
+      recordRunAction: input.recordRunAction,
+    });
+    if (updated > 0) {
+      result.applied += updated;
+      result.progressed += updated;
+      result.laneUpdates += updated;
+    }
+  }
+
+  const phaseUpdates = reconcilePhasesFromChecklistTask({
+    db: input.db,
+    roomId: input.roomId,
+    task: input.task,
+    runId: input.runId,
+    agentId: input.agentId,
+    recordRunAction: input.recordRunAction,
+  });
+  if (phaseUpdates > 0) {
+    result.applied += phaseUpdates;
+    result.progressed += phaseUpdates;
+    result.phaseFromChecklistUpdates += phaseUpdates;
+  }
+
+  if (result.applied > 0) {
+    const refreshed = getTask(input.db, input.task.id);
+    if (refreshed) input.onTaskUpdated?.(refreshed);
+  }
+
+  return result;
+}
+
 export interface RecordMissionReceiptsInput {
   roomId: string;
   task: Task | null;
@@ -144,7 +315,16 @@ export function reconcileMissionState(input: ReconcileMissionStateInput): Missio
     input.explicitMissionUpdates === 0 &&
     !receiptTouchedItems.has(input.workLane.item.id)
   ) {
-    const updated = reconcileWorkLaneFromVisibleText(input);
+    const updated = reconcileWorkLaneFromVisibleText({
+      db: input.db,
+      roomId: input.roomId,
+      task,
+      runId: input.runId,
+      agentId: input.agentId,
+      visibleText: input.visibleText,
+      workLane: input.workLane,
+      recordRunAction: input.recordRunAction,
+    });
     if (updated > 0) {
       result.applied += updated;
       result.progressed += updated;
@@ -325,7 +505,18 @@ function reconcilePhaseFromReceipt(input: {
   return 1;
 }
 
-function reconcileWorkLaneFromVisibleText(input: ReconcileMissionStateInput): number {
+interface WorkLaneReconcileInput {
+  db: Database;
+  roomId: string;
+  task: Task;
+  runId: string;
+  agentId: AgentId;
+  visibleText: string;
+  workLane: WorkLaneAssignment;
+  recordRunAction: (input: CreateAgentRunActionInput) => void;
+}
+
+function reconcileWorkLaneFromVisibleText(input: WorkLaneReconcileInput): number {
   if (!input.task || !input.workLane) return 0;
   const item = getTaskChecklistItem(input.db, input.workLane.item.id);
   if (!item || item.status === 'done' || item.status === 'skipped') return 0;
@@ -371,7 +562,22 @@ function reconcileWorkLaneFromVisibleText(input: ReconcileMissionStateInput): nu
   return 1;
 }
 
-function reconcilePhasesFromChecklist(input: ReconcileMissionStateInput): number {
+interface PhasesFromChecklistInput {
+  db: Database;
+  roomId: string;
+  task: Task;
+  runId: string;
+  agentId: AgentId;
+  recordRunAction: (input: CreateAgentRunActionInput) => void;
+}
+
+function reconcilePhasesFromChecklistTask(input: PhasesFromChecklistInput): number {
+  return reconcilePhasesFromChecklist(input);
+}
+
+function reconcilePhasesFromChecklist(
+  input: PhasesFromChecklistInput | ReconcileMissionStateInput,
+): number {
   if (!input.task) return 0;
   const phases = listTaskPhases(input.db, input.task.id);
   const items = listTaskChecklistItems(input.db, input.task.id);

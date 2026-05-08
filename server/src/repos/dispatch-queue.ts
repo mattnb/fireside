@@ -284,3 +284,135 @@ export function recoverLeasedDispatchQueueItems(db: Database, now = Date.now()):
     .run(now, now);
   return result.changes;
 }
+
+export function recoverOrphanedLeasedDispatchQueueItems(
+  db: Database,
+  input: { roomId?: string; now?: number } = {},
+): number {
+  const now = input.now ?? Date.now();
+  const roomFilter = input.roomId ? `AND q.room_id = @roomId` : '';
+  const terminalResult = db
+    .prepare(
+      `UPDATE dispatch_queue AS q
+       SET status = 'delivered',
+           delivered_run_id = (
+             SELECT r.id
+             FROM agent_runs AS r
+             WHERE r.room_id = q.room_id
+               AND r.trigger_message_id = q.source_message_id
+               AND r.agent_id = q.target_id
+               AND r.status <> 'running'
+             ORDER BY r.started_at DESC, r.id DESC
+             LIMIT 1
+           ),
+           delivered_at = @now,
+           lease_owner = '',
+           lease_expires_at = 0,
+           error = 'Recovered orphaned dispatch lease by linking it to its terminal provider run.',
+           updated_at = @now
+       WHERE q.status = 'leased'
+         AND q.target_kind = 'agent'
+         AND q.delivered_run_id IS NULL
+         ${roomFilter}
+         AND EXISTS (
+           SELECT 1
+           FROM agent_runs AS r
+           WHERE r.room_id = q.room_id
+             AND r.trigger_message_id = q.source_message_id
+             AND r.agent_id = q.target_id
+             AND r.status <> 'running'
+         )
+         AND NOT EXISTS (
+           SELECT 1
+           FROM agent_runs AS r
+           WHERE r.room_id = q.room_id
+             AND r.trigger_message_id = q.source_message_id
+             AND r.agent_id = q.target_id
+             AND r.status = 'running'
+         )
+         AND NOT EXISTS (
+           SELECT 1
+           FROM agent_jobs AS j
+           WHERE j.room_id = q.room_id
+             AND j.trigger_message_id = q.source_message_id
+             AND j.agent_id = q.target_id
+             AND j.status IN ('queued', 'leased', 'running')
+         )`,
+    )
+    .run({ now, roomId: input.roomId ?? null });
+  const pendingResult = db
+    .prepare(
+      `UPDATE dispatch_queue AS q
+       SET status = 'pending',
+           lease_owner = '',
+           lease_expires_at = 0,
+           available_at = CASE WHEN available_at > @now THEN @now ELSE available_at END,
+           error = 'Recovered orphaned dispatch lease; no provider run or active job owns this queued turn.',
+           updated_at = @now
+       WHERE q.status = 'leased'
+         AND q.target_kind = 'agent'
+         AND q.delivered_run_id IS NULL
+         ${roomFilter}
+         AND NOT EXISTS (
+           SELECT 1
+           FROM agent_runs AS r
+           WHERE r.room_id = q.room_id
+             AND r.trigger_message_id = q.source_message_id
+             AND r.agent_id = q.target_id
+         )
+         AND NOT EXISTS (
+           SELECT 1
+           FROM agent_runs AS r
+           WHERE r.room_id = q.room_id
+             AND r.trigger_message_id = q.source_message_id
+             AND r.agent_id = q.target_id
+             AND r.status = 'running'
+         )
+         AND NOT EXISTS (
+           SELECT 1
+           FROM agent_jobs AS j
+           WHERE j.room_id = q.room_id
+             AND j.trigger_message_id = q.source_message_id
+             AND j.agent_id = q.target_id
+             AND j.status IN ('queued', 'leased', 'running')
+         )`,
+    )
+    .run({ now, roomId: input.roomId ?? null });
+  return terminalResult.changes + pendingResult.changes;
+}
+
+export function cancelLeasedDispatchQueueItemsForAgentTrigger(
+  db: Database,
+  input: {
+    roomId: string;
+    agentId: AgentId;
+    sourceMessageId: string;
+    reason: string;
+    now?: number;
+  },
+): number {
+  const now = input.now ?? Date.now();
+  const result = db
+    .prepare(
+      `UPDATE dispatch_queue
+       SET status = 'canceled',
+           lease_owner = '',
+           lease_expires_at = 0,
+           error = ?,
+           updated_at = ?
+       WHERE room_id = ?
+         AND target_kind = 'agent'
+         AND target_id = ?
+         AND source_message_id = ?
+         AND status = 'leased'
+         AND delivered_run_id IS NULL`,
+    )
+    .run(
+      input.reason.slice(0, 1000),
+      now,
+      input.roomId,
+      input.agentId,
+      input.sourceMessageId,
+    );
+  return result.changes;
+}

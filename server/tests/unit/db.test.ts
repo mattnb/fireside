@@ -21,12 +21,22 @@ describe('openDatabase', () => {
     expect(names).toContain('agent_run_actions');
     expect(names).toContain('routing_decisions');
     expect(names).toContain('mission_command_events');
+    expect(names).toContain('agent_tool_calls');
     expect(names).toContain('agent_turn_outcomes');
     expect(names).toContain('agent_jobs');
     expect(names).toContain('task_phases');
     expect(names).toContain('task_checklist_items');
     expect(names).toContain('task_plans');
     expect(names).toContain('mission_briefings');
+    const toolCallIndexes = db.prepare(`PRAGMA index_list(agent_tool_calls)`).all() as Array<{
+      name: string;
+      unique: number;
+    }>;
+    expect(toolCallIndexes).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ name: 'idx_agent_tool_calls_idempotency', unique: 1 }),
+      ]),
+    );
     const briefingForeignKeys = db
       .prepare(`PRAGMA foreign_key_list(mission_briefings)`)
       .all() as Array<{ from: string; table: string; on_delete: string }>;

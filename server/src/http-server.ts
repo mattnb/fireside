@@ -1,6 +1,10 @@
 // server/src/http-server.ts
 import Fastify from 'fastify';
+import type { FastifyReply, FastifyRequest } from 'fastify';
 import fastifyStatic from '@fastify/static';
+import { dispatchMcpRequest, parseJsonRpcRequest } from './tools/adapters/mcp-adapter.js';
+import { DEFAULT_YOLO_STATE_PERMISSIONS } from './tools/permissions/state-permissions.js';
+import { ensureDefaultToolsRegistered } from './tools/default-tools.js';
 import type { Database } from 'better-sqlite3';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
@@ -36,6 +40,12 @@ export interface HttpDeps {
   db: Database;
   broker: Broker;
   uiDir: string;
+  /** When true, register `POST /api/mcp` so external MCP clients can call
+   *  the structured tool layer. Default false; gated behind
+   *  `FIRESIDE_ENABLE_MCP=1` in production via `loadConfig()`. */
+  enableMcp?: boolean;
+  /** Optional bearer token. Required for non-loopback `/api/mcp` calls. */
+  mcpApiKey?: string | null;
 }
 
 export type HttpServer = ReturnType<typeof buildHttpServer>;
@@ -1304,5 +1314,76 @@ export function buildHttpServer(deps: HttpDeps) {
     }
   });
 
+  if (deps.enableMcp) {
+    ensureDefaultToolsRegistered();
+    registerMcpRoute(app, deps);
+  }
+
   return app;
+}
+
+const LOOPBACK_IPS: ReadonlySet<string> = new Set([
+  '127.0.0.1',
+  '::1',
+  '::ffff:127.0.0.1',
+]);
+
+function isLoopbackRequest(req: FastifyRequest): boolean {
+  const ip = req.ip ?? '';
+  return LOOPBACK_IPS.has(ip);
+}
+
+function registerMcpRoute(
+  app: ReturnType<typeof Fastify>,
+  deps: HttpDeps,
+): void {
+  const apiKey = deps.mcpApiKey ?? null;
+
+  app.post('/api/mcp', async (req: FastifyRequest, reply: FastifyReply) => {
+    // Layered trust per docs/phase-6-mcp-endpoint-design-2026-05-07.md §2:
+    // loopback unauthenticated; non-loopback requires Bearer FIRESIDE_MCP_API_KEY
+    // (and refuses outright when no key is configured).
+    if (!isLoopbackRequest(req)) {
+      if (!apiKey) {
+        return reply
+          .code(403)
+          .send({ error: 'non-loopback /api/mcp calls require FIRESIDE_MCP_API_KEY' });
+      }
+      const header = req.headers['authorization'];
+      const value = Array.isArray(header) ? header[0] : header;
+      if (value !== `Bearer ${apiKey}`) {
+        return reply.code(401).send({ error: 'invalid or missing bearer token' });
+      }
+    }
+
+    const parsed = parseJsonRpcRequest(req.body);
+    if (!parsed.ok) {
+      return reply.code(400).send(parsed.error);
+    }
+
+    const agentIdHeader = pickHeader(req, 'x-fireside-agent-id') ?? 'mcp-client';
+    const roomIdHeader = pickHeader(req, 'x-fireside-room-id') ?? '';
+    const missionIdHeader = pickHeader(req, 'x-fireside-mission-id') ?? null;
+
+    // Auth was already enforced above (loopback or bearer-token gate). Treat
+    // an authenticated MCP caller as holding the full state-permission set —
+    // the single-tenant trust model documented in
+    // docs/phase-6-mcp-endpoint-design-2026-05-07.md §2.
+    const response = await dispatchMcpRequest(parsed.value, {
+      db: deps.db,
+      agentId: agentIdHeader,
+      roomId: roomIdHeader,
+      missionId: missionIdHeader,
+      statePermissions: DEFAULT_YOLO_STATE_PERMISSIONS,
+    });
+
+    return reply.code(200).send(response);
+  });
+}
+
+function pickHeader(req: FastifyRequest, name: string): string | null {
+  const value = req.headers[name];
+  if (Array.isArray(value)) return value[0]?.trim() || null;
+  if (typeof value === 'string') return value.trim() || null;
+  return null;
 }

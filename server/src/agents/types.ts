@@ -47,7 +47,14 @@ export interface RoomAgentProfile {
   spawnedScope?: string;
   dismissWhen?: string;
   maxTurns?: number;
+  status?: AgentRuntimeStatus;
+  statusReason?: string;
+  statusUpdatedAt?: number;
+  statusUntil?: string;
+  currentTaskId?: string;
 }
+
+export type AgentRuntimeStatus = 'idle' | 'active' | 'blocked' | 'offline';
 
 export type AgentTurnKind =
   | 'chat'

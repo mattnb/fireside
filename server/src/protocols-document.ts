@@ -1,208 +1,82 @@
-// Canonical Fireside protocol schemas.
+// Canonical Fireside protocol manifest.
 //
-// This file is the source of truth for every hidden block schema agents emit
-// (mission, collaboration, permission, roster, draft artifact). It is written
-// to `data/agent-context/<room>/protocols.md` so the live per-turn prompt can
-// reference it by path instead of repeating the full schemas every turn.
+// This file is written to `data/agent-context/<room>/protocols.md`. Keep it
+// compact: full tool argument references are retrieved through `search.tools`
+// instead of being repeated in every turn prompt.
 
-export const PROTOCOLS_DOCUMENT_VERSION = 1;
+import {
+  TOOL_SCHEMA_REFERENCES,
+  ensureSearchToolsRegistered,
+} from './tools/handlers/search-tools.js';
 
-export const PROTOCOLS_MARKDOWN = `# Fireside Hidden Block Protocols
+ensureSearchToolsRegistered();
 
-This file is the canonical schema for every hidden command block Fireside agents emit.
-The live per-turn prompt only references this file by path; treat it as the source of truth
-for the exact field names, allowed values, and end markers. Close every block with its
-matching \`/end-*\` marker exactly.
+export const PROTOCOLS_DOCUMENT_VERSION = 3;
 
-## Mission state
+export const COMPACT_TOOL_MANIFEST_PROMPT =
+  'Fireside supports structured state tools for mission state, task status, evidence, permissions, and coordination. Visible chat is for human/team communication. Use the relevant tool when completing, blocking, assigning, reopening, requesting permission, or recording durable collaboration notes. Use search.tools for full argument references.';
 
-### \`/mission-create\` — only when no active mission exists and the human asks for a new mission scaffold
+const PRIMARY_TOOL_NAMES = TOOL_SCHEMA_REFERENCES.map((tool) => tool.name).join(', ');
 
-\`\`\`
-/mission-create
-title: concise mission title
-goal: what the team should accomplish
-repo_path: optional workspace or project path
-acceptance: concrete conditions for completion
-agents: optional comma-separated agent ids
-capability_profile: plan
-summary: optional short briefing-room summary
-/end-mission-create
-\`\`\`
+export const TOOL_MANIFEST_MARKDOWN = `# Fireside Structured Tool Manifest
 
-After \`/mission-create\` in the same reply you may also append \`/mission-plan\`,
-\`/mission-phase\`, and \`/mission-task\` blocks to populate the new mission.
+Prefer structured tool calls for mission state, collaboration, permissions, and coordination. Visible chat is for human/team communication.
 
-### \`/mission-plan\` — coordinators/leads only
+Use the corresponding structured tool when you complete, block, assign, reopen, request permission, or record durable collaboration notes. The live tool catalog is:
 
-The active plan is the human-readable agreement and rationale; phase gates and
-checklist items remain the execution state.
+${TOOL_SCHEMA_REFERENCES.map(
+  (tool) =>
+    `- ${tool.name}: ${tool.summary} Required state permission: ${tool.requiredPermissions.join(', ') || 'none'}.`,
+).join('\n')}
 
-\`\`\`
-/mission-plan
-action: create | update
-id: optional plan id (for update)
-title: concise plan title
-status: active | superseded | done
-body:
-## Direction
-What the team agrees to do and why.
-## Assumptions and Evidence
-Known assumptions, evidence needed, and unresolved disagreements.
-## Execution Shape
-How phase gates and checklist work items should decompose this plan.
-/end-mission-plan
+Retrieve detailed argument references on demand with \`search.tools\`:
+
+\`\`\`yaml
+tool: search.tools
+args:
+  namespace: mission.task
+  includeSchemas: true
 \`\`\`
 
-### \`/mission-phase\` — coordinators/leads only
+For text-only providers that cannot emit native structured calls, use one generic hidden tool block per state action:
 
-Create phase gates before checklist items so work items can reference them by title or id.
-When the gate is satisfied and every checklist item in that phase is done or skipped,
-mark the phase \`status: done\`. Fireside auto-activates the next planned phase unless
-the same reply explicitly activates a different phase.
-
-\`\`\`
-/mission-phase
-action: create | update
-id: optional phase id (for update)
-plan: optional active plan id or title; defaults to the active plan from this reply
-title: short phase title
-status: planned | active | done | blocked
-gate: concrete criteria that must be true before leaving this phase
-description: optional one-sentence phase scope
-/end-mission-phase
+\`\`\`html
+<!-- fireside-tool
+tool: mission.task.update
+args:
+  taskId: abc
+  status: done
+  note: Verified with tests.
+/fireside-tool -->
 \`\`\`
 
-### \`/mission-task\` — every tier may use this
+Compatibility fallback: if a turn's direct instructions require legacy slash blocks such as \`/mission-task\`, \`/mission-receipt\`, \`/permission-request\`, or \`/collab-note\`, emit the required legacy block exactly as instructed by the live turn. Prefer the structured form everywhere else.
+`;
 
-To take ownership, set \`owner\` to your agent id. When the task is complete, set
-\`status: done\` and include completion evidence in \`note\`. Status aliases
-\`accepted\`/\`complete\`/\`completed\`/\`finished\`/\`resolved\` also count as done.
-If blocked and \`council_required: true\`, the mission is marked blocked for human/team council.
+export const PROTOCOLS_MARKDOWN = `# Fireside Protocols
 
-\`\`\`
-/mission-task
-action: create | update
-id: optional checklist item id (for update)
-title: short task title
-status: open | done | blocked | skipped
-plan: optional active plan id or title
-phase: optional phase id or title
-depends_on: optional item id(s), comma-separated
-expected_touches: optional file paths, globs, package names, or logical scopes, comma-separated
-parallelism: parallel-safe | coordinate | exclusive
-conflict_group: optional short label for work that should not run concurrently
-work_role: implement | review | verify | research | docs | other concise role
-owner: optional agent id
-detail: one sentence of scope or acceptance evidence
-note: status note, completion evidence, or blocker summary
-council_required: false | true
-/end-mission-task
-\`\`\`
+This context file is the compact manifest for Fireside's structured tool layer.
+It intentionally omits the old full slash-command grammar from the live context
+file; call \`search.tools\` when you need the detailed argument reference.
 
-### \`/mission-receipt\` — every active-mission turn must leave a reconciliation trail
+${TOOL_MANIFEST_MARKDOWN}
 
-If you create or change mission state, use the mission-plan, mission-phase,
-mission-task, or mission-create blocks above. If you do not change mission state,
-append a receipt block.
+## Operating Rules
 
-\`\`\`
-/mission-receipt
-status: completed | blocked | needs_review | continuing | no_update
-item: optional checklist item id or title
-phase: optional phase id or title
-plan: optional plan id or title
-summary: what changed, what you attempted, or why there is no state update
-evidence: optional file path, command, test, or source
-next: optional next owner or next step
-/end-mission-receipt
+- Mission state lives in Mission Control, not visible chat.
+- Append one state update per concrete state change.
+- Include completion evidence in note, body, evidence, or equivalent fields.
+- Include blockedReason plus councilRequired when team or human council is required.
+- Close any hidden fallback block with its matching end marker exactly.
+- Use exact room @handles in visible chat when assigning another agent to act.
+
+## Tool Retrieval
+
+The prompt-visible catalog currently contains ${TOOL_SCHEMA_REFERENCES.length} tools:
+
+\`\`\`text
+${PRIMARY_TOOL_NAMES}
 \`\`\`
 
-## Collaboration
-
-### \`/collab-note\` — record durable proposals, challenges, revisions, decisions, or evidence
-
-Use \`status: open\` for active items, \`blocked\` for live blockers, \`resolved\` for
-settled items, \`superseded\` when a newer item replaces it, \`accepted\`/\`rejected\`
-for decisions, and \`informational\` for evidence.
-
-\`\`\`
-/collab-note
-kind: proposal | challenge | revision | decision | evidence
-title: concise claim or direction
-target: optional claim, file, decision, or plan this refers to
-status: open | blocked | resolved | superseded | accepted | rejected | informational
-confidence: low | medium | high
-evidence: file:path:line; test:command; url:https://example.com
-body: one concise sentence explaining why this matters
-/end-collab-note
-\`\`\`
-
-## Permissions
-
-### \`/permission-request\` — only when you do not already have a permission grant for this turn
-
-Use \`mode: edit\` for file mutation (aliases: \`write\`, \`create\`); \`mode: bash\` for
-scoped shell/git commands; \`mode: full-auto\` only for broad shell/tool execution.
-
-\`\`\`
-/permission-request
-mode: edit | bash | full-auto
-target: path-or-command
-reason: brief reason
-/end-permission-request
-\`\`\`
-
-### \`/draft-artifact\` — preserve substantial drafted content while waiting for write permission
-
-\`\`\`
-/draft-artifact
-name: file.md
-target: path
-content:
-…the draft content…
-/end-draft-artifact
-\`\`\`
-
-## Roster (engineering-manager / qa-lead personas only)
-
-### \`/agent-roster\` — add or dismiss temporary agents you personally manage
-
-Add up to three active temporary agents at a time. Use only when it improves
-mission flow, parallel QA/review, or task throughput.
-
-\`\`\`
-/agent-roster
-action: add
-name: codex-regression
-provider: codex | claude | gemini
-persona: persona-id (e.g., quality-assurance-engineer)
-scope: checklist item, phase, file area, or review lane
-reason: why this temporary agent is needed now
-yolo: true | false
-max_turns: 25
-dismiss_when: review complete or blocked
-prompt:
-Focused instructions, context, expected evidence, and how to report/dismiss.
-/end-agent-roster
-\`\`\`
-
-To dismiss a temporary agent:
-
-\`\`\`
-/agent-roster
-action: dismiss
-id: agent-id
-name: optional name fallback
-reason: why this agent is being dismissed now
-/end-agent-roster
-\`\`\`
-
-## Block hygiene
-
-- Close every hidden block with its matching \`/end-*\` marker exactly. Do not close
-  \`/mission-plan\`, \`/mission-phase\`, or \`/mission-task\` blocks with \`/end-collab-note\`.
-- Mission state lives in Mission Control, not visible chat. When you take ownership,
-  finish work, block, change direction, or satisfy a phase gate, update Mission Control
-  with hidden blocks in the same reply before ending the turn.
+Use \`search.tools\` with \`query\`, \`namespace\`, or \`names\` to retrieve the full schema reference for only the tools you need.
 `;

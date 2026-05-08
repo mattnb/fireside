@@ -3218,6 +3218,126 @@ describe('Broker', () => {
     );
   });
 
+  it('prefers native provider mission task calls over same-message hidden fallbacks', async () => {
+    let itemId = '';
+    let hiddenOnlyItemId = '';
+    const providerBroker = new Broker({
+      db,
+      maxAgentRepliesPerThread: 1,
+      runAgent: async (spec) => ({
+        text: [
+          'Completed via native tool.',
+          '/mission-task',
+          'action: update',
+          `id: ${itemId}`,
+          'status: done',
+          'note: Hidden fallback should not apply.',
+          '/end-mission-task',
+          '/mission-task',
+          'action: update',
+          `id: ${hiddenOnlyItemId}`,
+          'status: done',
+          'note: Hidden fallback for another item should apply.',
+          '/end-mission-task',
+        ].join('\n'),
+        sessionId: `${spec.id}-sess`,
+        raw: {
+          stdout: JSON.stringify({
+            type: 'assistant',
+            message: {
+              content: [
+                {
+                  type: 'tool_use',
+                  id: 'toolu_broker_bridge',
+                  name: 'mission.task.update',
+                  input: {
+                    taskId: itemId,
+                    status: 'done',
+                    note: 'Native provider call applied.',
+                  },
+                },
+              ],
+            },
+          }),
+          stderr: '',
+        },
+      }),
+      getSpec: (id) => {
+        const map: Record<string, AgentSpec> = {
+          claude: fakeSpec('claude', 'claude reply'),
+          codex: fakeSpec('codex', 'codex reply'),
+          gemini: fakeSpec('gemini', 'gemini reply'),
+          echo: fakeSpec('echo', 'echo reply'),
+        };
+        return map[id];
+      },
+    });
+    const room = createRoom(db, { name: 'provider-tool-bridge', agents: ['claude'] });
+    const task = providerBroker.createTask(room.id, { title: 'Provider tool bridge mission' });
+    const item = createTaskChecklistItem(db, {
+      taskId: task!.id,
+      title: 'Exercise native provider bridge',
+      status: 'open',
+    });
+    const hiddenOnlyItem = createTaskChecklistItem(db, {
+      taskId: task!.id,
+      title: 'Exercise hidden fallback bridge',
+      status: 'open',
+    });
+    itemId = item.id;
+    hiddenOnlyItemId = hiddenOnlyItem.id;
+
+    await providerBroker.postHumanMessage(room.id, 'human', '@claude finish the item');
+
+    expect(listTaskChecklistItems(db, task!.id)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: item.id,
+          status: 'done',
+          statusNote: 'Native provider call applied.',
+        }),
+        expect.objectContaining({
+          id: hiddenOnlyItem.id,
+          status: 'done',
+          statusNote: 'Hidden fallback for another item should apply.',
+        }),
+      ]),
+    );
+    const [run] = listAgentRuns(db, room.id);
+    const auditRows = db
+      .prepare(
+        `SELECT tool_name, source, status, idempotency_key
+         FROM agent_tool_calls
+         WHERE run_id = ?
+         ORDER BY created_at ASC`,
+      )
+      .all(run!.id);
+    expect(auditRows).toEqual(
+      expect.arrayContaining([
+        {
+          tool_name: 'mission.task.update',
+          source: 'hidden-command',
+          status: 'applied',
+          idempotency_key: expect.stringContaining(`${run!.id}:mission.task.update:`),
+        },
+        {
+          tool_name: 'mission.task.update',
+          source: 'provider-tool-call',
+          status: 'applied',
+          idempotency_key: `${run!.id}:provider-tool-call:toolu_broker_bridge`,
+        },
+      ]),
+    );
+    expect(auditRows).toHaveLength(2);
+    expect(auditRows).not.toContainEqual(
+      expect.objectContaining({
+        tool_name: 'mission.task.update',
+        source: 'hidden-command',
+        idempotency_key: expect.stringContaining(item.id),
+      }),
+    );
+  });
+
   it('dispatches newly assigned checklist work to the owner without a visible handoff', async () => {
     const dispatchBroker = new Broker({
       db,

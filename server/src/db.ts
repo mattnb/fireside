@@ -393,6 +393,38 @@ CREATE INDEX IF NOT EXISTS idx_mission_command_events_room_created
 CREATE INDEX IF NOT EXISTS idx_mission_command_events_run_created
   ON mission_command_events(run_id, created_at);
 
+CREATE TABLE IF NOT EXISTS agent_tool_calls (
+  id TEXT PRIMARY KEY,
+  room_id TEXT NOT NULL REFERENCES rooms(id) ON DELETE CASCADE,
+  mission_id TEXT REFERENCES tasks(id) ON DELETE SET NULL,
+  run_id TEXT REFERENCES agent_runs(id) ON DELETE SET NULL,
+  message_id TEXT REFERENCES messages(id) ON DELETE SET NULL,
+  agent_id TEXT NOT NULL,
+  tool_name TEXT NOT NULL,
+  idempotency_key TEXT NOT NULL,
+  source TEXT NOT NULL CHECK (source IN ('hidden-command', 'provider-tool-call', 'mcp', 'system', 'replay')),
+  status TEXT NOT NULL CHECK (status IN ('decoded', 'validated', 'applied', 'rejected', 'duplicate', 'permission_pending', 'permission_denied', 'failed')),
+  args_json TEXT NOT NULL DEFAULT '{}',
+  normalized_args_json TEXT NOT NULL DEFAULT '{}',
+  result_json TEXT NOT NULL DEFAULT '{}',
+  error TEXT NOT NULL DEFAULT '',
+  created_at INTEGER NOT NULL,
+  applied_at INTEGER
+);
+
+CREATE INDEX IF NOT EXISTS idx_agent_tool_calls_room_created
+  ON agent_tool_calls(room_id, created_at);
+
+CREATE INDEX IF NOT EXISTS idx_agent_tool_calls_run_created
+  ON agent_tool_calls(run_id, created_at);
+
+CREATE INDEX IF NOT EXISTS idx_agent_tool_calls_mission_tool
+  ON agent_tool_calls(mission_id, tool_name, created_at);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_tool_calls_idempotency
+  ON agent_tool_calls(room_id, COALESCE(mission_id, ''), idempotency_key)
+  WHERE status != 'duplicate';
+
 CREATE TABLE IF NOT EXISTS agent_turn_outcomes (
   id TEXT PRIMARY KEY,
   room_id TEXT NOT NULL REFERENCES rooms(id) ON DELETE CASCADE,
@@ -730,6 +762,44 @@ function ensureMissionCommandEventTables(db: DbType): void {
 
     CREATE INDEX IF NOT EXISTS idx_mission_command_events_run_created
       ON mission_command_events(run_id, created_at);
+  `);
+}
+
+function ensureAgentToolCallTables(db: DbType): void {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS agent_tool_calls (
+      id TEXT PRIMARY KEY,
+      room_id TEXT NOT NULL REFERENCES rooms(id) ON DELETE CASCADE,
+      mission_id TEXT REFERENCES tasks(id) ON DELETE SET NULL,
+      run_id TEXT REFERENCES agent_runs(id) ON DELETE SET NULL,
+      message_id TEXT REFERENCES messages(id) ON DELETE SET NULL,
+      agent_id TEXT NOT NULL,
+      tool_name TEXT NOT NULL,
+      idempotency_key TEXT NOT NULL,
+      source TEXT NOT NULL CHECK (source IN ('hidden-command', 'provider-tool-call', 'mcp', 'system', 'replay')),
+      status TEXT NOT NULL CHECK (status IN ('decoded', 'validated', 'applied', 'rejected', 'duplicate', 'permission_pending', 'permission_denied', 'failed')),
+      args_json TEXT NOT NULL DEFAULT '{}',
+      normalized_args_json TEXT NOT NULL DEFAULT '{}',
+      result_json TEXT NOT NULL DEFAULT '{}',
+      error TEXT NOT NULL DEFAULT '',
+      created_at INTEGER NOT NULL,
+      applied_at INTEGER
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_agent_tool_calls_room_created
+      ON agent_tool_calls(room_id, created_at);
+
+    CREATE INDEX IF NOT EXISTS idx_agent_tool_calls_run_created
+      ON agent_tool_calls(run_id, created_at);
+
+    CREATE INDEX IF NOT EXISTS idx_agent_tool_calls_mission_tool
+      ON agent_tool_calls(mission_id, tool_name, created_at);
+
+    DROP INDEX IF EXISTS idx_agent_tool_calls_idempotency;
+
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_tool_calls_idempotency
+      ON agent_tool_calls(room_id, COALESCE(mission_id, ''), idempotency_key)
+      WHERE status != 'duplicate';
   `);
 }
 
@@ -1454,6 +1524,7 @@ export function openDatabase(filename: string): DbType {
   ensureAgentHandoffTables(db);
   ensureDispatchQueueTables(db);
   ensureMissionCommandEventTables(db);
+  ensureAgentToolCallTables(db);
   ensureAgentTurnOutcomeTables(db);
   ensureCollaborationStatusConstraint(db);
   ensureCollaborationSubjectColumns(db);

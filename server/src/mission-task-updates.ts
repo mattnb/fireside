@@ -17,6 +17,7 @@ export interface ParsedMissionTaskUpdate {
   title: string;
   detail: string;
   status: TaskChecklistStatus | null;
+  invalidStatus?: string;
   dependencyRefs: string[];
   expectedTouches: string[];
   parallelism: TaskChecklistParallelism | null;
@@ -144,7 +145,8 @@ function parseBlock(block: string): ParsedMissionTaskUpdate | null {
   const id = first(fields, 'id', 'item_id', 'task_id');
   const title = first(fields, 'title', 'task', 'name');
   const detail = all(fields, 'detail', 'description').join('\n').trim();
-  const status = normalizeStatus(first(fields, 'status', 'state'));
+  const rawStatus = first(fields, 'status', 'state');
+  const status = normalizeStatus(rawStatus);
   const statusNote = all(fields, 'status_note', 'note', 'summary').join('\n').trim();
   const parallelism = normalizeParallelism(
     first(fields, 'parallelism', 'parallel', 'coordination'),
@@ -164,6 +166,7 @@ function parseBlock(block: string): ParsedMissionTaskUpdate | null {
     title,
     detail,
     status,
+    ...(rawStatus && !status ? { invalidStatus: rawStatus } : {}),
     dependencyRefs: splitRefs(all(fields, 'depends_on', 'dependencies', 'dependency_ids')),
     expectedTouches: splitRefs(
       all(fields, 'expected_touches', 'expected_touch', 'touches', 'files', 'paths'),

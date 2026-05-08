@@ -186,6 +186,45 @@
       </section>
 
       <section class="run-detail__section">
+        <div class="run-detail__section-head">
+          <h3>tool calls</h3>
+        </div>
+        @for (call of detail.toolCalls; track call.id) {
+        <div class="run-detail__tool-call">
+          <div class="run-detail__tool-call-head">
+            <strong>{{ toolCallTitle(call) }}</strong>
+            <span class="run-detail__tool-call-meta">
+              {{ call.status }} / {{ display.name(call.agentId) }} / {{ call.source }} / {{
+              formatShortTime()(call.createdAt) }}
+            </span>
+          </div>
+          @if (call.summary) {
+          <p class="run-detail__message-body">{{ call.summary }}</p>
+          } @if (call.error) {
+          <pre class="run-detail__pre run-detail__pre--error">{{ call.error }}</pre>
+          } @if (hasFields(call.normalizedArgs) || hasFields(call.args)) {
+          <details class="run-detail__tool-call-details">
+            <summary>args</summary>
+            <pre class="run-detail__pre">{{ formatJson(hasFields(call.normalizedArgs) ? call.normalizedArgs : call.args) }}</pre>
+          </details>
+          } @if (call.effects.length > 0) {
+          <details class="run-detail__tool-call-details">
+            <summary>effects ({{ call.effects.length }})</summary>
+            <pre class="run-detail__pre">{{ formatJson(call.effects) }}</pre>
+          </details>
+          } @if (call.result) {
+          <details class="run-detail__tool-call-details">
+            <summary>result</summary>
+            <pre class="run-detail__pre">{{ formatJson(call.result) }}</pre>
+          </details>
+          }
+        </div>
+        } @empty {
+        <p class="empty-copy">no tool calls recorded</p>
+        }
+      </section>
+
+      <section class="run-detail__section">
         <h3>prompt</h3>
         <pre class="run-detail__pre">{{ detail.run.promptText || 'prompt not stored' }}</pre>
       </section>

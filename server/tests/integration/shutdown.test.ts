@@ -45,6 +45,8 @@ describe('start() / shutdown()', () => {
         leadResetPercent: 60,
         leadResetDisabled: false,
         claudeMcpConfigPath: null,
+        enableMcp: false,
+        mcpApiKey: null,
       });
 
       // Server is up — REST returns the empty room list.

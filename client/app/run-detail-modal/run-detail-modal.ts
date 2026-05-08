@@ -14,6 +14,7 @@ import type {
   AgentRun,
   AgentRunAction,
   AgentRunDetail,
+  AgentToolCallView,
   PermissionRequest,
 } from '../api.types';
 
@@ -71,4 +72,23 @@ export class RunDetailModal {
   readonly closed = output<void>();
   readonly lowSignalToggled = output<Event>();
   readonly stopRequested = output<string>();
+
+  protected toolCallTitle(call: AgentToolCallView): string {
+    const target = call.target ? ` ${call.target}` : '';
+    return `${call.toolName}${target}`;
+  }
+
+  protected formatJson(value: unknown): string {
+    if (value === null || value === undefined) return '';
+    if (typeof value === 'string') return value;
+    try {
+      return JSON.stringify(value, null, 2);
+    } catch {
+      return String(value);
+    }
+  }
+
+  protected hasFields(record: Record<string, unknown> | null | undefined): boolean {
+    return !!record && Object.keys(record).length > 0;
+  }
 }

@@ -54,7 +54,6 @@ import {
   yoloScopeLabel,
 } from './orchestration/permission-orchestrator.js';
 import {
-  addPermissionRequest,
   getPermissionRequest,
   resolvePermissionRequest as resolvePermissionRequestRepo,
 } from './repos/permission-requests.js';
@@ -96,10 +95,12 @@ import {
 import {
   createDispatchQueueItems,
   firstPendingDispatchQueueItemForAgent,
+  cancelLeasedDispatchQueueItemsForAgentTrigger,
   leaseDispatchQueueItem,
   listPendingDispatchQueueItemsForRoom,
   markDispatchQueueItemDelivered,
   markDispatchQueueItemFailed,
+  recoverOrphanedLeasedDispatchQueueItems,
   recoverLeasedDispatchQueueItems,
   type DispatchQueueItem,
   type DispatchQueueKind,
@@ -192,6 +193,7 @@ import type {
 } from './agents/types.js';
 import { logger } from './logger.js';
 import { buildRunDiagnostics, type RunDiagnostics } from './run-diagnostics.js';
+import { listAgentToolCallsForRun, type AgentToolCallView } from './tools/audit.js';
 import { codexContextUsage, formatContextUsage } from './context-usage.js';
 import {
   geminiTerminalQuotaUsage,
@@ -265,28 +267,41 @@ import {
   type RunExecutionSnapshot,
 } from './orchestration/run-state-machine.js';
 import { evaluateMissionLiveness } from './orchestration/liveness-policy.js';
+import type { MissionTaskApplyResult } from './mission-state/mission-task-applicator.js';
 import {
-  applyMissionTaskUpdates as applyMissionTaskUpdatesState,
-  type MissionTaskApplyResult,
-} from './mission-state/mission-task-applicator.js';
+  routeCollaborationNotes,
+  routeMissionPhaseUpdates,
+  routeMissionPlanUpdates,
+  routeMissionReceipts,
+  routeMissionTaskUpdates,
+  routePermissionRequest,
+} from './tools/adapters/hidden-command-adapter.js';
+import { routeProviderToolCalls } from './tools/adapters/provider-tool-adapter.js';
 import { applyMissionCreateUpdates as applyMissionCreateUpdatesState } from './mission-state/mission-create-applicator.js';
-import { applyMissionPlanUpdates as applyMissionPlanUpdatesState } from './mission-state/mission-plan-applicator.js';
-import { applyMissionPhaseUpdates as applyMissionPhaseUpdatesState } from './mission-state/mission-phase-applicator.js';
 import { inferChecklistCompletion } from './mission-state/mission-state-helpers.js';
 import { unfinishedChecklistItemsForPhase } from './mission-state/phase-completion.js';
 import {
+  applyReconciliationFallbacks,
   autoAdvancePhase as autoAdvanceMissionPhase,
-  reconcileMissionState as reconcileMissionStateReceipts,
   recordMissionReceipts as recordMissionReceiptsState,
   workLaneSignal,
-  type MissionReconciliationResult,
 } from './mission-state/mission-receipt-applicator.js';
-import { storeCollaborationNotes as storeCollaborationNotesState } from './mission-state/collaboration-note-applicator.js';
+import type { ReconciliationFallbacksResult } from './mission-state/mission-receipt-applicator.js';
+
+/**
+ * Aggregated mission-state reconciliation counts surfaced to lifecycle and
+ * workflow-contract consumers. Combines per-receipt outcomes from the
+ * structured tool engine with cross-cutting work-lane / phase-from-checklist
+ * fallbacks. The downstream surfaces only ever read `.applied` and
+ * `.progressed`; richer breakdown stays on the source records.
+ */
+interface ReconciliationSummary {
+  applied: number;
+  progressed: number;
+}
 import type { ParsedCollaborationNote } from './collaboration-notes.js';
 import { extractDraftArtifacts, writeDraftArtifact } from './draft-artifacts.js';
 import type { ParsedMissionTaskUpdate } from './mission-task-updates.js';
-import type { ParsedMissionPhaseUpdate } from './mission-phase-updates.js';
-import type { ParsedMissionPlanUpdate } from './mission-plan-updates.js';
 import type { ParsedMissionCreateUpdate } from './mission-create-updates.js';
 import type { ParsedMissionReceipt } from './mission-receipts.js';
 import type { ParsedAgentRosterUpdate } from './agent-roster-updates.js';
@@ -460,6 +475,7 @@ export interface AgentRunDetail {
   replyMessage: Message | null;
   diagnostics: RunDiagnostics;
   actions: AgentRunAction[];
+  toolCalls: AgentToolCallView[];
 }
 
 interface AgentTurnResult {
@@ -500,6 +516,41 @@ function cleanVisibleAgentMessage(agentId: AgentId, text: string): string {
   return text
     .replace(new RegExp(`(?:\\n\\s*)+(?:[*_~\\s]*)${escaped}(?:[*_~\\s]*)(?::|,)?\\s*$`, 'i'), '')
     .trim();
+}
+
+function filterHiddenMissionTaskFallbacks(
+  updates: ParsedMissionTaskUpdate[],
+  providerHiddenFallbackKeys: ReadonlySet<string>,
+): ParsedMissionTaskUpdate[] {
+  if (providerHiddenFallbackKeys.size === 0) return updates;
+  return updates.filter((update) => {
+    const key = hiddenFallbackKeyForMissionTaskUpdate(update);
+    if (!key) return true;
+    return !providerHiddenFallbackKeys.has(key);
+  });
+}
+
+function hiddenFallbackKeyForMissionTaskUpdate(update: ParsedMissionTaskUpdate): string | null {
+  if (update.action === 'note') {
+    const target = update.id || update.title;
+    return target ? `mission.task.add_note\n${target}` : null;
+  }
+  if (update.action === 'update') {
+    const target = update.id || update.title;
+    return target ? `mission.task.update\n${target}` : null;
+  }
+  return null;
+}
+
+function combineMissionTaskApplyResults(
+  first: MissionTaskApplyResult,
+  second: MissionTaskApplyResult,
+): MissionTaskApplyResult {
+  return {
+    applied: first.applied + second.applied,
+    progressed: first.progressed + second.progressed,
+    dispatchCandidates: [...first.dispatchCandidates, ...second.dispatchCandidates],
+  };
 }
 
 function uniqueAgentIds(agents: AgentId[]): AgentId[] {
@@ -615,7 +666,7 @@ export class Broker extends EventEmitter {
     super();
     this.recoverInterruptedRuns();
     this.recoverInterruptedJobs();
-    recoverLeasedDispatchQueueItems(this.deps.db);
+    this.recoverDispatchQueue();
     const startupRoomIds = listRooms(this.deps.db).map((room) => room.id);
     queueMicrotask(() => {
       for (const roomId of startupRoomIds) {
@@ -1194,6 +1245,7 @@ export class Broker extends EventEmitter {
       actions: listAgentRunActions(this.deps.db, run.id).map((action) =>
         this.normalizeActionContextUsage(action),
       ),
+      toolCalls: listAgentToolCallsForRun(this.deps.db, run.id),
     };
   }
 
@@ -1226,10 +1278,7 @@ export class Broker extends EventEmitter {
     return updated;
   }
 
-  private markRunCanceledByUser(
-    run: AgentRunSummary,
-    reason: string,
-  ): AgentRunSummary | null {
+  private markRunCanceledByUser(run: AgentRunSummary, reason: string): AgentRunSummary | null {
     const now = Date.now();
     const updated = updateAgentRun(this.deps.db, run.id, {
       status: 'failed',
@@ -1241,6 +1290,13 @@ export class Broker extends EventEmitter {
     });
     const jobId = run.agentJobId || getAgentJobByRunId(this.deps.db, run.id)?.id;
     if (jobId) cancelAgentJob(this.deps.db, jobId, reason, now);
+    cancelLeasedDispatchQueueItemsForAgentTrigger(this.deps.db, {
+      roomId: run.roomId,
+      agentId: run.agentId,
+      sourceMessageId: run.triggerMessageId,
+      reason,
+      now,
+    });
     this.userStoppedRuns.delete(run.id);
     if (updated) this.emit('agentRunUpdated', updated);
     return updated;
@@ -1562,7 +1618,9 @@ export class Broker extends EventEmitter {
         profile.autoCompactEnabled !== false,
       percentThreshold: agentPercent ?? this.deps.autoCompactPercent ?? 70,
       tokenThreshold: agentPercent !== undefined ? 0 : (this.deps.autoCompactTokenLimit ?? 220_000),
-      ...(leadResetEnabled ? { isLead: true, leadResetPercent: this.deps.leadResetPercent ?? 60 } : {}),
+      ...(leadResetEnabled
+        ? { isLead: true, leadResetPercent: this.deps.leadResetPercent ?? 60 }
+        : {}),
     };
   }
 
@@ -2345,9 +2403,7 @@ export class Broker extends EventEmitter {
   ): Promise<AgentTurnResult> {
     if (cancelSignal?.aborted) return { message: null, progressed: false };
     const effectiveWorkflowRepair = workflowRepair || isWorkflowRepairTrigger(trigger);
-    let turnRunKind: AgentTurnRunKind = effectiveWorkflowRepair
-      ? 'workflow.repair'
-      : 'normal.turn';
+    let turnRunKind: AgentTurnRunKind = effectiveWorkflowRepair ? 'workflow.repair' : 'normal.turn';
     const room = getRoom(this.deps.db, roomId);
     if (!room) {
       // The room was created before this call ran; it should still exist. Defensive guard.
@@ -3072,13 +3128,19 @@ export class Broker extends EventEmitter {
     });
     const missionTask = createdMission ?? activeTask ?? null;
     const extractedMissionPlans = replySignals.missionPlans;
-    const sameTurnPlan = this.applyMissionPlanUpdates({
-      roomId,
-      task: missionTask,
-      runId: run.id,
-      agentId,
-      updates: extractedMissionPlans.updates,
-    });
+    const missionPlanRouting = await routeMissionPlanUpdates(
+      {
+        db: this.deps.db,
+        roomId,
+        mission: missionTask,
+        runId: run.id,
+        agentId,
+        permission: effectivePermission ?? null,
+        onTaskUpdated: (task) => this.emit('taskUpdated', task),
+      },
+      extractedMissionPlans.updates,
+    );
+    const sameTurnPlan = missionPlanRouting.activePlan;
     this.recordMissionCommandEvents({
       roomId,
       taskId: missionTask?.id ?? null,
@@ -3096,15 +3158,21 @@ export class Broker extends EventEmitter {
           null)
         : null);
     const extractedMissionPhases = replySignals.missionPhases;
-    this.applyMissionPhaseUpdates({
-      roomId,
-      task: missionTask,
-      runId: run.id,
-      agentId,
-      updates: extractedMissionPhases.updates,
-      defaultPlanId: defaultPlan?.id ?? null,
-      forcePlanOnUpdates: sameTurnPlan !== null,
-    });
+    await routeMissionPhaseUpdates(
+      {
+        db: this.deps.db,
+        roomId,
+        mission: missionTask,
+        runId: run.id,
+        agentId,
+        permission: effectivePermission ?? null,
+        defaultPlanId: defaultPlan?.id ?? null,
+        forcePlanOnUpdates: sameTurnPlan !== null,
+        onTaskUpdated: (task) => this.emit('taskUpdated', task),
+        autoAdvancePhase: (phaseInput) => this.autoAdvancePhase(phaseInput),
+      },
+      extractedMissionPhases.updates,
+    );
     this.recordMissionCommandEvents({
       roomId,
       taskId: missionTask?.id ?? null,
@@ -3117,20 +3185,46 @@ export class Broker extends EventEmitter {
         ? 'mission phase command processed'
         : 'mission phase rejected: no mission',
     });
-    const extractedMissionTasks = replySignals.missionTasks;
-    const missionTaskResult = this.applyMissionTaskUpdates({
+    const providerToolRouting = await routeProviderToolCalls({
+      db: this.deps.db,
+      providerId: agentProfile.providerId,
+      stdout: reply.raw.stdout,
       roomId,
-      task: missionTask,
+      mission: missionTask,
       runId: run.id,
       agentId,
-      updates: extractedMissionTasks.updates,
-      defaultPlanId: defaultPlan?.id ?? null,
-      forcePlanOnUpdates: sameTurnPlan !== null,
+      permission: effectivePermission ?? null,
+      onTaskUpdated: (task) => this.emit('taskUpdated', task),
     });
+    const extractedMissionTasks = replySignals.missionTasks;
+    const hiddenMissionTaskUpdates = filterHiddenMissionTaskFallbacks(
+      extractedMissionTasks.updates,
+      providerToolRouting.hiddenFallbackKeys,
+    );
+    const missionTaskRouting = await routeMissionTaskUpdates(
+      {
+        db: this.deps.db,
+        roomId,
+        mission: missionTask,
+        runId: run.id,
+        agentId,
+        permission: effectivePermission ?? null,
+        defaultPlanId: defaultPlan?.id ?? null,
+        forcePlanOnUpdates: sameTurnPlan !== null,
+        recordRunAction: (action) => this.recordRunAction(action),
+        onTaskUpdated: (task) => this.emit('taskUpdated', task),
+      },
+      hiddenMissionTaskUpdates,
+    );
+    const missionTaskResult = combineMissionTaskApplyResults(
+      providerToolRouting.missionTaskResult,
+      missionTaskRouting.result,
+    );
     if (
       missionTaskResult.applied > 0 &&
       policyClearsSessionAfterLane(turnSessionPolicy) &&
-      extractedMissionTasks.updates.some((update) => inferChecklistCompletion(update))
+      (hiddenMissionTaskUpdates.some((update) => inferChecklistCompletion(update)) ||
+        providerToolRouting.missionTaskResult.progressed > 0)
     ) {
       deleteCliSessionId(this.deps.db, roomId, agentId);
       this.recordRunAction({
@@ -3150,7 +3244,7 @@ export class Broker extends EventEmitter {
       runId: run.id,
       agentId,
       commandKind: 'mission-task',
-      updates: extractedMissionTasks.updates,
+      updates: hiddenMissionTaskUpdates,
       status: missionTaskResult.applied > 0 ? 'applied' : 'rejected',
       summary:
         missionTaskResult.applied > 0
@@ -3188,13 +3282,22 @@ export class Broker extends EventEmitter {
       changedItems: missionTaskResult.dispatchCandidates,
     });
     const extractedMissionReceipts = replySignals.missionReceipts;
-    this.recordMissionReceipts({
-      roomId,
-      task: missionTask,
-      runId: run.id,
-      agentId,
-      receipts: extractedMissionReceipts.receipts,
-    });
+    const missionReceiptRouting = await routeMissionReceipts(
+      {
+        db: this.deps.db,
+        roomId,
+        mission: missionTask,
+        runId: run.id,
+        agentId,
+        permission: effectivePermission ?? null,
+        workLane,
+      },
+      extractedMissionReceipts.receipts,
+    );
+    if (missionReceiptRouting.applied > 0 && missionTask) {
+      const refreshed = getTask(this.deps.db, missionTask.id);
+      if (refreshed) this.emit('taskUpdated', refreshed);
+    }
     this.recordMissionCommandEvents({
       roomId,
       taskId: missionTask?.id ?? null,
@@ -3222,16 +3325,42 @@ export class Broker extends EventEmitter {
       extractedMissionReceipts.receipts,
     );
     const textAfterMissionReceipts = replySignals.textAfterMissionReceipts;
-    const reconciliation = this.reconcileMissionState({
+    const reconciliationFallbacks = applyReconciliationFallbacks({
+      db: this.deps.db,
       roomId,
       task: missionTask,
       runId: run.id,
       agentId,
-      receipts: extractedMissionReceipts.receipts,
       visibleText: textAfterMissionReceipts,
       workLane,
       explicitMissionUpdates: missionStateUpdateCount,
+      receiptTouchedItemIds: missionReceiptRouting.touchedItemIds,
+      recordRunAction: (action) => this.recordRunAction(action),
+      onTaskUpdated: (task) => this.emit('taskUpdated', task),
     });
+    const reconciliation: ReconciliationSummary = {
+      applied: missionReceiptRouting.applied + reconciliationFallbacks.applied,
+      progressed: missionReceiptRouting.progressed + reconciliationFallbacks.progressed,
+    };
+    if (missionTask && reconciliation.applied > 0) {
+      this.recordRunAction({
+        roomId,
+        taskId: missionTask.id,
+        runId: run.id,
+        agentId,
+        kind: 'ledger',
+        status: 'completed',
+        label: 'mission state reconciled',
+        detail: JSON.stringify({
+          applied: reconciliation.applied,
+          progressed: reconciliation.progressed,
+          receiptApplied: missionReceiptRouting.applied,
+          fallbackApplied: reconciliationFallbacks.applied,
+          laneUpdates: reconciliationFallbacks.laneUpdates,
+          phaseFromChecklistUpdates: reconciliationFallbacks.phaseFromChecklistUpdates,
+        }),
+      });
+    }
     const hiddenMissionProgressCount = this.hiddenMissionProgressCount({
       workflowRepair: effectiveWorkflowRepair,
       missionStateUpdateCount,
@@ -3355,13 +3484,14 @@ export class Broker extends EventEmitter {
       const message = cleanedVisibleText
         ? this.appendDirect(roomId, agentId, 'agent', cleanedVisibleText)
         : null;
-      this.storeCollaborationNotes({
+      await this.storeCollaborationNotes({
         roomId,
         taskId: missionTask?.id ?? null,
         runId: run.id,
         messageId: message?.id ?? null,
         agentId,
         notes: visiblePermissionText.notes,
+        permission: effectivePermission ?? null,
       });
       if (message) {
         this.recordRunAction({
@@ -3382,6 +3512,19 @@ export class Broker extends EventEmitter {
         yoloPermissionAutoApprovals,
       });
       if (permissionContinuation.kind !== 'manual-approval') {
+        await routePermissionRequest(
+          {
+            db: this.deps.db,
+            roomId,
+            mission: missionTask,
+            runId: run.id,
+            messageId: message?.id ?? null,
+            agentId,
+            permission: effectivePermission ?? null,
+            persistRequest: false,
+          },
+          permissionRequest,
+        );
         const completedRun = updateAgentRun(this.deps.db, run.id, {
           status: 'completed',
           replyMessageId: message?.id ?? null,
@@ -3491,11 +3634,67 @@ export class Broker extends EventEmitter {
           effectiveWorkflowRepair,
         );
       }
-      const request = addPermissionRequest(this.deps.db, {
-        roomId,
-        agentId,
-        ...permissionRequest,
-      });
+      const permissionRouting = await routePermissionRequest(
+        {
+          db: this.deps.db,
+          roomId,
+          mission: missionTask,
+          runId: run.id,
+          messageId: message?.id ?? null,
+          agentId,
+          permission: effectivePermission ?? null,
+        },
+        permissionRequest,
+      );
+      const request = permissionRouting.request;
+      if (!request) {
+        const permissionRun = updateAgentRun(this.deps.db, run.id, {
+          status: 'failed',
+          replyMessageId: message?.id ?? null,
+          completedAt: Date.now(),
+          stdout: reply.raw.stdout,
+          stderr: reply.raw.stderr,
+          replyText: rawText,
+          cliSessionId: replySessionIdForStorage,
+          lifecycleState: 'failed',
+          lifecycleReason: permissionRouting.toolCall.summary,
+        });
+        if (permissionRun) this.emit('agentRunUpdated', permissionRun);
+        this.recordRunAction({
+          roomId,
+          taskId: missionTask?.id ?? null,
+          runId: run.id,
+          agentId,
+          kind: 'permission',
+          status: 'failed',
+          label: 'permission request rejected',
+          detail: permissionRouting.toolCall.error ?? permissionRouting.toolCall.summary,
+        });
+        completeAgentJob(this.deps.db, agentJob.id);
+        this.recordTurnOutcome({
+          roomId,
+          taskId: missionTask?.id ?? null,
+          runId: run.id,
+          agentId,
+          visibleMessageId: message?.id ?? null,
+          visibleMessageEmitted: Boolean(message),
+          status: 'failed',
+          progressed: false,
+          missionUpdates: missionStateUpdateCount,
+          missionReceipts: missionReceiptCount,
+          missionReconciliations: reconciliation.applied,
+          collaborationNotes: visiblePermissionText.notes.length,
+          draftArtifacts: extractedDrafts.drafts.length,
+          summary: permissionRouting.toolCall.summary,
+          runKind: turnRunKind,
+        });
+        return {
+          message,
+          progressed: false,
+          runId: run.id,
+          workDispatches: missionWorkDispatches,
+        };
+      }
       const permissionRun = updateAgentRun(this.deps.db, run.id, {
         status: 'permission-requested',
         replyMessageId: message?.id ?? null,
@@ -3563,13 +3762,14 @@ export class Broker extends EventEmitter {
     if (message && handoffs.length > 0) {
       this.enqueueAgentHandoffs(roomId, agentId, message, handoffs);
     }
-    this.storeCollaborationNotes({
+    await this.storeCollaborationNotes({
       roomId,
       taskId: missionTask?.id ?? null,
       runId: run.id,
       messageId: message?.id ?? null,
       agentId,
       notes: extracted.notes,
+      permission: effectivePermission ?? null,
     });
     const completedRun = updateAgentRun(this.deps.db, run.id, {
       status: 'completed',
@@ -3616,8 +3816,7 @@ export class Broker extends EventEmitter {
       visibleText,
     });
     const repairResult = repairOutcome.result;
-    const effectiveMissionReceiptCount =
-      missionReceiptCount + repairOutcome.syntheticReceiptCount;
+    const effectiveMissionReceiptCount = missionReceiptCount + repairOutcome.syntheticReceiptCount;
     await this.runAgentRosterFollowups(roomId, rosterResult.followups);
     const finalWorkDispatches = this.evaluateMissionLivenessDispatches({
       roomId,
@@ -4087,37 +4286,6 @@ export class Broker extends EventEmitter {
     return { lifecycleState: 'canceled_by_reconciliation', reason: null };
   }
 
-  private recordMissionReceipts(input: {
-    roomId: string;
-    task: Task | null;
-    runId: string;
-    agentId: AgentId;
-    receipts: ParsedMissionReceipt[];
-  }): void {
-    recordMissionReceiptsState({
-      ...input,
-      recordRunAction: (action) => this.recordRunAction(action),
-    });
-  }
-
-  private reconcileMissionState(input: {
-    roomId: string;
-    task: Task | null;
-    runId: string;
-    agentId: AgentId;
-    receipts: ParsedMissionReceipt[];
-    visibleText: string;
-    workLane: WorkLaneAssignment | undefined;
-    explicitMissionUpdates: number;
-  }): MissionReconciliationResult {
-    return reconcileMissionStateReceipts({
-      db: this.deps.db,
-      ...input,
-      recordRunAction: (action) => this.recordRunAction(action),
-      onTaskUpdated: (task) => this.emit('taskUpdated', task),
-    });
-  }
-
   private recordMissingMissionReceipt(input: {
     roomId: string;
     task: Task;
@@ -4146,7 +4314,7 @@ export class Broker extends EventEmitter {
     runId: string;
     missionStateUpdateCount: number;
     missionReceiptCount: number;
-    reconciliation: MissionReconciliationResult;
+    reconciliation: ReconciliationSummary;
     visibleText: string;
     workLane: WorkLaneAssignment | undefined;
   }): WorkflowContractValidation | null {
@@ -4249,7 +4417,7 @@ export class Broker extends EventEmitter {
     task: Task | null;
     missionStateUpdateCount: number;
     missionReceiptCount: number;
-    reconciliation: MissionReconciliationResult;
+    reconciliation: ReconciliationSummary;
     visibleText: string;
   }): Promise<WorkflowContractRepairOutcome> {
     if (input.workflowRepair || input.cancelSignal?.aborted) {
@@ -4284,12 +4452,13 @@ export class Broker extends EventEmitter {
         evidence: '',
         next: '',
       };
-      this.recordMissionReceipts({
+      recordMissionReceiptsState({
         roomId: input.roomId,
         task: input.task,
         runId: input.runId,
         agentId: input.agentId,
         receipts: [synth],
+        recordRunAction: (action) => this.recordRunAction(action),
       });
       this.recordRunAction({
         roomId: input.roomId,
@@ -4408,6 +4577,18 @@ export class Broker extends EventEmitter {
     }
   }
 
+  private recoverDispatchQueue(roomId?: string): void {
+    const expired = recoverLeasedDispatchQueueItems(this.deps.db);
+    const orphaned = recoverOrphanedLeasedDispatchQueueItems(this.deps.db, {
+      ...(roomId ? { roomId } : {}),
+    });
+    if (expired === 0 && orphaned === 0) return;
+    logger.info(
+      { roomId: roomId ?? null, expired, orphaned },
+      'recovered stalled dispatch queue leases',
+    );
+  }
+
   private buildProviderSignalRecorder(input: {
     roomId: string;
     taskId: string | null;
@@ -4520,20 +4701,30 @@ export class Broker extends EventEmitter {
     }
   }
 
-  private storeCollaborationNotes(input: {
+  private async storeCollaborationNotes(input: {
     roomId: string;
     taskId: string | null;
     runId: string;
     messageId: string | null;
     agentId: AgentId;
     notes: ParsedCollaborationNote[];
-  }): void {
-    storeCollaborationNotesState({
-      db: this.deps.db,
-      ...input,
-      recordRunAction: (action) => this.recordRunAction(action),
-      onCollaborationItemCreated: (item) => this.emit('collaborationItemCreated', item),
-    });
+    permission?: PermissionGrant | null;
+  }): Promise<void> {
+    if (input.notes.length === 0) return;
+    await routeCollaborationNotes(
+      {
+        db: this.deps.db,
+        roomId: input.roomId,
+        taskId: input.taskId,
+        runId: input.runId,
+        messageId: input.messageId,
+        agentId: input.agentId,
+        permission: input.permission ?? null,
+        recordRunAction: (action) => this.recordRunAction(action),
+        onCollaborationItemCreated: (item) => this.emit('collaborationItemCreated', item),
+      },
+      input.notes,
+    );
   }
 
   private autoAdvancePhase(input: {
@@ -4880,62 +5071,6 @@ export class Broker extends EventEmitter {
     });
   }
 
-  private applyMissionPlanUpdates(input: {
-    roomId: string;
-    task: Task | null;
-    runId: string;
-    agentId: AgentId;
-    updates: ParsedMissionPlanUpdate[];
-  }): TaskPlan | null {
-    return applyMissionPlanUpdatesState({
-      db: this.deps.db,
-      ...input,
-      recordRunAction: (action) => this.recordRunAction(action),
-      onTaskUpdated: (task) => this.emit('taskUpdated', task),
-    });
-  }
-
-  private applyMissionPhaseUpdates(input: {
-    roomId: string;
-    task: Task | null;
-    runId: string;
-    agentId: AgentId;
-    updates: ParsedMissionPhaseUpdate[];
-    defaultPlanId: string | null;
-    forcePlanOnUpdates: boolean;
-  }): void {
-    applyMissionPhaseUpdatesState({
-      db: this.deps.db,
-      ...input,
-      recordRunAction: (action) => this.recordRunAction(action),
-      onTaskUpdated: (task) => this.emit('taskUpdated', task),
-      autoAdvancePhase: (phaseInput) => this.autoAdvancePhase(phaseInput),
-    });
-  }
-
-  private applyMissionTaskUpdates(input: {
-    roomId: string;
-    task: Task | null;
-    runId: string;
-    agentId: AgentId;
-    updates: ParsedMissionTaskUpdate[];
-    defaultPlanId: string | null;
-    forcePlanOnUpdates: boolean;
-  }): MissionTaskApplyResult {
-    return applyMissionTaskUpdatesState({
-      db: this.deps.db,
-      roomId: input.roomId,
-      task: input.task,
-      runId: input.runId,
-      agentId: input.agentId,
-      updates: input.updates,
-      defaultPlanId: input.defaultPlanId,
-      forcePlanOnUpdates: input.forcePlanOnUpdates,
-      recordRunAction: (action) => this.recordRunAction(action),
-      onTaskUpdated: (task) => this.emit('taskUpdated', task),
-    });
-  }
-
   private routeMissionWorkDispatches(input: {
     roomId: string;
     task: Task | null;
@@ -5135,7 +5270,7 @@ export class Broker extends EventEmitter {
     missionTaskProgressCount: number;
     rosterApplied: number;
     productiveMissionReceiptCount: number;
-    reconciliation: MissionReconciliationResult;
+    reconciliation: ReconciliationSummary;
   }): number {
     if (!input.workflowRepair) {
       return (
@@ -5583,6 +5718,7 @@ export class Broker extends EventEmitter {
     const room = getRoom(this.deps.db, roomId);
     if (!room) return;
     for (let drained = 0; drained < 100; drained += 1) {
+      this.recoverDispatchQueue(roomId);
       const batch = this.nextDispatchBatch(room);
       if (!batch) return;
       await this.runRoomAwareDiscussionThread(roomId, room, batch.responders, batch.message, {

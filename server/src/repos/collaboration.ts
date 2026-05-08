@@ -135,6 +135,47 @@ export function createCollaborationItem(
   return getCollaborationItem(db, id)!;
 }
 
+export interface UpdateCollaborationItemInput {
+  title?: string;
+  body?: string;
+  status?: CollaborationStatus;
+  confidence?: CollaborationConfidence;
+  evidence?: string[];
+}
+
+export function updateCollaborationItem(
+  db: Database,
+  id: string,
+  input: UpdateCollaborationItemInput,
+): CollaborationItem | null {
+  const existing = getCollaborationItem(db, id);
+  if (!existing) return null;
+  const next: CollaborationItem = {
+    ...existing,
+    title: input.title !== undefined ? bounded(input.title, 240) : existing.title,
+    body: input.body !== undefined ? bounded(input.body, 2000) : existing.body,
+    status: input.status ?? existing.status,
+    confidence: input.confidence ?? existing.confidence,
+    evidence:
+      input.evidence !== undefined
+        ? input.evidence.map((item) => bounded(item, 500)).slice(0, 12)
+        : existing.evidence,
+  };
+  db.prepare(
+    `UPDATE collaboration_items
+        SET title = ?, body = ?, status = ?, confidence = ?, evidence_json = ?
+      WHERE id = ?`,
+  ).run(
+    next.title,
+    next.body,
+    next.status,
+    next.confidence,
+    JSON.stringify(next.evidence),
+    id,
+  );
+  return getCollaborationItem(db, id);
+}
+
 export function getCollaborationItem(db: Database, id: string): CollaborationItem | null {
   const row = db.prepare(`SELECT * FROM collaboration_items WHERE id = ?`).get(id) as
     | CollaborationItemRow

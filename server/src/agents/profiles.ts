@@ -24,6 +24,11 @@ interface RawRoomAgentProfile {
   spawnedScope?: unknown;
   dismissWhen?: unknown;
   maxTurns?: unknown;
+  status?: unknown;
+  statusReason?: unknown;
+  statusUpdatedAt?: unknown;
+  statusUntil?: unknown;
+  currentTaskId?: unknown;
 }
 
 function slug(value: string): string {
@@ -63,6 +68,20 @@ function cleanDisplayName(value: unknown): string {
 
 function cleanText(value: unknown, maxChars = 500): string {
   return typeof value === 'string' ? value.replace(/\s+/g, ' ').trim().slice(0, maxChars) : '';
+}
+
+function cleanRuntimeStatus(value: unknown): RoomAgentProfile['status'] | undefined {
+  if (typeof value !== 'string') return undefined;
+  const normalized = value.trim().toLowerCase().replace(/\s+/g, '_');
+  if (
+    normalized === 'idle' ||
+    normalized === 'active' ||
+    normalized === 'blocked' ||
+    normalized === 'offline'
+  ) {
+    return normalized;
+  }
+  return undefined;
 }
 
 function cleanModelId(value: unknown): string {
@@ -237,6 +256,11 @@ export function normalizeRoomAgentProfiles(input: {
       const autoCompactEnabled =
         typeof raw.autoCompactEnabled === 'boolean' ? raw.autoCompactEnabled : true;
       const sessionPolicy = isSessionPolicy(raw.sessionPolicy) ? raw.sessionPolicy : undefined;
+      const status = cleanRuntimeStatus(raw.status);
+      const statusUpdatedAt =
+        typeof raw.statusUpdatedAt === 'number' && Number.isFinite(raw.statusUpdatedAt)
+          ? Math.max(0, Math.floor(raw.statusUpdatedAt))
+          : undefined;
       profiles.push({
         id,
         providerId,
@@ -261,6 +285,11 @@ export function normalizeRoomAgentProfiles(input: {
         ...(raw.spawnedScope ? { spawnedScope: cleanText(raw.spawnedScope, 500) } : {}),
         ...(raw.dismissWhen ? { dismissWhen: cleanText(raw.dismissWhen, 300) } : {}),
         ...(maxTurns !== undefined ? { maxTurns } : {}),
+        ...(status ? { status } : {}),
+        ...(raw.statusReason ? { statusReason: cleanText(raw.statusReason, 800) } : {}),
+        ...(statusUpdatedAt !== undefined ? { statusUpdatedAt } : {}),
+        ...(raw.statusUntil ? { statusUntil: cleanText(raw.statusUntil, 120) } : {}),
+        ...(raw.currentTaskId ? { currentTaskId: cleanText(raw.currentTaskId, 120) } : {}),
       });
     }
   }

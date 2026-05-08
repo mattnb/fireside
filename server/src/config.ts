@@ -24,6 +24,13 @@ export interface Config {
    *  `claude` subprocesses via `--mcp-config`. When unset, the spawned
    *  CLI inherits the operator's interactive Claude MCP configuration. */
   claudeMcpConfigPath: string | null;
+  /** Default off. When true, Fireside registers `POST /api/mcp` so external
+   *  MCP clients can invoke the structured tool layer. See
+   *  docs/phase-6-mcp-endpoint-design-2026-05-07.md. */
+  enableMcp: boolean;
+  /** Optional bearer token. Required for non-loopback `/api/mcp` calls.
+   *  When unset, non-loopback calls are refused even if `enableMcp` is on. */
+  mcpApiKey: string | null;
 }
 
 function envFlag(name: string, defaultValue = false): boolean {
@@ -96,5 +103,7 @@ export function loadConfig(): Config {
     leadResetPercent: envNumber('FIRESIDE_LEAD_RESET_PERCENT', 60),
     leadResetDisabled: envFlag('FIRESIDE_LEAD_RESET_DISABLED', false),
     claudeMcpConfigPath: process.env.FIRESIDE_MCP_CONFIG?.trim() || null,
+    enableMcp: envFlag('FIRESIDE_ENABLE_MCP', false),
+    mcpApiKey: process.env.FIRESIDE_MCP_API_KEY?.trim() || null,
   };
 }
