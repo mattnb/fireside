@@ -11,7 +11,7 @@ export function hiddenBlockRegex(startName: string, endNames: string[]): RegExp 
   const start = escapeRegExp(startName);
   const ends = endNames.map(escapeRegExp).join('|');
   return new RegExp(
-    String.raw`(^|\n)${LINE_MARKER_PREFIX}\/${start}(?:[ \t]+|\s*\n)([\s\S]*?)(?:\n${LINE_MARKER_PREFIX}|[ \t]+)[/@]end-(?:${ends})${LINE_MARKER_SUFFIX}(?=\n|$)`,
+    String.raw`(^|\n)${LINE_MARKER_PREFIX}\/?${start}(?:[ \t]+|\s*\n)([\s\S]*?)(?:\n${LINE_MARKER_PREFIX}|[ \t]+)[/@]end-(?:${ends})${LINE_MARKER_SUFFIX}(?=\n|$)`,
     'gi',
   );
 }

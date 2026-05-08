@@ -93,4 +93,24 @@ body: |
       evidence: ['run:abc123', 'test:npm test'],
     });
   });
+
+  it('strips comment-wrapped notes when the opening slash is omitted', () => {
+    const result = extractCollaborationNotes(`Visible summary.
+
+<!-- collab-note
+kind: proposal
+summary: Rename the text-input adapter
+rationale: Slash blocks are permanent and should not leak into chat.
+next: Land the rename.
+/end-collab-note -->`);
+
+    expect(result.visibleText).toBe('Visible summary.');
+    expect(result.notes).toHaveLength(1);
+    expect(result.notes[0]).toMatchObject({
+      kind: 'proposal',
+      status: 'open',
+      title: 'Rename the text-input adapter',
+      body: 'Rename the text-input adapter\nSlash blocks are permanent and should not leak into chat.',
+    });
+  });
 });
