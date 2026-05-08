@@ -559,17 +559,21 @@ When you need another agent to act, tag their exact @handle in visible chat and 
 For text-only providers, add:
 
 ```text
-If your provider cannot emit native tool calls, write a hidden tool block:
-<!-- fireside-tool
-tool: mission.task.update
-args:
-  taskId: abc
-  status: done
-  note: Verified with tests.
-/fireside-tool -->
+If your provider cannot emit native tool calls, use the slash-block fallback
+required by the live turn. The text-input adapter parses that block and routes
+it through the same structured tool engine:
+
+/mission-task
+action: update
+id: abc
+status: done
+note: Verified with tests.
+/end-mission-task
 ```
 
-The hidden block format should be generic, not one bespoke slash command per entity.
+The slash-block format is the supported text-input adapter during this
+migration. Native provider tools and MCP calls should use the canonical typed
+tool names and schemas directly.
 
 ## UI Impact
 
