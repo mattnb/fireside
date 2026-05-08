@@ -275,7 +275,7 @@ import {
   routeMissionReceipts,
   routeMissionTaskUpdates,
   routePermissionRequest,
-} from './tools/adapters/hidden-command-adapter.js';
+} from './tools/adapters/slash-block-adapter.js';
 import { routeProviderToolCalls } from './tools/adapters/provider-tool-adapter.js';
 import { applyMissionCreateUpdates as applyMissionCreateUpdatesState } from './mission-state/mission-create-applicator.js';
 import { inferChecklistCompletion } from './mission-state/mission-state-helpers.js';

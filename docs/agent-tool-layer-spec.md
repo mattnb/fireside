@@ -198,7 +198,7 @@ Confirmed Phase 3 schemas:
   - `title` is required.
   - `status` is optional and limited to `draft | active`; default behavior remains handler/applicator owned.
 - `mission.plan.update`: `{ planId, title?, body? }`
-  - `planId` is required for native tool callers. The schema also accepts `title`/`plan` compatibility refs for the hidden-command adapter, but the resolver should normalize to the canonical plan id before mutation.
+  - `planId` is required for native tool callers. The schema also accepts `title`/`plan` compatibility refs for the slash-block adapter, but the resolver should normalize to the canonical plan id before mutation.
   - At least one of `title` or `body` is required. Activating or archiving a plan should use the dedicated tools below.
 - `mission.plan.activate`: `{ planId }`
   - Activates the selected plan and relies on the existing repository behavior that supersedes other active plans for the same mission.
@@ -225,7 +225,7 @@ Confirmed Phase 3 schemas:
   - `plan` accepts a plan id, title, `current`, or a clear ref such as `none`; handlers resolve it against the active mission's plans.
   - `status` is optional and limited to `planned | active | blocked`; `done` is intentionally excluded because completion must use `mission.phase.complete` so empty-phase validation and admin permission checks are explicit.
 - `mission.phase.update`: `{ phaseId, title?, plan?, description?, gate?, status?, sortOrder? }`
-  - `phaseId` is required for native tool callers. The schema also accepts `title`/`phase` compatibility refs so the hidden-command adapter can preserve current behavior while normalizing to a phase id before mutation.
+  - `phaseId` is required for native tool callers. The schema also accepts `title`/`phase` compatibility refs so the slash-block adapter can preserve current behavior while normalizing to a phase id before mutation.
   - `status` is limited to `planned | active | blocked`; hidden `/mission-phase status: done` compatibility should decode to `mission.phase.complete`, not `mission.phase.update`.
 - `mission.phase.complete`: `{ phaseId, note?, evidence? }`
   - Requires `mission:admin`.
@@ -433,7 +433,7 @@ server/src/tools/
     authorize-tool-call.ts
   idempotency.ts
   adapters/
-    hidden-command-adapter.ts
+    slash-block-adapter.ts
     provider-tool-adapter.ts
     mcp-adapter.ts
   handlers/
@@ -672,7 +672,7 @@ Unit tests:
 - tool registry and schema validation
 - permission mapping
 - idempotency behavior
-- hidden-command adapter conversions
+- slash-block adapter conversions
 - handler outcomes and effects
 
 Integration tests:

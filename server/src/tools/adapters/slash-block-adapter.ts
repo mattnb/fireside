@@ -1,15 +1,17 @@
-// server/src/tools/adapters/hidden-command-adapter.ts
+// server/src/tools/adapters/slash-block-adapter.ts
 //
-// Translates the legacy `/mission-task` hidden block payload into structured
-// `AgentToolCall` shapes and runs them through `executeToolCall`. The broker
-// keeps owning prompt extraction; this layer owns the conversion and the
-// per-update orchestration so audit rows, idempotency, and effects all flow
-// through the tool engine.
+// Canonical text-input adapter for the structured agent tool layer. Translates
+// `/mission-*`, `/permission-request`, and `/collab-note` hidden slash blocks
+// into structured `AgentToolCall` shapes and runs them through
+// `executeToolCall`, alongside native provider tool calls and the MCP adapter.
+// The broker keeps owning prompt extraction; this layer owns the conversion
+// and the per-update orchestration so audit rows, idempotency, and effects
+// all flow through the tool engine.
 //
-// Scope (Phase 2 mission-task slice): action='update' and action='note' route
-// through the tool engine. action='create' falls back to the legacy applicator
-// because no `mission.task.create` tool exists yet; an audit row is still
-// written so the phase gate's "every block produces a row" requirement holds.
+// Scope: action='update' and action='note' route through the tool engine.
+// action='create' falls back to `applyMissionTaskUpdates` directly because no
+// `mission.task.create` tool exists yet; an audit row is still written so the
+// phase gate's "every block produces a row" requirement holds.
 
 import { createHash } from 'node:crypto';
 import type { Database } from 'better-sqlite3';
@@ -257,9 +259,9 @@ export async function routeMissionTaskUpdates(
   const toolCalls: ExecuteToolCallOutcome[] = [];
 
   if (!ctx.mission) {
-    // Mirror the legacy applicator's diagnostic so existing run-detail
-    // surfaces stay accurate. Audit rows aren't possible without a mission
-    // (mission_id is required to compose an idempotency key in our schema).
+    // Mirror the direct-applicator diagnostic so existing run-detail surfaces
+    // stay accurate. Audit rows aren't possible without a mission (mission_id
+    // is required to compose an idempotency key in our schema).
     if (updates.length > 0) {
       ctx.recordRunAction({
         roomId: ctx.roomId,
@@ -320,8 +322,8 @@ export async function routeMissionTaskUpdates(
         status: auditRow.status,
         summary:
           result.applied > 0
-            ? `mission.task.create applied (legacy path) ${update.title}`
-            : `mission.task.create rejected (legacy path) ${update.title}`,
+            ? `mission.task.create applied (direct path) ${update.title}`
+            : `mission.task.create rejected (direct path) ${update.title}`,
       });
       continue;
     }
@@ -647,8 +649,8 @@ export interface CollabNoteRoutingOutcome {
 
 /**
  * Run a batch of decoded `/collab-note` blocks through the tool engine. The
- * legacy hidden block has no `id` field, so every block routes to
- * `collab.note.add`; direct/MCP callers can still invoke `collab.note.update`
+ * slash-block format has no `id` field, so every block routes to
+ * `collab.note.add`; native/MCP callers can still invoke `collab.note.update`
  * through the registry.
  */
 export async function routeCollaborationNotes(

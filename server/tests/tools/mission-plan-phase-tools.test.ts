@@ -12,7 +12,7 @@ import { extractMissionPlanUpdates } from '../../src/mission-plan-updates.js';
 import {
   routeMissionPhaseUpdates,
   routeMissionPlanUpdates,
-} from '../../src/tools/adapters/hidden-command-adapter.js';
+} from '../../src/tools/adapters/slash-block-adapter.js';
 import { executeToolCall } from '../../src/tools/execute-tool-call.js';
 import { missionPhaseCompleteTool } from '../../src/tools/handlers/mission-phase-tools.js';
 import { createToolRegistry } from '../../src/tools/registry.js';

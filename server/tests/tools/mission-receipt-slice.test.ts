@@ -15,7 +15,7 @@ import {
   listTaskPhases,
 } from '../../src/repos/task-phases.js';
 import { extractMissionReceipts } from '../../src/mission-receipts.js';
-import { routeMissionReceipts } from '../../src/tools/adapters/hidden-command-adapter.js';
+import { routeMissionReceipts } from '../../src/tools/adapters/slash-block-adapter.js';
 import { dispatchMcpRequest, MCP_TOOL_ALLOWLIST } from '../../src/tools/adapters/mcp-adapter.js';
 import { defaultToolRegistry } from '../../src/tools/registry.js';
 import { ensureDefaultToolsRegistered } from '../../src/tools/default-tools.js';

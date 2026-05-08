@@ -3,7 +3,7 @@ import { openDatabase } from '../../src/db.js';
 import { buildPermissionGrant } from '../../src/permissions.js';
 import { listPermissionRequests } from '../../src/repos/permission-requests.js';
 import { getTask } from '../../src/repos/tasks.js';
-import { routePermissionRequest } from '../../src/tools/adapters/hidden-command-adapter.js';
+import { routePermissionRequest } from '../../src/tools/adapters/slash-block-adapter.js';
 import { executeToolCall } from '../../src/tools/execute-tool-call.js';
 import { permissionRequestTool } from '../../src/tools/handlers/permission-tools.js';
 import { createToolRegistry } from '../../src/tools/registry.js';

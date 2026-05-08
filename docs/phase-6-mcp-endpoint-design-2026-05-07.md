@@ -126,7 +126,7 @@ adapter exposes two methods that map directly onto registry calls:
 This is the same shape the Anthropic / Anthropic-compatible MCP
 clients ship today. No new handler logic; the adapter is purely a
 translation layer between JSON-RPC envelopes and `AgentToolCall`
-objects, mirroring how `hidden-command-adapter.ts` is the translation
+objects, mirroring how `slash-block-adapter.ts` is the translation
 layer for hidden blocks.
 
 ### Where the boundary lives

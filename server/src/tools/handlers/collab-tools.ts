@@ -2,9 +2,9 @@
 //
 // Tool handlers for `collab.note.add` and `collab.note.update`. The handlers
 // reuse the existing collaboration-item repo so the tool layer behaves
-// identically to the legacy `/collab-note` parser flow. Only `collab.note.add`
-// is emitted by the hidden-command adapter (the legacy block has no `id`
-// field); `collab.note.update` exists for direct/MCP callers.
+// identically to the direct `/collab-note` parser flow. Only `collab.note.add`
+// is emitted by the slash-block adapter (the slash block has no `id` field);
+// `collab.note.update` exists for native/MCP callers.
 //
 // See docs/phase-4-permission-collab-design-2026-05-07.md for the full design.
 

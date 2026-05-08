@@ -9,7 +9,7 @@ import {
   listTaskChecklistNotes,
 } from '../../src/repos/task-checklist.js';
 import { extractMissionTaskUpdates } from '../../src/mission-task-updates.js';
-import { routeMissionTaskUpdates } from '../../src/tools/adapters/hidden-command-adapter.js';
+import { routeMissionTaskUpdates } from '../../src/tools/adapters/slash-block-adapter.js';
 import { executeToolCall } from '../../src/tools/execute-tool-call.js';
 import { missionTaskUpdateTool } from '../../src/tools/handlers/mission-task-tools.js';
 import { createToolRegistry } from '../../src/tools/registry.js';

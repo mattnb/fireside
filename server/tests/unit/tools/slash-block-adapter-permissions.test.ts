@@ -5,7 +5,7 @@ import { createTaskChecklistItem } from '../../../src/repos/task-checklist.js';
 import {
   routeMissionTaskUpdates,
   ensureMissionTaskToolsRegistered,
-} from '../../../src/tools/adapters/hidden-command-adapter.js';
+} from '../../../src/tools/adapters/slash-block-adapter.js';
 import { buildPermissionGrant, type PermissionGrant } from '../../../src/permissions.js';
 import type { ParsedMissionTaskUpdate } from '../../../src/mission-task-updates.js';
 

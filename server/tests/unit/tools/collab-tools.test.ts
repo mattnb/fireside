@@ -8,12 +8,12 @@ import {
 import {
   ensureMissionTaskToolsRegistered,
   routeCollaborationNotes,
-} from '../../../src/tools/adapters/hidden-command-adapter.js';
+} from '../../../src/tools/adapters/slash-block-adapter.js';
 import { executeToolCall } from '../../../src/tools/execute-tool-call.js';
 import { defaultToolRegistry } from '../../../src/tools/registry.js';
 import type { ParsedCollaborationNote } from '../../../src/collaboration-notes.js';
 
-describe('collab.note.add via hidden-command adapter', () => {
+describe('collab.note.add via slash-block adapter', () => {
   it('persists a note, writes one applied audit row, and emits activity-created', async () => {
     ensureMissionTaskToolsRegistered();
     const { db, missionId } = seedRoomWithMission();

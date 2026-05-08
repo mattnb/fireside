@@ -45,7 +45,7 @@ Do not add per-agent profile fields in Phase 4.**
 - Hidden-command adapter passes `statePermissions` derived from the
   active `PermissionGrant`, not a hard-coded `['mission:write']`.
   Today the adapter at
-  `server/src/tools/adapters/hidden-command-adapter.ts:181`
+  `server/src/tools/adapters/slash-block-adapter.ts:181`
   short-circuits to `mission:write`; Milestone 4 must replace that with
   `statePermissionsForGrant(grant)` so phase/plan/collab/permission
   tools authorize correctly.
