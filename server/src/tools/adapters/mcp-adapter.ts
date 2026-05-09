@@ -84,6 +84,10 @@ export interface McpDispatchContext {
   agentId: AgentId;
   roomId: string;
   missionId: string | null;
+  /** When the call belongs to a specific spawned-agent turn, the run id
+   *  the transport inferred from the running agent_run. Recorded on the
+   *  audit row so tool calls associate with their producing run. */
+  runId?: string | null;
   /** Filesystem permission grant; state permissions are derived from this. */
   permission?: PermissionGrant | null;
   /** Override/augment grant-derived state permissions. */
@@ -289,7 +293,7 @@ async function runToolsCall(
     source: 'mcp',
     roomId: ctx.roomId,
     missionId: ctx.missionId,
-    runId: null,
+    runId: ctx.runId ?? null,
     messageId: null,
     agentId: ctx.agentId,
     createdAt: now(),

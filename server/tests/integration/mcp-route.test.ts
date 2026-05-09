@@ -175,15 +175,22 @@ describe('POST /api/mcp gating', () => {
     expect(body.result).toEqual({});
   });
 
-  it('infers the caller agent id from the unique running run when the agent header is missing', async () => {
+  it('infers the caller agent / run / mission from the unique running run when headers are missing', async () => {
     harness = makeHarness();
     seedRoomWithAgent(harness.db, 'room-1', 'claude');
-    seedRunningRun(harness.db, { id: 'run-1', roomId: 'room-1', agentId: 'claude' });
+    seedMission(harness.db, { id: 'mission-1', roomId: 'room-1' });
+    seedRunningRun(harness.db, {
+      id: 'run-1',
+      roomId: 'room-1',
+      agentId: 'claude',
+      taskId: 'mission-1',
+    });
 
-    // Call agent.list_assignments WITHOUT x-fireside-agent-id. Before the
-    // inference fallback, this attribued to 'mcp-client' and was rejected
-    // by the handler ("mcp-client is not in the room"). Now the handler
-    // sees agentId='claude' inferred from the running run and accepts.
+    // Call agent.list_assignments WITHOUT any of the fireside headers. The
+    // route should infer agent_id, run_id, and mission_id from the unique
+    // running run in the room, write the audit row with those filled in,
+    // and let the handler accept the call. Before the fallback all three
+    // columns landed as NULL on every agent_tool_calls row.
     const response = await harness.app.inject({
       method: 'POST',
       url: '/api/mcp',
@@ -209,6 +216,18 @@ describe('POST /api/mcp gating', () => {
     expect(body.result.isError).toBe(false);
     expect(body.result.structuredContent.status).toBe('applied');
     expect(body.result.structuredContent.result?.data?.agentId).toBe('claude');
+
+    // Audit row should carry the inferred run_id and mission_id, not NULL.
+    const row = harness.db
+      .prepare(
+        `SELECT agent_id, run_id, mission_id FROM agent_tool_calls
+         WHERE tool_name = 'agent.list_assignments' ORDER BY created_at DESC LIMIT 1`,
+      )
+      .get() as { agent_id: string; run_id: string | null; mission_id: string | null } | undefined;
+    expect(row).toBeDefined();
+    expect(row?.agent_id).toBe('claude');
+    expect(row?.run_id).toBe('run-1');
+    expect(row?.mission_id).toBe('mission-1');
   });
 
   it('keeps the explicit agent header when one is supplied (header wins over inference)', async () => {
@@ -272,9 +291,18 @@ function seedRoomWithAgent(db: Database, roomId: string, agentId: string): void 
   ).run(roomId, 'room', Date.now(), JSON.stringify([agentId]), JSON.stringify([]));
 }
 
+function seedMission(db: Database, input: { id: string; roomId: string }): void {
+  db.prepare(
+    `INSERT INTO tasks (
+      id, room_id, title, goal, repo_path, acceptance_criteria, agents_json, status,
+      capability_profile, summary, created_at, updated_at
+    ) VALUES (?, ?, 'mission', '', '', '', '[]', 'active', 'full-auto', '', ?, ?)`,
+  ).run(input.id, input.roomId, Date.now(), Date.now());
+}
+
 function seedRunningRun(
   db: Database,
-  input: { id: string; roomId: string; agentId: string },
+  input: { id: string; roomId: string; agentId: string; taskId?: string | null },
 ): void {
   // Insert a minimal trigger message so the FK on agent_runs.trigger_message_id
   // is satisfied.
@@ -287,6 +315,13 @@ function seedRunningRun(
     `INSERT INTO agent_runs (
       id, room_id, task_id, trigger_message_id, agent_id, status, permission_mode,
       prompt_chars, estimated_prompt_tokens, live_messages, context_artifacts, started_at
-    ) VALUES (?, ?, NULL, ?, ?, 'running', 'full-auto', 0, 0, 0, 0, ?)`,
-  ).run(input.id, input.roomId, triggerId, input.agentId, Date.now());
+    ) VALUES (?, ?, ?, ?, ?, 'running', 'full-auto', 0, 0, 0, 0, ?)`,
+  ).run(
+    input.id,
+    input.roomId,
+    input.taskId ?? null,
+    triggerId,
+    input.agentId,
+    Date.now(),
+  );
 }

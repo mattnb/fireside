@@ -1359,25 +1359,35 @@ function registerMcpRoute(
 
     const agentIdHeader = pickHeader(req, 'x-fireside-agent-id');
     const roomIdHeader = pickHeader(req, 'x-fireside-room-id') ?? '';
-    const missionIdHeader = pickHeader(req, 'x-fireside-mission-id') ?? null;
+    const missionIdHeader = pickHeader(req, 'x-fireside-mission-id');
+    const runIdHeader = pickHeader(req, 'x-fireside-run-id');
 
-    // Per-room MCP configs include both x-fireside-room-id and
-    // x-fireside-agent-id, but we observed cases (different CLI versions,
-    // partial config writes, restart races) where the room-id arrives but
-    // the agent-id doesn't. Without the agent-id, every call defaulted to
-    // 'mcp-client' and was rejected by handlers like agent.list_assignments
-    // because the synthetic id isn't in the room.
+    // Per-room MCP configs include x-fireside-room-id and (since 2026-05-09)
+    // x-fireside-agent-id, but we observed real traffic arriving with the
+    // room-id set and the agent-id missing — likely a Claude CLI quirk in
+    // honoring the `headers` field on the config. Without the agent-id,
+    // every call attributed to the synthetic 'mcp-client' identity and
+    // got rejected by handlers that check room membership. The same
+    // attribution gap applied to mission-id and run-id, leaving the
+    // audit rows with NULLs in those columns even when the call clearly
+    // belonged to a specific running turn.
     //
-    // Resolve the actual caller from the running agent_runs in the room
-    // when the header is missing. If exactly one run is active, that's
-    // the agent that spawned this MCP call. If 0 or >=2, fall back to
-    // 'mcp-client' so misattribution doesn't happen silently.
-    const resolvedAgentId =
-      agentIdHeader && agentIdHeader.trim()
-        ? agentIdHeader
-        : roomIdHeader
-          ? inferCallerAgentIdFromRunningRun(deps.db, roomIdHeader) ?? 'mcp-client'
-          : 'mcp-client';
+    // When the explicit header is missing, fall back to the room's
+    // running agent_run: if exactly one is active, that's the caller;
+    // copy its agent_id, run_id, and task_id (mission_id) into the
+    // dispatch context so the audit row associates correctly. With 0 or
+    // 2+ running runs the caller is ambiguous, so we keep 'mcp-client'
+    // and don't backfill the other ids — explicit attribution is always
+    // authoritative when the header IS supplied.
+    const inferredFromRun =
+      (!agentIdHeader || !agentIdHeader.trim()) && roomIdHeader
+        ? inferCallerFromRunningRun(deps.db, roomIdHeader)
+        : null;
+    const resolvedAgentId = (agentIdHeader && agentIdHeader.trim())
+      ? agentIdHeader
+      : inferredFromRun?.agentId ?? 'mcp-client';
+    const resolvedMissionId = missionIdHeader ?? inferredFromRun?.missionId ?? null;
+    const resolvedRunId = runIdHeader ?? inferredFromRun?.runId ?? null;
 
     // Auth was already enforced above (loopback or bearer-token gate). Treat
     // an authenticated MCP caller as holding the full state-permission set —
@@ -1387,7 +1397,8 @@ function registerMcpRoute(
       db: deps.db,
       agentId: resolvedAgentId,
       roomId: roomIdHeader,
-      missionId: missionIdHeader,
+      missionId: resolvedMissionId,
+      runId: resolvedRunId,
       statePermissions: DEFAULT_YOLO_STATE_PERMISSIONS,
     });
 
@@ -1409,20 +1420,34 @@ function pickHeader(req: FastifyRequest, name: string): string | null {
   return null;
 }
 
+interface InferredMcpCaller {
+  agentId: string;
+  runId: string;
+  missionId: string | null;
+}
+
 /**
- * Infer the calling agent id when the MCP request lacks an explicit
- * `x-fireside-agent-id` header. Returns the agent id of the unique
- * running run in the room, or null when there is no running run or
- * multiple ones (in which case the caller is genuinely ambiguous).
+ * Infer the calling agent, run, and mission when the MCP request lacks
+ * the corresponding headers. Returns the unique running run's identity
+ * for the room, or null when there is no running run or multiple ones
+ * (in which case the caller is genuinely ambiguous).
  *
  * This guards against CLI / config quirks where the per-room MCP config's
  * `headers` block isn't fully honored — we observed real `agent.checkin`
  * and `agent.list_assignments` calls from spawned Claude sessions that
  * arrived with `x-fireside-room-id` but no `x-fireside-agent-id` and
- * were rejected as `mcp-client is not in the room`.
+ * were rejected as `mcp-client is not in the room`. The mission/run
+ * inference also fills the audit row so post-hoc queries can associate
+ * tool calls with their producing turn instead of seeing NULLs across
+ * agent_tool_calls.run_id and agent_tool_calls.mission_id.
  */
-function inferCallerAgentIdFromRunningRun(db: Database, roomId: string): string | null {
+function inferCallerFromRunningRun(db: Database, roomId: string): InferredMcpCaller | null {
   const running = listRunningAgentRunsForRoom(db, roomId);
   if (running.length !== 1) return null;
-  return running[0]!.agentId;
+  const run = running[0]!;
+  return {
+    agentId: run.agentId,
+    runId: run.id,
+    missionId: run.taskId,
+  };
 }
