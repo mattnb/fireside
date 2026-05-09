@@ -19,6 +19,8 @@ const NOISY_LABEL_PATTERNS = [
   /\bassistant message ready\b/i,
   /\bagent_message\b/i,
   /\brate limit headers\b/i,
+  /\brate limit update\b/i,
+  /\bquota (?:sampled|reconciled|update)\b/i,
   /^(?:claude|codex|gemini)?\s*status$/i,
 ];
 

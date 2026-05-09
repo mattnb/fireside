@@ -171,6 +171,7 @@ describe('mission.receipt.submit slice', () => {
         statePermissions: ['mission:write'],
       },
     );
+    if (allowed === null) throw new Error('expected response for tools/list');
     expect('result' in allowed).toBe(true);
     if ('result' in allowed) {
       const tools = (allowed.result as { tools: { name: string }[] }).tools;
@@ -188,6 +189,7 @@ describe('mission.receipt.submit slice', () => {
         statePermissions: ['mission:read'],
       },
     );
+    if (denied === null) throw new Error('expected response for tools/list');
     if ('result' in denied) {
       const tools = (denied.result as { tools: { name: string }[] }).tools;
       expect(tools.map((t) => t.name)).not.toContain('mission.receipt.submit');

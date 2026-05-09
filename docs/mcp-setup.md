@@ -1,9 +1,9 @@
 # MCP Endpoint Setup
 
-Fireside exposes an optional Model Context Protocol (MCP) endpoint at
-`POST /api/mcp` that forwards JSON-RPC 2.0 calls into the structured agent
-tool engine. It is **off by default** and only registered when
-`FIRESIDE_ENABLE_MCP=1` is set in the server environment.
+Fireside exposes a Model Context Protocol (MCP) endpoint at `POST /api/mcp`
+that forwards JSON-RPC 2.0 calls into the structured agent tool engine. The
+route is registered automatically on every server start; there is no enable
+flag.
 
 ## Trust Contract
 
@@ -38,24 +38,22 @@ secret generator and put the result in the server environment:
 $bytes = New-Object byte[] 32
 [Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($bytes)
 $env:FIRESIDE_MCP_API_KEY = -join ($bytes | ForEach-Object { $_.ToString('x2') })
-$env:FIRESIDE_ENABLE_MCP = '1'
 npm start
 ```
 
 ```bash
 # macOS / Linux
 export FIRESIDE_MCP_API_KEY="$(openssl rand -hex 32)"
-export FIRESIDE_ENABLE_MCP=1
 npm start
 ```
 
-You can also set both vars in `.env` (see `.env.example`). Treat the value
-as a shared secret: anyone holding it can drive the structured tool engine
-on your machine over the network.
+You can also set the key in `.env` (see `.env.example`). Treat the value as
+a shared secret: anyone holding it can drive the structured tool engine on
+your machine over the network.
 
 ## Quick Verification
 
-With the server running and `FIRESIDE_ENABLE_MCP=1`:
+With the server running:
 
 ```bash
 # loopback — no auth header needed
@@ -72,9 +70,8 @@ curl -sS https://your-host/api/mcp \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}'
 ```
 
-A loopback call without the flag set returns 404 (the route is not
-registered). A non-loopback call without the key configured returns 403; a
-non-loopback call with a wrong/missing bearer returns 401.
+A non-loopback call without the key configured returns 403; a non-loopback
+call with a wrong/missing bearer returns 401.
 
 ## Tool Calls
 

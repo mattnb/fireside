@@ -764,6 +764,34 @@ export function codexContextUsage(
   });
 }
 
+export function codexContextUsageFromJsonl(
+  stdout: string,
+  opts: { threadId?: string; codexHome?: string } = {},
+): AgentContextUsage | null {
+  let threadId = opts.threadId;
+  let lastUsage: unknown;
+  for (const line of stdout.split(/\r?\n/)) {
+    if (!line.trim()) continue;
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    const record = asRecord(parsed);
+    if (!record) continue;
+    if (!threadId) {
+      const candidate = record.thread_id ?? record.session_id ?? record.sessionId;
+      if (typeof candidate === 'string' && candidate.trim()) threadId = candidate.trim();
+    }
+    if (record.type === 'turn.completed') {
+      lastUsage = record.usage;
+    }
+  }
+  if (lastUsage === undefined) return null;
+  return codexContextUsage(lastUsage, { ...opts, ...(threadId ? { threadId } : {}) });
+}
+
 export function claudeContextUsage(obj: Record<string, unknown>): AgentContextUsage | null {
   const modelUsage = asRecord(obj.modelUsage);
   if (!modelUsage) return null;

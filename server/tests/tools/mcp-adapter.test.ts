@@ -5,12 +5,20 @@ import {
   MCP_TOOL_ALLOWLIST,
   dispatchMcpRequest,
   parseJsonRpcRequest,
+  type JsonRpcResponse,
 } from '../../src/tools/adapters/mcp-adapter.js';
 import { createToolRegistry, defineTool } from '../../src/tools/registry.js';
 import type {
   AgentToolDefinition,
   AgentToolResult,
 } from '../../src/tools/types.js';
+
+function expectResponse(response: JsonRpcResponse | null): JsonRpcResponse {
+  if (response === null) {
+    throw new Error('expected JSON-RPC response, got null (notification)');
+  }
+  return response;
+}
 
 describe('parseJsonRpcRequest', () => {
   it('rejects non-object payloads', () => {
@@ -40,6 +48,98 @@ describe('parseJsonRpcRequest', () => {
   });
 });
 
+describe('dispatchMcpRequest handshake', () => {
+  it('initialize returns a server-info / capabilities envelope so MCP clients can complete the handshake', async () => {
+    const { db, registry } = makeRegistryWith();
+    const response = expectResponse(
+      await dispatchMcpRequest(
+        {
+          jsonrpc: '2.0',
+          id: 'init-1',
+          method: 'initialize',
+          params: {
+            protocolVersion: '2024-11-05',
+            capabilities: {},
+            clientInfo: { name: 'gemini', version: '1.0.0' },
+          },
+        },
+        { db, registry, agentId: 'mcp-client', roomId: 'room-1', missionId: 'mission-1' },
+      ),
+    );
+
+    expect('result' in response).toBe(true);
+    if (!('result' in response)) return;
+    const result = response.result as {
+      protocolVersion: string;
+      capabilities: Record<string, unknown>;
+      serverInfo: { name: string; version: string };
+    };
+    // Echo back the client's requested version when we recognize it.
+    expect(result.protocolVersion).toBe('2024-11-05');
+    expect(result.serverInfo.name).toBe('fireside');
+    expect(typeof result.serverInfo.version).toBe('string');
+    expect(result.capabilities).toHaveProperty('tools');
+    db.close();
+  });
+
+  it('initialize falls back to the default protocol version when the client requests an unknown one', async () => {
+    const { db, registry } = makeRegistryWith();
+    const response = expectResponse(
+      await dispatchMcpRequest(
+        {
+          jsonrpc: '2.0',
+          id: 'init-2',
+          method: 'initialize',
+          params: { protocolVersion: '1900-01-01', capabilities: {} },
+        },
+        { db, registry, agentId: 'mcp-client', roomId: 'room-1', missionId: 'mission-1' },
+      ),
+    );
+    expect('result' in response).toBe(true);
+    if (!('result' in response)) return;
+    const result = response.result as { protocolVersion: string };
+    expect(result.protocolVersion).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+    expect(result.protocolVersion).not.toBe('1900-01-01');
+    db.close();
+  });
+
+  it('notifications/initialized returns null so the HTTP transport can send 202 with no body', async () => {
+    const { db, registry } = makeRegistryWith();
+    const response = await dispatchMcpRequest(
+      { jsonrpc: '2.0', method: 'notifications/initialized' },
+      { db, registry, agentId: 'mcp-client', roomId: 'room-1', missionId: 'mission-1' },
+    );
+    expect(response).toBeNull();
+    db.close();
+  });
+
+  it('any unknown notifications/* method is silently accepted (no error response)', async () => {
+    const { db, registry } = makeRegistryWith();
+    const response = await dispatchMcpRequest(
+      { jsonrpc: '2.0', method: 'notifications/futureSpecExtension' },
+      { db, registry, agentId: 'mcp-client', roomId: 'room-1', missionId: 'mission-1' },
+    );
+    expect(response).toBeNull();
+    db.close();
+  });
+
+  it('ping returns an empty result so liveness checks succeed', async () => {
+    const { db, registry } = makeRegistryWith();
+    const response = expectResponse(
+      await dispatchMcpRequest(
+        { jsonrpc: '2.0', id: 'p1', method: 'ping' },
+        { db, registry, agentId: 'mcp-client', roomId: 'room-1', missionId: 'mission-1' },
+      ),
+    );
+    expect('result' in response).toBe(true);
+    if ('result' in response) {
+      expect(response.result).toEqual({});
+      expect(response.id).toBe('p1');
+    }
+    db.close();
+  });
+});
+
 describe('dispatchMcpRequest', () => {
   it('tools/list returns only allowlisted tools, with their summary and required perms', async () => {
     const { db, registry } = makeRegistryWith(
@@ -48,7 +148,7 @@ describe('dispatchMcpRequest', () => {
       stub('agent.set_status', 'set agent status', ['agent:write-self']),
     );
 
-    const response = await dispatchMcpRequest(
+    const response = expectResponse(await dispatchMcpRequest(
       { jsonrpc: '2.0', id: 1, method: 'tools/list' },
       {
         db,
@@ -58,7 +158,7 @@ describe('dispatchMcpRequest', () => {
         missionId: 'mission-1',
         statePermissions: ['mission:write', 'mission:admin'],
       },
-    );
+    ));
 
     expect('result' in response).toBe(true);
     if (!('result' in response)) return;
@@ -86,7 +186,7 @@ describe('dispatchMcpRequest', () => {
       stub('mission.plan.update', 'update plan', ['mission:write']),
     );
 
-    const response = await dispatchMcpRequest(
+    const response = expectResponse(await dispatchMcpRequest(
       { jsonrpc: '2.0', id: 2, method: 'tools/list' },
       {
         db,
@@ -96,7 +196,7 @@ describe('dispatchMcpRequest', () => {
         missionId: 'mission-1',
         statePermissions: ['mission:write'],
       },
-    );
+    ));
 
     expect('result' in response).toBe(true);
     if (!('result' in response)) return;
@@ -113,10 +213,10 @@ describe('dispatchMcpRequest', () => {
 
   it('unknown method maps to JSON-RPC -32601', async () => {
     const { db, registry } = makeRegistryWith();
-    const response = await dispatchMcpRequest(
+    const response = expectResponse(await dispatchMcpRequest(
       { jsonrpc: '2.0', id: 7, method: 'tools/run' },
       { db, registry, agentId: 'mcp-client', roomId: 'room-1', missionId: 'mission-1' },
-    );
+    ));
     expect('error' in response).toBe(true);
     if ('error' in response) {
       expect(response.error.code).toBe(MCP_ERROR.methodNotFound);
@@ -127,7 +227,7 @@ describe('dispatchMcpRequest', () => {
 
   it('tools/call rejects missing name with -32602', async () => {
     const { db, registry } = makeRegistryWith();
-    const response = await dispatchMcpRequest(
+    const response = expectResponse(await dispatchMcpRequest(
       {
         jsonrpc: '2.0',
         id: 'a',
@@ -135,7 +235,7 @@ describe('dispatchMcpRequest', () => {
         params: { idempotencyKey: 'k', arguments: {} },
       },
       { db, registry, agentId: 'mcp-client', roomId: 'room-1', missionId: 'mission-1' },
-    );
+    ));
     expect('error' in response).toBe(true);
     if ('error' in response) {
       expect(response.error.code).toBe(MCP_ERROR.invalidParams);
@@ -184,14 +284,14 @@ describe('dispatchMcpRequest', () => {
       statePermissions: ['mission:write' as const],
     };
 
-    const first = await dispatchMcpRequest(
+    const first = expectResponse(await dispatchMcpRequest(
       { jsonrpc: '2.0', id: 'mint-1', method: 'tools/call', params },
       ctx,
-    );
-    const second = await dispatchMcpRequest(
+    ));
+    const second = expectResponse(await dispatchMcpRequest(
       { jsonrpc: '2.0', id: 'mint-2', method: 'tools/call', params },
       ctx,
-    );
+    ));
 
     expect('result' in first).toBe(true);
     expect('result' in second).toBe(true);
@@ -218,7 +318,7 @@ describe('dispatchMcpRequest', () => {
         handler: () => ({ status: 'applied', summary: 'ok', effects: [] }),
       }),
     );
-    const response = await dispatchMcpRequest(
+    const response = expectResponse(await dispatchMcpRequest(
       {
         jsonrpc: '2.0',
         id: 'meta',
@@ -237,7 +337,7 @@ describe('dispatchMcpRequest', () => {
         missionId: 'mission-1',
         statePermissions: ['mission:write'],
       },
-    );
+    ));
 
     expect('result' in response).toBe(true);
     const row = db
@@ -248,22 +348,27 @@ describe('dispatchMcpRequest', () => {
   });
 
   it('tools/call refuses tools outside the MCP allowlist', async () => {
+    // Use a synthetic tool name that lives in an allowed namespace but is
+    // not on MCP_TOOL_ALLOWLIST. Since the 2026-05-09 widening, every
+    // currently-registered Fireside tool is exposed via MCP, so we register
+    // a custom tool to exercise the allowlist gate itself — the gate still
+    // matters for future tools that are intentionally kept internal.
     const { db, registry } = makeRegistryWith(
-      stub('agent.set_status', 'set status', ['agent:write-self']),
+      stub('mission.experimental_thing', 'reserved internal', ['mission:write']),
     );
-    const response = await dispatchMcpRequest(
+    const response = expectResponse(await dispatchMcpRequest(
       {
         jsonrpc: '2.0',
         id: 9,
         method: 'tools/call',
         params: {
-          name: 'agent.set_status',
+          name: 'mission.experimental_thing',
           idempotencyKey: 'k1',
-          arguments: { status: 'idle' },
+          arguments: {},
         },
       },
       { db, registry, agentId: 'mcp-client', roomId: 'room-1', missionId: 'mission-1' },
-    );
+    ));
     expect('error' in response).toBe(true);
     if ('error' in response) {
       expect(response.error.code).toBe(MCP_ERROR.toolNotExposed);
@@ -273,7 +378,7 @@ describe('dispatchMcpRequest', () => {
 
   it('tools/call refuses allowlisted names that the registry does not advertise', async () => {
     const { db, registry } = makeRegistryWith();
-    const response = await dispatchMcpRequest(
+    const response = expectResponse(await dispatchMcpRequest(
       {
         jsonrpc: '2.0',
         id: 10,
@@ -292,7 +397,7 @@ describe('dispatchMcpRequest', () => {
         missionId: 'mission-1',
         statePermissions: ['mission:write'],
       },
-    );
+    ));
 
     expect('error' in response).toBe(true);
     if ('error' in response) {
@@ -329,7 +434,7 @@ describe('dispatchMcpRequest', () => {
       }),
     );
 
-    const response = await dispatchMcpRequest(
+    const response = expectResponse(await dispatchMcpRequest(
       {
         jsonrpc: '2.0',
         id: 'happy',
@@ -350,7 +455,7 @@ describe('dispatchMcpRequest', () => {
         now: () => 1000,
         newCallId: () => 'call-fixed-1',
       },
-    );
+    ));
 
     expect(handlerCalls).toHaveLength(1);
     expect('result' in response).toBe(true);
@@ -395,7 +500,7 @@ describe('dispatchMcpRequest', () => {
       }),
     );
 
-    const response = await dispatchMcpRequest(
+    const response = expectResponse(await dispatchMcpRequest(
       {
         jsonrpc: '2.0',
         id: 'sad',
@@ -414,7 +519,7 @@ describe('dispatchMcpRequest', () => {
         missionId: 'mission-1',
         statePermissions: ['mission:write'],
       },
-    );
+    ));
 
     expect('result' in response).toBe(true);
     if ('result' in response) {

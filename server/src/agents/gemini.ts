@@ -201,6 +201,13 @@ export const geminiSpec: AgentSpec = {
       '--skip-trust',
       '--approval-mode',
       geminiApprovalMode(context),
+      // Enable the auto-published Fireside MCP server so structured tool
+      // calls (mission.task.update, collab.note.add, ...) route into
+      // Fireside's tool engine over loopback HTTP. Registration happens once
+      // at server startup via `gemini mcp add fireside ... -t http -s user`;
+      // this flag scopes which servers are exposed for this turn.
+      '--allowed-mcp-server-names',
+      'fireside',
       ...geminiModelArgs(context),
     ];
     const includeDirs = geminiIncludeDirectories(context);

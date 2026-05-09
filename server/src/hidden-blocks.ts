@@ -22,6 +22,37 @@ export function stripEmptyHiddenBlockComments(text: string): string {
   );
 }
 
+const FIRESIDE_ENVELOPE_RE =
+  /<!--\s*FIRESIDE:([\w-]+)(?:\s+v=\d+)?\s*([\s\S]*?)\/end-[\w-]+\s*-->/gi;
+
+export interface NormalizedFiresideEnvelopes {
+  normalizedText: string;
+  count: number;
+}
+
+// Defensive sanitizer for the hallucinated `<!--FIRESIDE:<name> v=N ...
+// /end-<name>-->` envelope agents emit when they confuse the deprecated
+// `<!-- fireside-tool -->` shape with the canonical slash-block fallback.
+// `hiddenBlockRegex` rejects this prefix because `FIRESIDE:` carries word
+// chars, so without normalization every mission/collab/permission extractor
+// misses the payload and the entire envelope leaks into visible chat. This
+// function rewrites each envelope into the canonical `/<name>\n...\n/end-<name>`
+// form using the *start* name (the close-marker name is sometimes wrong) so
+// downstream extractors recognize and strip it.
+export function normalizeFiresideEnvelopes(text: string): NormalizedFiresideEnvelopes {
+  let count = 0;
+  const normalizedText = text.replace(
+    FIRESIDE_ENVELOPE_RE,
+    (_match, name: string, body: string) => {
+      count += 1;
+      const inner = body.trim();
+      const bodyLines = inner ? `\n${inner}\n` : '\n';
+      return `\n/${name}${bodyLines}/end-${name}\n`;
+    },
+  );
+  return { normalizedText, count };
+}
+
 export function normalizeHiddenBlockFieldKey(key: string): string {
   return key.trim().toLowerCase().replace(/[-\s]+/g, '_');
 }

@@ -689,6 +689,20 @@ export function workLaneSignal(text: string): 'done' | 'blocked' | 'none' {
   ) {
     return 'none';
   }
+  // Stand-down / close-out acknowledgment: agent is acknowledging that work is
+  // already accepted/closed in Mission Control rather than claiming new work.
+  // Without this branch, words like "accepted" or "complete" inside the
+  // acknowledgment fall through to the 'done' regex below, which trips
+  // `validateWorkflowContract` into a real workflow-repair turn instead of the
+  // safe auto-receipt-synthesis path — and that turn's empty reply becomes the
+  // next handoff that wakes another agent, sustaining a close-out loop.
+  if (
+    /\b(standing down|stand(?:s| down)|standing by for|ready for the next|awaiting (?:the )?next|nothing further|no further|no outstanding|no pending lane|mission (?:is |already |stays |was )?closed|mission is qa-closed|mission stays closed)\b/.test(
+      normalized,
+    )
+  ) {
+    return 'none';
+  }
   if (
     /\b(done|complete|completed|finished|resolved|accepted|settled|merged|landed|implemented|verified|tests? pass(?:ed)?|green)\b/.test(
       normalized,

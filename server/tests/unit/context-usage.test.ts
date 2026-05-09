@@ -7,6 +7,7 @@ import {
   claudeDebugQuotaUsage,
   claudeQuotaUsage,
   codexContextUsage,
+  codexContextUsageFromJsonl,
   codexContextWindowForModel,
   formatQuotaUsage,
   geminiContextUsage,
@@ -218,6 +219,81 @@ describe('context usage telemetry', () => {
     });
     expect(usage?.estimated).toBeUndefined();
     expect(usage?.percentUsed).toBeCloseTo(80.34, 1);
+  });
+
+  it('reconciles Codex JSONL usage with the newly emitted thread id', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fireside-codex-jsonl-rollout-'));
+    const threadId = '019e076f-e639-7e50-a484-e04661537bf6';
+    const rolloutDir = path.join(dir, 'sessions', '2026', '05', '08');
+    fs.mkdirSync(rolloutDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(rolloutDir, `rollout-2026-05-08T08-54-00-${threadId}.jsonl`),
+      [
+        JSON.stringify({
+          type: 'event_msg',
+          payload: {
+            type: 'token_count',
+            info: {
+              last_token_usage: {
+                input_tokens: 16_776,
+                cached_input_tokens: 14_720,
+                output_tokens: 154,
+                reasoning_output_tokens: 99,
+                total_tokens: 16_930,
+              },
+              model_context_window: 400_000,
+            },
+            rate_limits: {
+              primary: {
+                used_percent: 6.5,
+                window_minutes: 300,
+                resets_at: 1778257800,
+              },
+              secondary: {
+                used_percent: 19.25,
+                window_minutes: 10080,
+                resets_at: 1778539049,
+              },
+              plan_type: 'prolite',
+              rate_limit_reached_type: null,
+            },
+          },
+        }),
+      ].join('\n'),
+    );
+    process.env.CODEX_HOME = dir;
+    process.env.FIRESIDE_CODEX_MODEL = 'gpt-5.5';
+    process.env.FIRESIDE_CODEX_REASONING_EFFORT = 'xhigh';
+
+    const usage = codexContextUsageFromJsonl(
+      [
+        JSON.stringify({ type: 'thread.started', thread_id: threadId }),
+        JSON.stringify({ type: 'turn.started' }),
+        JSON.stringify({
+          type: 'turn.completed',
+          usage: {
+            input_tokens: 16_776,
+            cached_input_tokens: 14_720,
+            output_tokens: 154,
+            reasoning_output_tokens: 99,
+          },
+        }),
+      ].join('\n'),
+      { codexHome: dir },
+    );
+
+    expect(usage).toMatchObject({
+      provider: 'codex',
+      model: 'gpt-5.5',
+      reasoningEffort: 'xhigh',
+      usedTokens: 16_930,
+      quota: {
+        fiveHour: { percent: 6.5, windowMinutes: 300, resetsAt: 1778257800000 },
+        sevenDay: { percent: 19.25, windowMinutes: 10080, resetsAt: 1778539049000 },
+        planType: 'prolite',
+        rateLimitReachedType: null,
+      },
+    });
   });
 
   it('builds Claude usage from modelUsage result metadata', () => {

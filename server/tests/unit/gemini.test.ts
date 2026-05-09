@@ -36,6 +36,8 @@ describe('gemini adapter', () => {
       '--skip-trust',
       '--approval-mode',
       'plan',
+      '--allowed-mcp-server-names',
+      'fireside',
       '--model',
       'gemini-3.1-pro-preview',
     ]);
@@ -57,6 +59,8 @@ describe('gemini adapter', () => {
       '--skip-trust',
       '--approval-mode',
       'plan',
+      '--allowed-mcp-server-names',
+      'fireside',
       '--model',
       'gemini-3.1-pro-preview',
       '--resume',

@@ -2624,7 +2624,9 @@ export class App implements OnDestroy {
   }
 
   private isHiddenProviderSignal(label: string): boolean {
-    return /\b(?:claude\s+)?rate limit headers\b/i.test(label);
+    return /\b(?:rate limit headers|rate limit update|quota sampled|quota reconciled|quota update)\b/i.test(
+      label,
+    );
   }
 
   private isVisibleProviderSignal(label: string, detail: string | undefined): boolean {
@@ -2658,6 +2660,8 @@ export class App implements OnDestroy {
       /\bturn\.completed\b/,
       /\bassistant message ready\b/,
       /\bagent_message\b/,
+      /\brate limit update\b/,
+      /\bquota (?:sampled|reconciled|update)\b/,
       /^agent process started$/,
       /^still working$/,
       /^(?:claude|codex|gemini)\s+user$/,

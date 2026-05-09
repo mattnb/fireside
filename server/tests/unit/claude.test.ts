@@ -457,6 +457,30 @@ describe('claude adapter', () => {
     ]);
   });
 
+  it('enables Claude debug headers by default so quota percentages can refresh after resets', () => {
+    const previous = {
+      FIRESIDE_CLAUDE_QUOTA_DEBUG_HEADERS: process.env.FIRESIDE_CLAUDE_QUOTA_DEBUG_HEADERS,
+      FIRESIDE_CLAUDE_QUOTA_DEBUG_INTERVAL_MS:
+        process.env.FIRESIDE_CLAUDE_QUOTA_DEBUG_INTERVAL_MS,
+      ANTHROPIC_LOG: process.env.ANTHROPIC_LOG,
+    };
+    delete process.env.FIRESIDE_CLAUDE_QUOTA_DEBUG_HEADERS;
+    delete process.env.FIRESIDE_CLAUDE_QUOTA_DEBUG_INTERVAL_MS;
+    delete process.env.ANTHROPIC_LOG;
+    try {
+      expect(claudeSpec.buildEnv?.('prompt', null)).toEqual({ ANTHROPIC_LOG: 'debug' });
+      expect(claudeSpec.buildEnv?.('prompt', null)).toEqual({ ANTHROPIC_LOG: 'debug' });
+    } finally {
+      for (const [key, value] of Object.entries(previous)) {
+        if (value === undefined) {
+          delete process.env[key];
+        } else {
+          process.env[key] = value;
+        }
+      }
+    }
+  });
+
   it('redacts Claude debug output while preserving stream-json reply lines', () => {
     const stream = [
       'request headers: {"authorization":"Bearer secret-token"}',

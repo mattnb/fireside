@@ -194,7 +194,11 @@ import type {
 import { logger } from './logger.js';
 import { buildRunDiagnostics, type RunDiagnostics } from './run-diagnostics.js';
 import { listAgentToolCallsForRun, type AgentToolCallView } from './tools/audit.js';
-import { codexContextUsage, formatContextUsage } from './context-usage.js';
+import {
+  codexContextUsage,
+  codexContextUsageFromJsonl,
+  formatContextUsage,
+} from './context-usage.js';
 import {
   geminiTerminalQuotaUsage,
   maybeSampleGeminiStatsModelQuota,
@@ -301,6 +305,7 @@ interface ReconciliationSummary {
 }
 import type { ParsedCollaborationNote } from './collaboration-notes.js';
 import { extractDraftArtifacts, writeDraftArtifact } from './draft-artifacts.js';
+import { normalizeFiresideEnvelopes } from './hidden-blocks.js';
 import type { ParsedMissionTaskUpdate } from './mission-task-updates.js';
 import type { ParsedMissionCreateUpdate } from './mission-create-updates.js';
 import type { ParsedMissionReceipt } from './mission-receipts.js';
@@ -3051,6 +3056,24 @@ export class Broker extends EventEmitter {
       reply.raw.stdout,
       reply.raw.stderr,
     );
+    if (agentProfile.providerId === 'codex') {
+      const reconciledUsage = codexContextUsageFromJsonl(reply.raw.stdout, {
+        ...(reply.sessionId ? { threadId: reply.sessionId } : {}),
+      });
+      if (reconciledUsage?.quota) {
+        this.recordRunAction({
+          roomId,
+          taskId: activeTask?.id ?? null,
+          runId: run.id,
+          agentId,
+          kind: 'adapter',
+          status: 'completed',
+          label: 'codex quota reconciled',
+          detail: formatContextUsage(reconciledUsage),
+          contextUsage: reconciledUsage,
+        });
+      }
+    }
     if (agentProfile.providerId === 'gemini') {
       void maybeSampleGeminiStatsModelQuota().then((quotaUsage) => {
         if (!quotaUsage) return;
@@ -4370,24 +4393,13 @@ export class Broker extends EventEmitter {
       `(fireside workflow contract repair for ${input.agentId}: run ${input.runId})`,
       '',
       `Mission Control needs a state receipt for mission "${input.task.title}".`,
-      'Emit only the missing hidden Mission Control block(s). No visible prose.',
+      'Call exactly one fireside MCP tool. No visible prose.',
       '',
       'Required options:',
-      '- If assigned checklist work completed or blocked, emit /mission-task with action: update, id, status, and note.',
-      '- If no checklist state changed, emit /mission-receipt with status: no_update or continuing and a concise summary.',
+      '- If assigned checklist work completed or blocked, call mission.task.update with { taskId, status, note } via the fireside MCP server.',
+      '- If no checklist state changed, call mission.receipt.submit with { status: "no_update" | "continuing", summary }.',
       '',
-      'Examples:',
-      '/mission-task',
-      'action: update',
-      'id: <checklist-item-id>',
-      'status: done',
-      'note: <evidence or completion summary>',
-      '/end-mission-task',
-      '',
-      '/mission-receipt',
-      'status: continuing',
-      'summary: <what changed, or why no Mission Control state changed>',
-      '/end-mission-receipt',
+      'Do not type the tool call as text in chat. Use your CLI\'s MCP tool-use mechanism (the fireside server is auto-registered at startup).',
       '',
       `Violations: ${input.violations.join('; ')}`,
     ];
@@ -4396,7 +4408,14 @@ export class Broker extends EventEmitter {
         `Assigned item: ${input.workLaneItem.title} [id=${input.workLaneItem.id}, status=${input.workLaneItem.status}]`,
       );
     }
-    const previous = oneLine(input.visibleText, 1200);
+    // Defense in depth: normalize any leaked `<!--FIRESIDE:...-->` envelope
+    // before echoing the agent's prior output back into the repair prompt.
+    // The reply pipeline already normalizes well-formed envelopes; this
+    // catches the residual case where the source text reaches us unprocessed
+    // (e.g. legacy payloads or future variants), so we don't store the
+    // hallucinated envelope inside a system message and re-train agents on it.
+    const sanitizedVisibleText = normalizeFiresideEnvelopes(input.visibleText).normalizedText;
+    const previous = oneLine(sanitizedVisibleText, 1200);
     if (previous) lines.push(`Previous visible text: ${previous}`);
     return lines.join('\n');
   }

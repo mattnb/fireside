@@ -372,6 +372,34 @@ describe('buildTurnPrompt', () => {
     expect(prompt).toContain('claude (you)');
   });
 
+  // Defense in depth against the hallucinated `<!--FIRESIDE:<name> v=N>`
+  // envelope: any leaks already persisted in `messages.text` (history before
+  // the reply-pipeline normalizer landed) are sanitized to canonical slash
+  // blocks at the prompt-assembly boundary so they don't recontaminate the
+  // next agent's prompt context.
+  it('rewrites hallucinated <!--FIRESIDE:...--> envelopes in history into canonical slash blocks', () => {
+    const leakedHistoryText = [
+      'Closing the lane.',
+      '<!--FIRESIDE:mission-task v=1',
+      'action: update',
+      'id: lane-7',
+      'status: done',
+      'note: Verified.',
+      '/end-mission-task-->',
+    ].join('\n');
+    const prompt = buildTurnPrompt({
+      agentId: 'claude',
+      roomName: 'general',
+      history: [{ authorId: 'codex', authorKind: 'agent', text: leakedHistoryText }],
+      newMessage: { authorId: 'human', authorKind: 'human', text: 'thanks' },
+    });
+    expect(prompt).not.toContain('<!--FIRESIDE:');
+    expect(prompt).not.toContain('/end-mission-task-->');
+    expect(prompt).toContain('/mission-task');
+    expect(prompt).toContain('/end-mission-task');
+    expect(prompt).toContain('Closing the lane.');
+  });
+
   it('includes agent instance persona and room roster metadata', () => {
     const prompt = buildTurnPrompt({
       agentId: 'claude-security',
@@ -469,7 +497,7 @@ describe('buildTurnPrompt', () => {
     expect(prompt).toContain('Jimmy: Sean, please take the implementation review.');
     expect(prompt).toContain('Sean (you): I will take it.');
     expect(prompt).toContain('tag the exact @handle for one of these recipients: Jimmy (@jimmy)');
-    expect(prompt).toContain('Use stable agent ids only inside hidden protocol fields');
+    expect(prompt).toContain('Use stable agent ids only inside MCP tool arguments');
   });
 
   it('does not tell the model to avoid JSON (CLI handles JSON wrapping)', () => {
@@ -712,7 +740,7 @@ describe('buildTurnPrompt', () => {
     expect(result.prompt).toContain('@jimmy coordinate');
   });
 
-  it('keeps the collaboration note terminator visible in compact prompts', () => {
+  it('keeps the collaboration MCP-tool guidance visible in compact prompts', () => {
     const prompt = buildTurnPrompt({
       agentId: 'codex',
       roomName: 'general',
@@ -735,10 +763,12 @@ describe('buildTurnPrompt', () => {
       ],
     });
 
+    // Post-2026-05-09 MCP migration: compact prompts teach the
+    // collab.note.add MCP tool, not the /collab-note slash block.
     expect(prompt).toContain('Prompt budget:');
-    expect(prompt).toContain('/collab-note');
-    expect(prompt).toContain('/end-collab-note exactly');
-    expect(prompt).not.toContain('@end-collab-note');
+    expect(prompt).toContain('collab.note.add');
+    expect(prompt).not.toContain('/collab-note');
+    expect(prompt).not.toContain('/end-collab-note');
   });
 
   it('compresses boilerplate before truncating a short latest message', () => {
@@ -843,11 +873,16 @@ describe('buildTurnPrompt', () => {
       history: [],
       newMessage: { authorId: 'human', authorKind: 'human', text: 'edit foo' },
     });
-    expect(defaultPrompt).toContain('/permission-request');
+    // Post-2026-05-09 MCP migration: permissions are requested via the
+    // permission.request MCP tool, not a /permission-request slash block.
+    // Draft artifacts remain a hidden text-block mechanism because their
+    // payloads are too large for tool arguments.
     expect(defaultPrompt).toContain('Tool permission for this turn: plan/read-only');
-    expect(defaultPrompt).toContain('"write" and "create" are accepted as aliases');
-    expect(defaultPrompt).toContain('Use mode "bash" for scoped shell/git commands');
+    expect(defaultPrompt).toContain('permission.request MCP tool');
+    expect(defaultPrompt).toContain('"write" and "create" are accepted aliases');
+    expect(defaultPrompt).toContain('Mode "bash" is for scoped shell/git commands');
     expect(defaultPrompt).toContain('/draft-artifact');
+    expect(defaultPrompt).not.toContain('/permission-request');
 
     const approvedPrompt = buildTurnPrompt({
       agentId: 'claude',
@@ -862,6 +897,7 @@ describe('buildTurnPrompt', () => {
     expect(approvedPrompt).toContain('Approved target: foo.txt');
     expect(approvedPrompt).toContain('Begin the approved operation now');
     expect(approvedPrompt).toContain('Do not ask for the same permission again');
+    expect(approvedPrompt).not.toContain('permission.request MCP tool');
     expect(approvedPrompt).not.toContain('/permission-request');
   });
 
@@ -994,12 +1030,14 @@ describe('buildTurnPrompt', () => {
     expect(prompt).toContain('plan=plan-1');
     expect(prompt).toContain('Blocked checklist:');
     expect(prompt).toContain('Active plan excerpt: Backend plan');
-    expect(prompt).toContain('Mission plan protocol:');
-    expect(prompt).toContain('/mission-plan');
-    expect(prompt).toContain('The active plan is the human-readable agreement and rationale');
-    expect(prompt).toContain('Mission phase protocol:');
-    expect(prompt).toContain('/mission-phase');
-    expect(prompt).toContain('phase: optional phase id or title');
+    // MCP-only protocols (post-2026-05-09) — slash blocks are no longer taught.
+    expect(prompt).toContain('Plan and phase protocols (MCP):');
+    expect(prompt).toContain('mission.plan.create');
+    expect(prompt).toContain('mission.phase.create');
+    expect(prompt).toContain('the active plan is the human-readable agreement and rationale');
+    expect(prompt).toContain('Task and receipt protocols (MCP):');
+    expect(prompt).toContain('mission.task.update');
+    expect(prompt).toContain('mission.receipt.submit');
     expect(prompt).toContain('This mission is in verification');
     expect(prompt).toContain('Lane rule: all problems are shared responsibility');
     expect(prompt).toContain('record evidence, hand it off');
@@ -1026,13 +1064,17 @@ describe('buildTurnPrompt', () => {
       },
     });
 
+    // Top-level mission creation is a human/UI action (post-2026-05-09 MCP
+    // migration). Coordinators are told to propose the structure in chat
+    // rather than emit a /mission-create slash block, and to scaffold the
+    // plan/phase/checklist via mission.* MCP tools once the mission exists.
     expect(prompt).toContain('Active mission: none recorded.');
-    expect(prompt).toContain('/mission-create');
-    expect(prompt).toContain('agents: claude, codex');
-    expect(prompt).toContain('After /mission-create in the same reply');
-    expect(prompt).toContain('/mission-plan');
-    expect(prompt).toContain('/mission-phase');
-    expect(prompt).toContain('/mission-task');
+    expect(prompt).toContain('Top-level mission creation is a human/UI action');
+    expect(prompt).toContain('mission.plan.create');
+    expect(prompt).toContain('mission.phase.create');
+    expect(prompt).toContain("mission.task.update with action: 'create'");
+    expect(prompt).not.toContain('/mission-create');
+    expect(prompt).not.toContain('/mission-plan');
   });
 });
 
@@ -1073,13 +1115,14 @@ describe('role-sliced active-mission protocol', () => {
         personaSummary: '',
       },
     });
-    expect(prompt).toContain('Mission checklist protocol:');
-    expect(prompt).toContain('/mission-task');
-    expect(prompt).toContain('Mission receipt protocol:');
-    expect(prompt).not.toContain('Mission plan protocol:');
-    expect(prompt).not.toContain('Mission phase protocol:');
-    expect(prompt).not.toContain('/mission-plan');
-    expect(prompt).not.toContain('/mission-phase');
+    // MCP-only protocols (post-2026-05-09): worker tier gets task + receipt
+    // via mission.task.update / mission.receipt.submit, but no plan/phase.
+    expect(prompt).toContain('Task and receipt protocols (MCP):');
+    expect(prompt).toContain('mission.task.update');
+    expect(prompt).toContain('mission.receipt.submit');
+    expect(prompt).not.toContain('Plan and phase protocols (MCP):');
+    expect(prompt).not.toContain('mission.plan.create');
+    expect(prompt).not.toContain('mission.phase.create');
   });
 
   it('worker tier compact form hands off plan/phase to coordinators', () => {
@@ -1100,8 +1143,8 @@ describe('role-sliced active-mission protocol', () => {
       maxPromptChars: 2_500,
     });
     expect(prompt).toContain('Plan and phase changes belong to coordinators');
-    expect(prompt).not.toContain('/mission-plan');
-    expect(prompt).not.toContain('/mission-phase');
+    expect(prompt).not.toContain('mission.plan.create');
+    expect(prompt).not.toContain('mission.phase.create');
   });
 
   it('coordinator tier (orchestrator persona) gets plan, phase, task, and receipt', () => {
@@ -1116,13 +1159,14 @@ describe('role-sliced active-mission protocol', () => {
         personaSummary: '',
       },
     });
-    expect(prompt).toContain('Mission plan protocol:');
-    expect(prompt).toContain('/mission-plan');
-    expect(prompt).toContain('Mission phase protocol:');
-    expect(prompt).toContain('/mission-phase');
-    expect(prompt).toContain('Mission checklist protocol:');
-    expect(prompt).toContain('/mission-task');
-    expect(prompt).toContain('Mission receipt protocol:');
+    // MCP-only protocols (post-2026-05-09): coordinator tier gets the full
+    // plan + phase + task + receipt MCP tool surface.
+    expect(prompt).toContain('Plan and phase protocols (MCP):');
+    expect(prompt).toContain('mission.plan.create');
+    expect(prompt).toContain('mission.phase.create');
+    expect(prompt).toContain('Task and receipt protocols (MCP):');
+    expect(prompt).toContain('mission.task.update');
+    expect(prompt).toContain('mission.receipt.submit');
     expect(prompt).not.toContain('Plan and phase changes belong to coordinators');
   });
 
@@ -1139,11 +1183,13 @@ describe('role-sliced active-mission protocol', () => {
         personaSummary: '',
       },
     });
-    expect(prompt).toContain('Mission plan protocol:');
-    expect(prompt).toContain('Mission phase protocol:');
-    expect(prompt).toContain('/mission-plan');
-    expect(prompt).toContain('/mission-phase');
-    expect(prompt).toContain('/mission-task');
+    // MCP-only protocols (post-2026-05-09): lead tier sees plan + phase +
+    // task tools regardless of persona.
+    expect(prompt).toContain('Plan and phase protocols (MCP):');
+    expect(prompt).toContain('Task and receipt protocols (MCP):');
+    expect(prompt).toContain('mission.plan.create');
+    expect(prompt).toContain('mission.phase.create');
+    expect(prompt).toContain('mission.task.update');
   });
 
   it('externalizes hidden-block protocols when contextFiles.protocolsPath is supplied', () => {
@@ -1171,17 +1217,18 @@ describe('role-sliced active-mission protocol', () => {
       },
     });
     expect(prompt).toContain('Hidden block protocols: data/agent-context/r1/protocols.md');
-    expect(prompt).toContain('Plan and phase protocols:');
-    expect(prompt).toContain('Task and receipt protocols:');
+    expect(prompt).toContain('Plan and phase protocols (MCP):');
+    expect(prompt).toContain('Task and receipt protocols (MCP):');
     expect(prompt).toContain('See data/agent-context/r1/protocols.md');
-    // Full inline schemas should not be present
+    // Slash-block syntax must never reach the prompt now that MCP is canonical.
+    expect(prompt).not.toContain('/mission-plan');
+    expect(prompt).not.toContain('/mission-phase');
+    expect(prompt).not.toContain('/mission-task');
+    expect(prompt).not.toContain('/mission-receipt');
+    expect(prompt).not.toContain('/collab-note');
+    // Full inline schemas / block field listings should not be present.
     expect(prompt).not.toContain('## Direction');
     expect(prompt).not.toContain('## Assumptions and Evidence');
-    expect(prompt).not.toContain('Mission plan protocol: when the team creates');
-    expect(prompt).not.toContain('Mission phase protocol: when you create or update');
-    expect(prompt).not.toContain('Mission checklist protocol: when you create, update, complete');
-    // Collaboration block also externalized
-    expect(prompt).not.toContain('kind: proposal\ntitle: concise claim');
   });
 
   it('re-injects full schemas when includeFullProtocols is true even with protocols.md present', () => {
@@ -1209,11 +1256,14 @@ describe('role-sliced active-mission protocol', () => {
       },
       includeFullProtocols: true,
     });
+    // includeFullProtocols=true used to re-inject inline slash-block schemas.
+    // Post-2026-05-09 MCP migration, the "full" protocols are still teaching
+    // the same MCP tools — only the protocols-path pointer flips.
     expect(prompt).toContain('Hidden block protocols: data/agent-context/r1/protocols.md');
-    expect(prompt).toContain('Mission plan protocol: when the team creates');
-    expect(prompt).toContain('Mission phase protocol:');
-    expect(prompt).toContain('Mission checklist protocol:');
-    expect(prompt).toContain('## Direction');
+    expect(prompt).toContain('Plan and phase protocols (MCP):');
+    expect(prompt).toContain('Task and receipt protocols (MCP):');
+    expect(prompt).toContain('mission.plan.create');
+    expect(prompt).toContain('mission.task.update');
   });
 
   it('worker tier suppresses the no-task mission-create scaffold', () => {

@@ -40,11 +40,8 @@ export interface HttpDeps {
   db: Database;
   broker: Broker;
   uiDir: string;
-  /** When true, register `POST /api/mcp` so external MCP clients can call
-   *  the structured tool layer. Default false; gated behind
-   *  `FIRESIDE_ENABLE_MCP=1` in production via `loadConfig()`. */
-  enableMcp?: boolean;
-  /** Optional bearer token. Required for non-loopback `/api/mcp` calls. */
+  /** Optional bearer token. Required for non-loopback `/api/mcp` calls.
+   *  Loopback callers are unauthenticated by design. */
   mcpApiKey?: string | null;
 }
 
@@ -1314,10 +1311,8 @@ export function buildHttpServer(deps: HttpDeps) {
     }
   });
 
-  if (deps.enableMcp) {
-    ensureDefaultToolsRegistered();
-    registerMcpRoute(app, deps);
-  }
+  ensureDefaultToolsRegistered();
+  registerMcpRoute(app, deps);
 
   return app;
 }
@@ -1376,6 +1371,13 @@ function registerMcpRoute(
       missionId: missionIdHeader,
       statePermissions: DEFAULT_YOLO_STATE_PERMISSIONS,
     });
+
+    // JSON-RPC notifications return null from the dispatcher. Per the MCP
+    // streamable-HTTP transport, the server must respond with 202 Accepted
+    // and an empty body — never a JSON-RPC response envelope.
+    if (response === null) {
+      return reply.code(202).send();
+    }
 
     return reply.code(200).send(response);
   });

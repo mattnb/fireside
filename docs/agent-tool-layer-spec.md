@@ -691,7 +691,6 @@ Replay tests:
 
 ## Open Questions
 
-- Should the first MCP endpoint be enabled by default or gated behind `FIRESIDE_ENABLE_MCP=1`?
 - Should state permissions be per-agent profile fields immediately, or inferred from persona/yolo mode for the first version?
 - Should tool calls be visible in chat by default, or only summarized as activity events?
 - Should failed tool calls notify the team lead automatically?

@@ -9,6 +9,7 @@ import { buildHttpServer } from './http-server.js';
 import { attachWebSocketServer } from './ws-server.js';
 import { runAgentTurn } from './agents/runner.js';
 import { getAgentSpec } from './agents/registry.js';
+import { publishFiresideMcp } from './mcp-publish.js';
 import { trimTerminalAgentJobPayloads } from './repos/agent-jobs.js';
 import type { AgentId } from './agents/types.js';
 
@@ -81,7 +82,6 @@ export async function start(config: Config = loadConfig()): Promise<FiresideServ
     db,
     broker,
     uiDir: config.uiDir,
-    enableMcp: config.enableMcp,
     mcpApiKey: config.mcpApiKey,
   });
   await app.ready();
@@ -89,6 +89,14 @@ export async function start(config: Config = loadConfig()): Promise<FiresideServ
 
   await app.listen({ host: config.host, port: config.port });
   logger.info({ host: config.host, port: config.port }, 'fireside listening');
+
+  // Publish Fireside as an MCP server to spawned provider CLIs (Claude via
+  // a generated JSON config; Codex/Gemini via their own `mcp add` subcommand).
+  // Failures here are non-fatal — they only mean those CLIs fall back to the
+  // operator's existing MCP configuration.
+  void publishFiresideMcp({ dataDir: config.dataDir, port: config.port }).catch((error) => {
+    logger.warn({ error }, 'publishFiresideMcp threw; continuing without auto-publish');
+  });
 
   return {
     address: { host: config.host, port: config.port },

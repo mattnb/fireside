@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 // Live HTTP smoke test for POST /api/mcp.
 //
-// Boots a parallel Fireside instance on a free port with FIRESIDE_ENABLE_MCP=1
-// and probes:
+// Boots a parallel Fireside instance on a free port and probes the always-on
+// MCP route:
 //   1. tools/list  → expect allowlist-shaped payload
 //   2. tools/call mission.task.update with idempotencyKey K → expect "applied"
 //      (uses a fresh in-memory DB; the call will surface a domain-level
@@ -18,7 +18,6 @@ import path from 'node:path';
 
 const dataDir = mkdtempSync(path.join(tmpdir(), 'fireside-mcp-smoke-'));
 process.env.FIRESIDE_DATA_DIR = dataDir;
-process.env.FIRESIDE_ENABLE_MCP = '1';
 process.env.FIRESIDE_PORT = process.env.FIRESIDE_SMOKE_PORT ?? '8798';
 process.env.FIRESIDE_HOST = '127.0.0.1';
 process.env.FIRESIDE_RESUME_CLI_SESSIONS = '0';

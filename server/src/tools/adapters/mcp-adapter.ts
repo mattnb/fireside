@@ -28,22 +28,42 @@ import type {
 } from '../types.js';
 
 /**
- * Tools the MCP endpoint is allowed to invoke. Phase 6 deliberately ships a
- * narrow allowlist; widening it is a Phase 7 decision once per-caller
- * identity is modelled. See the design memo §"Tool exposure surface".
+ * Tools the MCP endpoint exposes. Phase 6 shipped a narrow allowlist gated
+ * behind future per-caller identity work; on 2026-05-09 the allowlist was
+ * widened to the full agent tool surface so MCP could replace the slash-block
+ * text adapter for in-room agent tool calls. The single-tenant local-first
+ * trust model (loopback unauthenticated, non-loopback bearer) still applies.
  */
 export const MCP_TOOL_ALLOWLIST: ReadonlySet<string> = new Set([
+  // Mission task lifecycle (action='create' is supported on update for
+  // historical compatibility; new agent flows should use action='create').
   'mission.task.update',
   'mission.task.add_note',
+  // Mission phase lifecycle.
   'mission.phase.create',
   'mission.phase.update',
   'mission.phase.complete',
   'mission.phase.reopen',
+  // Mission plan lifecycle.
   'mission.plan.create',
   'mission.plan.update',
   'mission.plan.activate',
   'mission.plan.archive',
+  // Mission receipts.
   'mission.receipt.submit',
+  // Collaboration ledger — replaces the /collab-note slash-block adapter.
+  'collab.note.add',
+  'collab.note.update',
+  // Permission requests — replaces the /permission-request slash-block adapter.
+  'permission.request',
+  // Agent self-management — replaces the /agent-roster slash-block adapter.
+  'agent.set_status',
+  'agent.checkin',
+  'agent.list_assignments',
+  'agent.ack_message',
+  'agent.request_turns',
+  // Discoverability (read-only).
+  'search.tools',
 ]);
 
 /** JSON-RPC 2.0 error codes used by the adapter. */
@@ -137,18 +157,46 @@ export function parseJsonRpcRequest(
 }
 
 /**
+ * MCP protocol version this server speaks. Echoed back from `initialize` when
+ * the client doesn't request a specific version. The MCP spec also accepts
+ * older versions if the client requests one we recognize, so a client on
+ * 2024-11-05 still gets a successful handshake.
+ */
+const MCP_PROTOCOL_VERSIONS_SUPPORTED: ReadonlySet<string> = new Set([
+  '2024-11-05',
+  '2025-03-26',
+  '2025-06-18',
+]);
+const MCP_PROTOCOL_VERSION_DEFAULT = '2025-06-18';
+
+const MCP_SERVER_INFO = { name: 'fireside', version: '0.1.0' } as const;
+
+/**
  * Dispatch a JSON-RPC request against the tool engine. Always resolves; never
  * throws. Domain failures map to JSON-RPC error envelopes so the transport
- * layer can serialize unconditionally.
+ * layer can serialize unconditionally. Returns `null` for JSON-RPC
+ * notifications (no `id`, method starting with `notifications/`); the HTTP
+ * transport translates that to a 202 with no body per the MCP spec.
  */
 export async function dispatchMcpRequest(
   request: JsonRpcRequest,
   ctx: McpDispatchContext,
-): Promise<JsonRpcResponse> {
+): Promise<JsonRpcResponse | null> {
   const registry = ctx.registry ?? defaultToolRegistry;
   const id = request.id ?? null;
 
   switch (request.method) {
+    case 'initialize':
+      return successResponse(id, buildInitializeResult(request.params));
+
+    case 'notifications/initialized':
+    case 'notifications/cancelled':
+      // JSON-RPC notifications: spec forbids returning a response.
+      return null;
+
+    case 'ping':
+      return successResponse(id, {});
+
     case 'tools/list':
       return successResponse(id, {
         tools: registry.listTools({
@@ -161,8 +209,30 @@ export async function dispatchMcpRequest(
       return await runToolsCall(id, request.params, ctx, registry);
 
     default:
+      if (request.method.startsWith('notifications/')) return null;
       return errorResponse(id, MCP_ERROR.methodNotFound, `unknown method: ${request.method}`);
   }
+}
+
+function buildInitializeResult(rawParams: unknown): {
+  protocolVersion: string;
+  capabilities: { tools: Record<string, unknown> };
+  serverInfo: { name: string; version: string };
+} {
+  let requestedVersion: string | null = null;
+  if (rawParams && typeof rawParams === 'object' && !Array.isArray(rawParams)) {
+    const candidate = (rawParams as { protocolVersion?: unknown }).protocolVersion;
+    if (typeof candidate === 'string') requestedVersion = candidate;
+  }
+  const protocolVersion =
+    requestedVersion && MCP_PROTOCOL_VERSIONS_SUPPORTED.has(requestedVersion)
+      ? requestedVersion
+      : MCP_PROTOCOL_VERSION_DEFAULT;
+  return {
+    protocolVersion,
+    capabilities: { tools: {} },
+    serverInfo: { ...MCP_SERVER_INFO },
+  };
 }
 
 function effectiveStatePermissions(ctx: McpDispatchContext): StatePermission[] {

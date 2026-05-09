@@ -3,6 +3,12 @@
 Status: design pass (research). 2026-05-07.
 Phase id: `gpH3wY87ogiysi`. Lane: `TkS2yuIPb0u1Iq`.
 
+> **Superseded:** the §1 default-off / `FIRESIDE_ENABLE_MCP=1` decision was
+> reversed. MCP is the canonical tool path and the endpoint is now always
+> registered; the trust model in §2 (loopback unauthenticated, non-loopback
+> bearer via `FIRESIDE_MCP_API_KEY`) still holds. The remainder of this
+> memo is preserved as the historical reasoning behind the original gating.
+
 This memo answers Phase 6's three questions:
 
 1. Default-on or feature-flagged?

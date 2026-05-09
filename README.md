@@ -96,8 +96,7 @@ Common settings:
 | `FIRESIDE_CODEX_REASONING_EFFORT` | unset | Optional Codex reasoning label override |
 | `FIRESIDE_CODEX_CONTEXT_WINDOW` | unset | Optional Codex context-window token override |
 | `FIRESIDE_CODEX_AUTO_COMPACT_TOKENS` | unset | Optional Codex compaction threshold override |
-| `FIRESIDE_ENABLE_MCP` | unset (off) | Set to `1` to register `POST /api/mcp`. See [docs/mcp-setup.md](docs/mcp-setup.md). |
-| `FIRESIDE_MCP_API_KEY` | unset | Bearer secret required for non-loopback MCP callers. Operator-generated. |
+| `FIRESIDE_MCP_API_KEY` | unset | Bearer secret required for non-loopback `POST /api/mcp` callers. Loopback is unauthenticated. See [docs/mcp-setup.md](docs/mcp-setup.md). |
 | `LOG_LEVEL` | `info` | Server log level |
 
 ## Provider CLIs

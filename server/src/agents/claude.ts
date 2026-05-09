@@ -15,7 +15,7 @@ import { permissionTargetDirectory } from '../permissions.js';
 //   top-level `session_id` carries the session id
 const RESULT_FIELD = 'result';
 const SESSION_FIELD = 'session_id';
-const CLAUDE_QUOTA_DEBUG_INTERVAL_MS = 10 * 60 * 1000;
+const DEFAULT_CLAUDE_QUOTA_DEBUG_INTERVAL_MS = 0;
 const CLAUDE_DEBUG_REDACTION = '[claude debug log redacted; quota headers parsed into telemetry]';
 
 let nextClaudeQuotaDebugAt = 0;
@@ -43,10 +43,15 @@ function parseJsonLine(line: string): Record<string, unknown> | null {
 
 function shouldCaptureClaudeQuotaHeaders(): boolean {
   if (process.env.FIRESIDE_CLAUDE_QUOTA_DEBUG_HEADERS === '0') return false;
-  if (process.env.ANTHROPIC_LOG === 'debug') return false;
+  const intervalMsRaw = process.env.FIRESIDE_CLAUDE_QUOTA_DEBUG_INTERVAL_MS;
+  const intervalMs =
+    intervalMsRaw === undefined
+      ? DEFAULT_CLAUDE_QUOTA_DEBUG_INTERVAL_MS
+      : Math.max(0, Number(intervalMsRaw) || 0);
+  if (intervalMs === 0) return true;
   const now = Date.now();
   if (now < nextClaudeQuotaDebugAt) return false;
-  nextClaudeQuotaDebugAt = now + CLAUDE_QUOTA_DEBUG_INTERVAL_MS;
+  nextClaudeQuotaDebugAt = now + intervalMs;
   return true;
 }
 

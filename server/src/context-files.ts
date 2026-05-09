@@ -10,8 +10,19 @@ import {
   unlinkSync,
   writeFileSync,
 } from 'node:fs';
+import { normalizeFiresideEnvelopes } from './hidden-blocks.js';
 import type { Message } from './repos/messages.js';
 import { PROTOCOLS_MARKDOWN } from './protocols-document.js';
+
+// Defensive sanitizer applied at every site where stored `message.text`
+// becomes part of an agent's prompt context. Rewrites the hallucinated
+// `<!--FIRESIDE:<name> v=N>` envelope into canonical slash blocks so old
+// leaks already persisted in the DB don't recontaminate the next agent's
+// prompt and reinforce the bad emission pattern. Idempotent — running it on
+// already-normalized text is a no-op.
+function sanitizedMessageText(text: string): string {
+  return normalizeFiresideEnvelopes(text).normalizedText;
+}
 
 export interface MessageArtifact {
   messageId: string;
@@ -412,7 +423,7 @@ export function messageTextForPrompt(
   contextFiles: ConversationContextFiles | undefined,
 ): string {
   const artifact = contextFiles?.messageArtifacts[message.id];
-  return artifact ? messageArtifactStub(artifact) : message.text;
+  return artifact ? messageArtifactStub(artifact) : sanitizedMessageText(message.text);
 }
 
 function textForContextFile(
@@ -425,7 +436,7 @@ function textForContextFile(
   const artifact = artifacts[message.id];
   return artifact
     ? `[Large message artifact: ${artifact.chars} chars at ${artifact.path}. Excerpt: ${oneLine(artifact.excerpt, 320)}]`
-    : message.text;
+    : sanitizedMessageText(message.text);
 }
 
 function formatMessage(

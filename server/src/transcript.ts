@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 import type { AgentId, ProviderId, RoomAgentProfile } from './agents/types.js';
 import { AGENT_PERSONAS, getAgentPersona } from './agents/personas.js';
 import { roomAgentHandleForProfile } from './agents/profiles.js';
+import { normalizeFiresideEnvelopes } from './hidden-blocks.js';
 import { parseMentionTokens } from './mentions.js';
 import type { PermissionGrant } from './permissions.js';
 import type { AuthorKind } from './repos/messages.js';
@@ -181,7 +182,13 @@ function formatLine(
       ? (profileById.get(entry.authorId)?.displayName ?? entry.authorId)
       : entry.authorId;
   const author = isSelf ? `${displayName} (you)` : displayName;
-  return `${author}: ${entry.text}`;
+  // Defense in depth against the hallucinated `<!--FIRESIDE:<name> v=N>`
+  // envelope: any leaks already persisted in `messages.text` (history before
+  // the reply-pipeline normalizer landed) get rewritten into canonical slash
+  // blocks here so they don't recontaminate the next agent's prompt context
+  // and reinforce the bad emission pattern.
+  const sanitizedText = normalizeFiresideEnvelopes(entry.text).normalizedText;
+  return `${author}: ${sanitizedText}`;
 }
 
 function formatAgentProfile(profile: RoomAgentProfile | undefined, agentId: AgentId): string[] {
@@ -193,7 +200,7 @@ function formatAgentProfile(profile: RoomAgentProfile | undefined, agentId: Agen
   ];
   if (profile.temporary) {
     lines.push(
-      `Temporary agent: you were added by ${profile.spawnedBy ?? 'an orchestrator'} for ${profile.spawnedScope || 'a focused assignment'}. When your assigned work is complete or no longer useful, update Mission Control with evidence and dismiss yourself with /agent-roster action: dismiss id: ${profile.id} reason: assignment complete.`,
+      `Temporary agent: you were added by ${profile.spawnedBy ?? 'an orchestrator'} for ${profile.spawnedScope || 'a focused assignment'}. When your assigned work is complete or no longer useful, update Mission Control with evidence and dismiss yourself by calling the fireside agent.set_status MCP tool with status: 'dismissed' and reason: 'assignment complete'.`,
     );
   }
   if (persona.prompt) {
@@ -546,8 +553,8 @@ function renderPrompt(
     .filter((agentId) => agentId !== opts.agentId)
     .map((agentId) => `${agentDisplayName(agentId)} (@${agentHandle(agentId)})`);
   const handoffLine = handoffRecipients
-    ? `If you did useful work or updated hidden blocks, send a brief visible status. To make another agent act, tag the exact @handle for one of these recipients: ${handoffRecipients.join(', ')}. Plain names are conversational only and may not wake anyone. For team-wide context plus a targeted assignment, state the team context and include a direct @handle instruction for the agent who should act. Do not use broad @provider tags when multiple instances share that provider. Do not end with a bare agent label or write your own name as a label.`
-    : `If you did useful work or updated hidden blocks, send a brief visible status. Do not end with a bare agent label or write your own name as a label.`;
+    ? `If you did useful work or called any fireside MCP tools, send a brief visible status. To make another agent act, tag the exact @handle for one of these recipients: ${handoffRecipients.join(', ')}. Plain names are conversational only and may not wake anyone. For team-wide context plus a targeted assignment, state the team context and include a direct @handle instruction for the agent who should act. Do not use broad @provider tags when multiple instances share that provider. Do not end with a bare agent label or write your own name as a label.`
+    : `If you did useful work or called any fireside MCP tools, send a brief visible status. Do not end with a bare agent label or write your own name as a label.`;
   const liveMessagesShown = recent.length + 1;
   const omittedFromLive = opts.contextFiles
     ? Math.max(0, opts.contextFiles.totalMessages - liveMessagesShown)
@@ -582,140 +589,38 @@ function renderPrompt(
   const isCoordinatorOrLead = agentRole !== 'worker';
   const noTaskMissionLines =
     !opts.task && isCoordinatorOrLead && shouldIncludeMissionCreateProtocol(newMessage.text)
-      ? compactPrompt || protocolsExternalized
-        ? [
-            ``,
-            `Active mission: none recorded. If the latest human message asks for a mission scaffold, append /mission-create followed by /mission-plan, /mission-phase, and /mission-task blocks after your visible reply (agents in this room: ${opts.roomAgents?.join(', ') || 'use room defaults'}).${protocolsPathHint}`,
-          ]
-        : [
-            ``,
-            `Active mission: none recorded.`,
-            `If the latest human message asks you to turn the chat, a file, or a document into a mission, you may create the top-level mission with one hidden block after your visible reply. Only do this when no active mission exists and the human is asking for a new mission scaffold:`,
-            `/mission-create`,
-            `title: concise mission title`,
-            `goal: what the team should accomplish`,
-            `repo_path: optional workspace or project path`,
-            `acceptance: concrete conditions for completion`,
-            `agents: ${opts.roomAgents?.join(', ') || 'optional comma-separated agent ids'}`,
-            `capability_profile: plan`,
-            `summary: optional short briefing-room summary`,
-            `/end-mission-create`,
-            `After /mission-create in the same reply, you may also append hidden /mission-plan, /mission-phase, and /mission-task blocks to populate the new mission. Create the plan first, phase gates second, and checklist items last so checklist items can reference phase titles. Close each hidden block with its matching end marker exactly.`,
-          ]
+      ? [
+          ``,
+          `Active mission: none recorded. Top-level mission creation is a human/UI action — do not attempt to scaffold a mission as an agent. If the latest human message asks for a mission scaffold, propose the structure in visible chat (title, goal, acceptance criteria, suggested phases) and ask the human to create it through Mission Control. Once a mission exists, scaffold its plan, phases, and checklist via the fireside MCP tools (mission.plan.create, mission.phase.create, mission.task.update with action: 'create').${protocolsPathHint}`,
+        ]
       : [];
   const planAndPhaseProtocolLines = isCoordinatorOrLead
-    ? protocolsExternalized
-      ? [
-          `Plan and phase protocols: append /mission-plan when the team creates or materially revises the agreed strategy (the active plan is the human-readable agreement and rationale). Append /mission-phase when you create or update workflow gates, and create phase gates before checklist items. When a gate is satisfied and every checklist item in that phase is done or skipped, mark the phase status: done; Fireside auto-activates the next planned phase unless your same reply explicitly activates a different one.${protocolsPathHint}`,
-        ]
-      : [
-          `Mission plan protocol: when the team creates or materially revises the agreed strategy, append one hidden markdown plan block after your visible reply. The active plan is the human-readable agreement and rationale; phase gates and checklist items remain the execution state:`,
-          `/mission-plan`,
-          `action: create`,
-          `title: concise plan title`,
-          `status: active`,
-          `body:`,
-          `## Direction`,
-          `What the team agrees to do and why.`,
-          `## Assumptions and Evidence`,
-          `Known assumptions, evidence needed, and unresolved disagreements.`,
-          `## Execution Shape`,
-          `How phase gates and checklist work items should decompose this plan.`,
-          `/end-mission-plan`,
-          `Use action "update" with id: <plan id> or title: <plan title> to revise the active agreement. If no id/title is supplied, update the current active plan.`,
-          `Mission phase protocol: when you create or update workflow gates, append one hidden block per phase after your visible reply. Create phase gates before checklist items so work items can reference them by title or id:`,
-          `/mission-phase`,
-          `action: create`,
-          `plan: optional active plan id or title; defaults to the active plan from this reply`,
-          `title: short phase title`,
-          `status: active`,
-          `gate: concrete criteria that must be true before leaving this phase`,
-          `description: optional one-sentence phase scope`,
-          `/end-mission-phase`,
-          `Use action "update" with id: <phase id> or title: <phase title> to change plan, title, status, gate, description, or sort_order. Agents are responsible for workflow progression: when a gate is satisfied and every checklist item in that phase is done or skipped, mark that phase status: done. Do not mark a phase done while open or blocked checklist items remain attached to it; first complete, skip, move, or block those items with evidence. Fireside will auto-activate the next planned phase unless your same reply explicitly activates a different phase.`,
-        ]
-    : [];
-  const taskAndReceiptProtocolLines = protocolsExternalized
     ? [
-        `Task and receipt protocols: append /mission-task to create, claim, complete, or block a checklist item — set status: done with completion evidence in note when work is finished, or status: blocked with blocked_reason and council_required: true when human/team council is required. Append /mission-receipt for any active-mission turn that does not change mission state (status: completed | blocked | needs_review | continuing | no_update). Close every hidden block with its matching /end-* marker exactly.${protocolsPathHint}`,
+        `Plan and phase protocols (MCP): use the fireside server's tools — call mission.plan.create / mission.plan.update / mission.plan.activate when the team creates or materially revises the agreed strategy (the active plan is the human-readable agreement and rationale). Call mission.phase.create / mission.phase.update / mission.phase.complete for workflow gates; create phase gates before checklist items. When a gate is satisfied and every checklist item in that phase is done or skipped, call mission.phase.complete; Fireside auto-activates the next planned phase unless your same reply explicitly activates a different one. Do not mark a phase done while open or blocked checklist items remain attached to it.${protocolsPathHint}`,
       ]
-    : [
-        `Mission checklist protocol: when you create, update, complete, or block a work item, append one hidden block after your visible reply. Fireside will strip it from chat and update Mission Control:`,
-        `/mission-task`,
-        `action: create`,
-        `title: short task title`,
-        `status: open`,
-        `plan: optional active plan id or title; defaults to the phase's plan or active plan from this reply`,
-        `phase: optional phase id or title`,
-        `depends_on: optional item id(s) from the checklist, comma-separated`,
-        `expected_touches: optional file paths, globs, package names, or logical scopes this item will likely touch, comma-separated`,
-        `parallelism: optional parallel-safe | coordinate | exclusive. Use parallel-safe for independent work, coordinate for shared scopes requiring handoff/review, and exclusive for single-writer work.`,
-        `conflict_group: optional short label for work that should not run concurrently with another item in the same group`,
-        `work_role: optional implement | review | verify | research | docs, or another concise role`,
-        `owner: optional agent id`,
-        `detail: one sentence of scope or acceptance evidence`,
-        `note: status note, completion evidence, or blocker summary`,
-        `council_required: false`,
-        `/end-mission-task`,
-        `Use action "update" with id: <checklist item id> to change plan, phase, status, dependencies, owner, detail, note, blocked_reason, council_required, expected_touches, parallelism, conflict_group, or work_role. To take ownership, update owner to your agent id before or while working. When the task is complete, set status: done and include completion evidence in note. Status aliases accepted/complete/completed/finished/resolved also count as done. If blocked and council_required is true, the mission will be marked blocked for human/team council.`,
-        `Mission receipt protocol: every active-mission turn must leave a reconciliation trail. If you create or change mission state, use the ${
-          isCoordinatorOrLead
-            ? 'mission-plan, mission-phase, mission-task, or mission-create'
-            : 'mission-task'
-        } blocks above. If you do not change mission state, append one hidden receipt block after your visible reply so Fireside can explain what happened:`,
-        `/mission-receipt`,
-        `status: completed | blocked | needs_review | continuing | no_update`,
-        `item: optional checklist item id or title`,
-        `phase: optional phase id or title`,
-        `plan: optional plan id or title`,
-        `summary: what changed, what you attempted, or why there is no state update`,
-        `evidence: optional file path, command, test, or source`,
-        `next: optional next owner or next step`,
-        `/end-mission-receipt`,
-        `If you completed work, do not rely on visible prose alone: update the checklist item status to done and include completion evidence. If you are blocked or waiting on council, update the item/phase as blocked when possible; otherwise emit a blocked or needs_review receipt.`,
-        `Close each hidden block with its matching end marker exactly. Do not close ${
-          isCoordinatorOrLead ? '/mission-plan, /mission-phase, or /mission-task' : '/mission-task'
-        } blocks with /end-collab-note.`,
-        `Keep your reply and any requested tool use scoped to this active mission unless the latest human message explicitly changes direction.`,
-      ];
+    : [];
+  const taskAndReceiptProtocolLines = [
+    `Task and receipt protocols (MCP): call the fireside server's mission.task.update tool to create (action: 'create' with a title), claim, complete, or block a checklist item. Set status: done with completion evidence in note when work is finished, or status: blocked with blockedReason and councilRequired: true when human/team council is required. Append a mission.receipt.submit call for any active-mission turn that does not change mission state (status: completed | blocked | needs_review | continuing | no_update). Status aliases accepted/complete/completed/finished/resolved also count as done. Do not type these calls as text in chat — invoke them via your CLI's MCP tool-use mechanism.${protocolsPathHint}`,
+  ];
   const missionProtocolLines = compactPrompt
     ? [
         isCoordinatorOrLead
-          ? `Mission update protocol: after your visible reply, use hidden /mission-task, /mission-phase, /mission-plan, or /mission-receipt blocks when mission state changes. At minimum, completed work must include /mission-task with action: update, id, status: done, and note evidence; blocked work must include status: blocked, blocked_reason, and council_required when needed. Close each block with its matching /end-* marker.`
-          : `Mission update protocol: after your visible reply, use hidden /mission-task or /mission-receipt blocks when work changes. Completed work must include /mission-task action: update, id, status: done, and note evidence; blocked work must include status: blocked, blocked_reason, and council_required when needed. Plan and phase changes belong to coordinators — hand off if needed. Close each block with its matching /end-* marker.`,
+          ? `Mission update protocol (MCP): when mission state changes, call the fireside server's mission.task.update, mission.phase.*, mission.plan.*, or mission.receipt.submit tools. Completed work: mission.task.update with taskId, status: done, and note evidence. Blocked work: status: blocked with blockedReason and councilRequired when needed.`
+          : `Mission update protocol (MCP): when work changes, call the fireside server's mission.task.update or mission.receipt.submit tools. Completed: mission.task.update with taskId, status: done, and note evidence. Blocked: status: blocked with blockedReason. Plan and phase changes belong to coordinators — hand off if needed.`,
       ]
     : [...planAndPhaseProtocolLines, ...taskAndReceiptProtocolLines];
   const rosterProtocolLines =
     opts.agentProfile &&
     ['engineering-manager', 'qa-lead'].includes(opts.agentProfile.personaId) &&
     !compactPrompt
-      ? protocolsExternalized
-        ? [
-            ``,
-            `Temporary agent roster: as ${opts.agentProfile.personaName}, you may manage up to three active temporary agents via /agent-roster (action: add) and dismiss them via /agent-roster (action: dismiss). Use only when it improves mission flow, parallel QA/review, or task throughput. Prefer Codex or Claude for deep code work/review; use Gemini when visual analysis, images, frontend design judgment, or broad ideation is the better fit.${protocolsPathHint}`,
-          ]
-        : [
-            ``,
-            `Temporary agent roster protocol: as ${opts.agentProfile.personaName}, you may add up to three active temporary agents that you personally manage. Use this only when it improves mission flow, parallel QA/review, or task throughput. Temporary agents are visible in the room roster, receive a focused assignment, and should be dismissed when complete.`,
-            `/agent-roster`,
-            `action: add`,
-            `name: codex-regression`,
-            `provider: codex`,
-            `persona: quality-assurance-engineer`,
-            `scope: checklist item, phase, file area, or review lane`,
-            `reason: why this temporary agent is needed now`,
-            `yolo: true`,
-            `max_turns: 25`,
-            `dismiss_when: review complete or blocked`,
-            `prompt:`,
-            `Focused instructions, context, expected evidence, and how to report/dismiss.`,
-            `/end-agent-roster`,
-            `To dismiss a temporary agent, use /agent-roster with action: dismiss and id or name plus reason. Prefer Codex or Claude for deep code work/review; use Gemini when visual analysis, images, frontend design judgment, or broad ideation is the better fit. Adapt to the actual room roster and provider behavior.`,
-          ]
+      ? [
+          ``,
+          `Temporary agent roster (MCP): as ${opts.agentProfile.personaName}, you may manage up to three active temporary agents via the fireside agent.* tools (agent.set_status, agent.checkin, agent.list_assignments, agent.request_turns, agent.ack_message). Add and dismiss temporary agents only through these MCP calls. Use this lever only when it improves mission flow, parallel QA/review, or task throughput. Prefer Codex or Claude for deep code work/review; use Gemini when visual analysis, images, frontend design judgment, or broad ideation is the better fit.${protocolsPathHint}`,
+        ]
       : opts.agentProfile?.temporary && !compactPrompt
         ? [
             ``,
-            `Temporary agent protocol: when your focused assignment is complete, blocked, or no longer useful, append /agent-roster with action: dismiss, id: ${opts.agentProfile.id}, and reason after your visible status. This removes you from the active room roster while preserving your transcript and run history.`,
+            `Temporary agent protocol (MCP): when your focused assignment (id ${opts.agentProfile.id}) is complete, blocked, or no longer useful, dismiss yourself by calling the fireside agent.set_status MCP tool with status: 'dismissed' and a reason. This removes you from the active room roster while preserving your transcript and run history.`,
           ]
         : [];
   const taskLines = opts.task
@@ -750,7 +655,7 @@ function renderPrompt(
           ? `This mission is in verification. Prefer concrete review findings, test evidence, risks, and pass/fail recommendations over new implementation unless the human asks otherwise.`
           : `The mission is not in verification yet; focus on the next concrete execution or collaboration step.`,
         `Lane rule: all problems are shared responsibility, but lane ownership prevents conflicts. For a cross-lane issue, fix only if it blocks you or is safe and small; otherwise record evidence, hand it off, and continue your next unblocked task.`,
-        `Workpad invariant: visible chat is not the source of truth. When you take ownership, finish work, block, change direction, or satisfy a phase gate, update Mission Control with hidden blocks in the same reply before ending the turn.`,
+        `Workpad invariant: visible chat is not the source of truth. When you take ownership, finish work, block, change direction, or satisfy a phase gate, update Mission Control by calling the relevant fireside MCP tools (mission.task.update / mission.phase.* / mission.receipt.submit) before ending the turn.`,
         `Continuation invariant: after completing one concrete subtask, either take the next unblocked checklist item, hand off to a named agent, mark the relevant phase/mission done, or state the exact blocker that requires human or team action.`,
       ]
     : [];
@@ -773,32 +678,17 @@ function renderPrompt(
     opts.collaboration && opts.collaboration.length > 0
       ? `Current collaboration ledger: ${opts.collaboration.length} recent item(s); use the recap/transcript files if more detail is needed.`
       : `Current collaboration ledger: no durable items recorded yet.`;
-  const collaborationProtocolLines = protocolsExternalized
+  const collaborationProtocolLines = compactPrompt
     ? [
         ``,
-        `Collaboration protocol: pursue the mission by making concrete proposals, challenging weak assumptions, revising direction when challenged, and recording decisions. Do not agree merely to be agreeable. For factual claims that affect direction, cite reliable evidence (file paths/lines, command output, tests, docs, or web sources). Record durable proposals, challenges, revisions, decisions, or evidence with a /collab-note block.${protocolsPathHint}`,
+        `Collaboration protocol (MCP): challenge weak assumptions, cite concrete evidence for directional claims, and record durable decisions/evidence by calling the fireside collab.note.add MCP tool with { kind: 'proposal'|'challenge'|'revision'|'decision'|'evidence', title, target, status, confidence, evidence, body }. Use status open for active items, blocked for live blockers, resolved for settled items, superseded for replacements, accepted/rejected for decisions, informational for evidence.${protocolsPathHint}`,
       ]
-    : compactPrompt
-      ? [
-          ``,
-          `Collaboration protocol: challenge weak assumptions, cite concrete evidence for directional claims, and record durable decisions/evidence with a hidden block when needed: /collab-note, kind: proposal|challenge|revision|decision|evidence, title, target, status, confidence, evidence, body, then close with /end-collab-note exactly.`,
-        ]
-      : [
-          ``,
-          `Collaboration protocol: pursue the mission by making concrete proposals, challenging weak assumptions, revising direction when challenged, and recording decisions. Do not agree merely to be agreeable; push back when the evidence or task constraints warrant it.`,
-          `For factual claims that affect direction, cite reliable evidence when available: local file paths/lines, command output, tests, docs, or web sources. If current external facts matter and web access is unavailable, say what source you need instead of guessing.`,
-          `If your reply creates a durable proposal, challenge, revision, decision, or evidence item, append one hidden ledger block after your visible chat message. Fireside will strip this block from chat and store it in the command center:`,
-          `/collab-note`,
-          `kind: proposal`,
-          `title: concise claim or direction`,
-          `target: optional claim, file, decision, or plan this refers to`,
-          `status: open`,
-          `confidence: medium`,
-          `evidence: file:path:line; test:command; url:https://example.com`,
-          `body: one concise sentence explaining why this matters`,
-          `/end-collab-note`,
-          `Use status open for active items, blocked for live blockers, resolved for settled items, superseded when a newer item replaces it, accepted/rejected for decisions, and informational for evidence.`,
-        ];
+    : [
+        ``,
+        `Collaboration protocol (MCP): pursue the mission by making concrete proposals, challenging weak assumptions, revising direction when challenged, and recording decisions. Do not agree merely to be agreeable; push back when the evidence or task constraints warrant it.`,
+        `For factual claims that affect direction, cite reliable evidence when available: local file paths/lines, command output, tests, docs, or web sources. If current external facts matter and web access is unavailable, say what source you need instead of guessing.`,
+        `When your reply creates a durable proposal, challenge, revision, decision, or evidence item, call the fireside collab.note.add MCP tool with arguments: { kind: 'proposal' | 'challenge' | 'revision' | 'decision' | 'evidence', title, target?, status, confidence, evidence?, body }. Status: open for active items, blocked for live blockers, resolved for settled items, superseded when a newer item replaces it, accepted/rejected for decisions, informational for evidence.`,
+      ];
   const collaborationLedgerLines =
     protocolsExternalized || compactPrompt
       ? [summarizedCollaborationLedger]
@@ -831,22 +721,11 @@ function renderPrompt(
           ? `Do not ask for the same YOLO permission profile again. If your provider still blocks a concrete operation, emit one permission request block for that exact operation; Fireside will auto-approve it during YOLO and continue without human intervention.`
           : `Do not ask for the same permission again on this turn. Use this permission only for the approved operation. If you need broader or different access, request permission again.`,
       ].filter((line): line is string => line !== null)
-    : protocolsExternalized
-      ? [
-          ``,
-          `Tool permission for this turn: plan/read-only. To request edits, scoped commands, or broader tools, send a /permission-request block (mode: edit | bash | full-auto). If you have already drafted substantial content but do not yet have write permission, preserve it with a /draft-artifact block.${protocolsPathHint}`,
-        ]
-      : [
-          ``,
-          `Tool permission for this turn: plan/read-only. If you need to edit files, run commands, or use broader tools, request permission instead of attempting the operation.`,
-          `To request permission, send only this block and wait for the human decision:`,
-          `/permission-request`,
-          `mode: edit`,
-          `target: path-or-command`,
-          `reason: brief reason`,
-          `Use mode "edit" for file mutation, including creating, overwriting, or editing files; "write" and "create" are accepted as aliases. Use mode "bash" for scoped shell/git commands. Use mode "full-auto" only for broad shell/tool execution.`,
-          `If you have already drafted substantial content but do not yet have write permission, preserve it with a hidden draft artifact block so the next approved turn can recover it: /draft-artifact, name: file.md, target: path, content:, then the draft content, then /end-draft-artifact.`,
-        ];
+    : [
+        ``,
+        `Tool permission for this turn: plan/read-only. To request edits, scoped commands, or broader tools, call the fireside permission.request MCP tool with arguments: { mode: 'edit' | 'bash' | 'full-auto', target: path-or-command, reason: brief-reason }. Mode "edit" covers file mutation (creating, overwriting, editing) — "write" and "create" are accepted aliases. Mode "bash" is for scoped shell/git commands. Mode "full-auto" is for broad shell/tool execution. Send only the tool call and wait for the human decision; do not attempt the operation before approval.`,
+        `If you have already drafted substantial content but do not yet have write permission, preserve it with a hidden /draft-artifact block (name: file.md, target: path, content: ..., then /end-draft-artifact). Draft artifacts remain a hidden text-block mechanism because their payloads are too large for tool arguments — they are not tool calls.${protocolsPathHint}`,
+      ];
   const workLaneLines = opts.workLane
     ? [
         ``,
@@ -855,8 +734,8 @@ function renderPrompt(
         opts.workLane.expectedTouches?.length
           ? `Scope contract: expected_touches=${opts.workLane.expectedTouches.join(', ')}; parallelism=${opts.workLane.parallelism ?? 'parallel-safe'}; conflict_group=${opts.workLane.conflictGroup || 'none'}; role=${opts.workLane.workRole || 'unspecified'}. Stay inside this scope unless the task requires a small safe fix or you update Mission Control before crossing lanes.`
           : `Scope contract: no expected_touches recorded. Before broad edits, update the checklist item with expected_touches plus parallelism/conflict_group if needed so other agents can work safely in parallel.`,
-        `Before or while working, make sure the checklist item owner is "${opts.agentId}". When you finish, append a /mission-task update with id: ${opts.workLane.id}, status: done, and completion evidence in note. If blocked, update the item with status: blocked, blocked_reason, and council_required when human/team council is needed.`,
-        `Do not wait for another agent unless this lane is blocked by a dependency or shared scope conflict. End the turn with a visible status plus the required mission state update or /mission-receipt.`,
+        `Before or while working, make sure the checklist item owner is "${opts.agentId}" by calling mission.task.update with { taskId: '${opts.workLane.id}', owner: '${opts.agentId}' }. When you finish, call mission.task.update with { taskId: '${opts.workLane.id}', status: 'done', note: <completion evidence> }. If blocked, call mission.task.update with status: 'blocked', blockedReason, and councilRequired when human/team council is needed.`,
+        `Do not wait for another agent unless this lane is blocked by a dependency or shared scope conflict. End the turn with a visible status plus the required mission.task.update or mission.receipt.submit MCP call.`,
       ]
     : opts.discussion?.mode === 'yolo' && opts.task
       ? [
@@ -934,7 +813,7 @@ function renderPrompt(
         ...formatAgentProfile(opts.agentProfile, opts.agentId),
         ...formatRoomProfiles(opts.roomAgentProfiles),
         ...formatTeamLeadLine(opts.roomLeadAgentId, opts.roomAgentProfiles),
-        `Identity rule: use participant display names in visible chat. Use stable agent ids only inside hidden protocol fields such as owner:, agent:, id:, or /agent-roster fields.`,
+        `Identity rule: use participant display names in visible chat. Use stable agent ids only inside MCP tool arguments (owner, agentId, taskId, etc.) or when calling agent.* tools.`,
         handoffLine,
       ],
     },

@@ -60,4 +60,46 @@ describe('runAgentReplySignalPipeline', () => {
     expect(result.visibleText).toBe('I need edit access.');
     expect(result.textAfterMissionReceipts).toContain('/permission-request');
   });
+
+  // Regression for the hallucinated `<!--FIRESIDE:<name> v=N ... /end-<name>-->`
+  // envelope agents emit when they confuse the deprecated `<!-- fireside-tool -->`
+  // shape with the canonical slash-block fallback. Before the normalizer step
+  // landed, the envelope's `<!--FIRESIDE:` prefix carried word chars that
+  // `hiddenBlockRegex` rejects, so every extractor missed the payload and the
+  // entire envelope leaked into visible chat (see 118 historical leaks in
+  // data/fireside.sqlite at the time of the fix).
+  it('normalizes a hallucinated <!--FIRESIDE:...--> envelope and routes the payload through extractors', () => {
+    const result = runAgentReplySignalPipeline({
+      agentId: 'claude',
+      text: [
+        'Closing the lane.',
+        '<!--FIRESIDE:mission-task v=1',
+        'action: update',
+        'id: lane-7',
+        'status: done',
+        'note: Verified end-to-end.',
+        '/end-mission-task-->',
+        '<!--FIRESIDE:collab-note v=1',
+        'kind: decision',
+        'summary: Lane 7 accepted at HEAD.',
+        '/end-collab-note-->',
+      ].join('\n'),
+    });
+
+    expect(result.missionTasks.updates).toHaveLength(1);
+    expect(result.missionTasks.updates[0]).toMatchObject({
+      id: 'lane-7',
+      status: 'done',
+    });
+    expect(result.collaboration.notes).toHaveLength(1);
+    expect(result.collaboration.notes[0]).toMatchObject({
+      kind: 'decision',
+      title: 'Lane 7 accepted at HEAD.',
+    });
+    expect(result.visibleText).toBe('Closing the lane.');
+    expect(result.visibleText).not.toContain('<!--FIRESIDE:');
+    expect(result.visibleText).not.toContain('-->');
+    expect(result.visibleText).not.toContain('/end-mission-task');
+    expect(result.visibleText).not.toContain('/end-collab-note');
+  });
 });
