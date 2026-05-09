@@ -338,15 +338,27 @@ function mergeDisallowed(...specs: string[]): string {
   return specs.filter(Boolean).join(' ');
 }
 
+// Tools the spawned Claude CLI must always be allowed to call without
+// prompting, regardless of permission mode. Fireside MCP exposes the
+// agent-coordination surface (mission.*, collab.*, agent.*, etc.) — without
+// these on the allowlist, an agent in 'edit' mode (the most common YOLO
+// scope) gets a permission prompt for every single tool call it tries,
+// which deadlocks the unattended run. Per Claude Code 2.x docs, the
+// canonical pattern for "all tools from server X" is `mcp__<server>__*` —
+// the bare `mcp__*` glob is NOT supported as a wildcard against MCP tool
+// names. Skill is included so user-curated workflow skills survive an
+// edit-scoped grant.
+const ALWAYS_ALLOWED_TOOLS = ['mcp__fireside__*', 'Skill'] as const;
+
 function claudePermissionToolArgs(context?: AgentRunContext): string[] {
   if (isScopedCommandGrant(context)) {
     const capabilities = context?.permission?.capabilities ?? [];
     const gitOnly = capabilities.includes('git-commit') || capabilities.includes('git-push');
     const bashAllow = gitOnly ? 'Bash(git *)' : 'Bash(*)';
-    // Allow MCP server tools and the Skill tool alongside Bash so a
-    // command-scoped grant doesn't accidentally lock out browser MCPs or
-    // user-curated workflow skills.
-    const args = ['--allowedTools', `${bashAllow},mcp__*,Skill`];
+    const args = [
+      '--allowedTools',
+      [bashAllow, ...ALWAYS_ALLOWED_TOOLS].join(','),
+    ];
     const pushSpec = capabilities.includes('git-push') ? '' : 'Bash(git push*) Bash(git * push*)';
     args.push('--disallowedTools', mergeDisallowed(ALWAYS_DISALLOWED_TOOLS, pushSpec));
     return args;
@@ -356,19 +368,20 @@ function claudePermissionToolArgs(context?: AgentRunContext): string[] {
       // Fireside's normalized "edit" means workspace file mutation, including
       // creating a new file. Claude Code distinguishes Write from Edit, so
       // allow all file-mutation tools. Read/Glob/Grep are needed so the
-      // agent can understand the code it's editing, and MCP + Skill are
-      // allowed so browser automation and user workflow skills survive an
-      // edit-scoped permission grant.
+      // agent can understand the code it's editing.
       return [
         '--allowedTools',
-        'Edit,MultiEdit,Write,Read,Glob,Grep,mcp__*,Skill',
+        ['Edit', 'MultiEdit', 'Write', 'Read', 'Glob', 'Grep', ...ALWAYS_ALLOWED_TOOLS].join(','),
         '--disallowedTools',
         ALWAYS_DISALLOWED_TOOLS,
       ];
     case 'full-auto':
+      // bypassPermissions skips all prompts (set via --permission-mode), so
+      // an explicit allowlist is unnecessary here. Still block superpowers.
+      return ['--disallowedTools', ALWAYS_DISALLOWED_TOOLS];
     case 'plan':
-      // No allowlist — the CLI inherits the user's tool set. Still block
-      // superpowers so it cannot derail the worker turn.
+      // Plan mode is read-only; the CLI inherits the user's tool set. Still
+      // block superpowers so it cannot derail the worker turn.
       return ['--disallowedTools', ALWAYS_DISALLOWED_TOOLS];
   }
 }

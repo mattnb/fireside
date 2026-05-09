@@ -185,8 +185,11 @@ describe('claude adapter', () => {
     expect(argv).toContain('--permission-mode');
     expect(argv).toContain('acceptEdits');
     expect(argv).toContain('--allowedTools');
-    // Edit-mode allowlist must cover write tools + reads + MCP + Skill so a
-    // worker can read what it's editing and use browser MCPs / user skills.
+    // Edit-mode allowlist must cover write tools + reads + Fireside MCP +
+    // Skill so a worker can read what it's editing and call the agent-
+    // coordination tools (mission.*, collab.*, etc.) without per-call
+    // prompts. Claude Code 2.x requires the explicit `mcp__<server>__*`
+    // form — `mcp__*` does not match MCP tool names.
     const allowed = argvFlagValue(argv, '--allowedTools');
     expect(allowed).toContain('Edit');
     expect(allowed).toContain('MultiEdit');
@@ -194,7 +197,8 @@ describe('claude adapter', () => {
     expect(allowed).toContain('Read');
     expect(allowed).toContain('Glob');
     expect(allowed).toContain('Grep');
-    expect(allowed).toContain('mcp__*');
+    expect(allowed).toContain('mcp__fireside__*');
+    expect(allowed).not.toContain('mcp__*,'); // not the bare wildcard
     expect(allowed).toContain('Skill');
     // Superpowers must be disallowed on every Claude turn.
     expect(argv).toContain('--disallowedTools');
@@ -219,9 +223,9 @@ describe('claude adapter', () => {
     expect(argv).toContain('--allowedTools');
     const allowed = argvFlagValue(argv, '--allowedTools');
     expect(allowed).toContain('Bash(git *)');
-    // MCP + Skill survive the scoped narrowing so chrome-devtools-mcp et al.
-    // still work alongside a git command grant.
-    expect(allowed).toContain('mcp__*');
+    // Fireside MCP + Skill survive the scoped narrowing so the agent can
+    // still record receipts/notes alongside a git command grant.
+    expect(allowed).toContain('mcp__fireside__*');
     expect(allowed).toContain('Skill');
     expect(argv).toContain('--disallowedTools');
     const disallowed = argvFlagValue(argv, '--disallowedTools');
