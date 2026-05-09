@@ -1372,17 +1372,24 @@ function registerMcpRoute(
     // audit rows with NULLs in those columns even when the call clearly
     // belonged to a specific running turn.
     //
-    // When the explicit header is missing, fall back to the room's
-    // running agent_run: if exactly one is active, that's the caller;
-    // copy its agent_id, run_id, and task_id (mission_id) into the
-    // dispatch context so the audit row associates correctly. With 0 or
-    // 2+ running runs the caller is ambiguous, so we keep 'mcp-client'
-    // and don't backfill the other ids — explicit attribution is always
-    // authoritative when the header IS supplied.
+    // Per-room MCP configs reliably set x-fireside-room-id and
+    // x-fireside-agent-id, but they don't set x-fireside-run-id or
+    // x-fireside-mission-id — those vary per turn and the spawned CLI
+    // can't easily inject them. Without inference, every audit row
+    // landed with run_id and mission_id NULL, breaking post-hoc
+    // association of tool calls with their producing turn.
+    //
+    // Fall back to the room's running agent_run for ANY of the three
+    // identity fields when its header is absent. If exactly one run is
+    // active in the room, copy whatever's missing from there. If 0 or
+    // 2+ runs are active the caller is ambiguous, so we leave whichever
+    // fields lack headers as null and let agent_id default to
+    // 'mcp-client'. Explicit headers always win — never override
+    // caller-supplied attribution.
+    const headerMissesAny =
+      !(agentIdHeader && agentIdHeader.trim()) || !runIdHeader || !missionIdHeader;
     const inferredFromRun =
-      (!agentIdHeader || !agentIdHeader.trim()) && roomIdHeader
-        ? inferCallerFromRunningRun(deps.db, roomIdHeader)
-        : null;
+      headerMissesAny && roomIdHeader ? inferCallerFromRunningRun(deps.db, roomIdHeader) : null;
     const resolvedAgentId = (agentIdHeader && agentIdHeader.trim())
       ? agentIdHeader
       : inferredFromRun?.agentId ?? 'mcp-client';

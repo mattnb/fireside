@@ -230,6 +230,49 @@ describe('POST /api/mcp gating', () => {
     expect(row?.mission_id).toBe('mission-1');
   });
 
+  it('infers run_id and mission_id even when the agent header IS present (per-room MCP config sets agent but not run/mission)', async () => {
+    // Realistic case post-2026-05-09: the spawned Claude's per-room MCP
+    // config writes x-fireside-room-id and x-fireside-agent-id headers
+    // reliably, but x-fireside-run-id and x-fireside-mission-id vary per
+    // turn and aren't injected. We still need run_id and mission_id on
+    // the audit row so post-hoc queries associate tool calls with their
+    // producing turn.
+    harness = makeHarness();
+    seedRoomWithAgent(harness.db, 'room-1', 'claude');
+    seedMission(harness.db, { id: 'mission-1', roomId: 'room-1' });
+    seedRunningRun(harness.db, {
+      id: 'run-2',
+      roomId: 'room-1',
+      agentId: 'claude',
+      taskId: 'mission-1',
+    });
+
+    const response = await harness.app.inject({
+      method: 'POST',
+      url: '/api/mcp',
+      remoteAddress: '127.0.0.1',
+      headers: { 'x-fireside-room-id': 'room-1', 'x-fireside-agent-id': 'claude' },
+      payload: {
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'tools/call',
+        params: { name: 'agent.list_assignments', arguments: {} },
+      },
+    });
+    expect(response.statusCode).toBe(200);
+
+    const row = harness.db
+      .prepare(
+        `SELECT agent_id, run_id, mission_id FROM agent_tool_calls
+         WHERE tool_name = 'agent.list_assignments' ORDER BY created_at DESC LIMIT 1`,
+      )
+      .get() as { agent_id: string; run_id: string | null; mission_id: string | null } | undefined;
+    expect(row).toBeDefined();
+    expect(row?.agent_id).toBe('claude');
+    expect(row?.run_id).toBe('run-2');
+    expect(row?.mission_id).toBe('mission-1');
+  });
+
   it('keeps the explicit agent header when one is supplied (header wins over inference)', async () => {
     harness = makeHarness();
     seedRoomWithAgent(harness.db, 'room-1', 'claude');
