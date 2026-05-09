@@ -11,6 +11,7 @@ import { spawn } from 'node:child_process';
 import { createRoom, getRoom, listRooms, updateRoomProject } from './repos/rooms.js';
 import { createProject, getProject, listProjects, updateProject } from './repos/projects.js';
 import { getPermissionRequest, listPermissionRequests } from './repos/permission-requests.js';
+import { listRunningAgentRunsForRoom } from './repos/agent-runs.js';
 import type { AgentId, ProviderId, RoomAgentProfile } from './agents/types.js';
 import type { TaskStatus } from './repos/tasks.js';
 import type { TaskChecklistParallelism, TaskChecklistStatus } from './repos/task-checklist.js';
@@ -1356,9 +1357,27 @@ function registerMcpRoute(
       return reply.code(400).send(parsed.error);
     }
 
-    const agentIdHeader = pickHeader(req, 'x-fireside-agent-id') ?? 'mcp-client';
+    const agentIdHeader = pickHeader(req, 'x-fireside-agent-id');
     const roomIdHeader = pickHeader(req, 'x-fireside-room-id') ?? '';
     const missionIdHeader = pickHeader(req, 'x-fireside-mission-id') ?? null;
+
+    // Per-room MCP configs include both x-fireside-room-id and
+    // x-fireside-agent-id, but we observed cases (different CLI versions,
+    // partial config writes, restart races) where the room-id arrives but
+    // the agent-id doesn't. Without the agent-id, every call defaulted to
+    // 'mcp-client' and was rejected by handlers like agent.list_assignments
+    // because the synthetic id isn't in the room.
+    //
+    // Resolve the actual caller from the running agent_runs in the room
+    // when the header is missing. If exactly one run is active, that's
+    // the agent that spawned this MCP call. If 0 or >=2, fall back to
+    // 'mcp-client' so misattribution doesn't happen silently.
+    const resolvedAgentId =
+      agentIdHeader && agentIdHeader.trim()
+        ? agentIdHeader
+        : roomIdHeader
+          ? inferCallerAgentIdFromRunningRun(deps.db, roomIdHeader) ?? 'mcp-client'
+          : 'mcp-client';
 
     // Auth was already enforced above (loopback or bearer-token gate). Treat
     // an authenticated MCP caller as holding the full state-permission set —
@@ -1366,7 +1385,7 @@ function registerMcpRoute(
     // docs/phase-6-mcp-endpoint-design-2026-05-07.md §2.
     const response = await dispatchMcpRequest(parsed.value, {
       db: deps.db,
-      agentId: agentIdHeader,
+      agentId: resolvedAgentId,
       roomId: roomIdHeader,
       missionId: missionIdHeader,
       statePermissions: DEFAULT_YOLO_STATE_PERMISSIONS,
@@ -1388,4 +1407,22 @@ function pickHeader(req: FastifyRequest, name: string): string | null {
   if (Array.isArray(value)) return value[0]?.trim() || null;
   if (typeof value === 'string') return value.trim() || null;
   return null;
+}
+
+/**
+ * Infer the calling agent id when the MCP request lacks an explicit
+ * `x-fireside-agent-id` header. Returns the agent id of the unique
+ * running run in the room, or null when there is no running run or
+ * multiple ones (in which case the caller is genuinely ambiguous).
+ *
+ * This guards against CLI / config quirks where the per-room MCP config's
+ * `headers` block isn't fully honored — we observed real `agent.checkin`
+ * and `agent.list_assignments` calls from spawned Claude sessions that
+ * arrived with `x-fireside-room-id` but no `x-fireside-agent-id` and
+ * were rejected as `mcp-client is not in the room`.
+ */
+function inferCallerAgentIdFromRunningRun(db: Database, roomId: string): string | null {
+  const running = listRunningAgentRunsForRoom(db, roomId);
+  if (running.length !== 1) return null;
+  return running[0]!.agentId;
 }

@@ -174,4 +174,119 @@ describe('POST /api/mcp gating', () => {
     expect(body.id).toBe('ping-1');
     expect(body.result).toEqual({});
   });
+
+  it('infers the caller agent id from the unique running run when the agent header is missing', async () => {
+    harness = makeHarness();
+    seedRoomWithAgent(harness.db, 'room-1', 'claude');
+    seedRunningRun(harness.db, { id: 'run-1', roomId: 'room-1', agentId: 'claude' });
+
+    // Call agent.list_assignments WITHOUT x-fireside-agent-id. Before the
+    // inference fallback, this attribued to 'mcp-client' and was rejected
+    // by the handler ("mcp-client is not in the room"). Now the handler
+    // sees agentId='claude' inferred from the running run and accepts.
+    const response = await harness.app.inject({
+      method: 'POST',
+      url: '/api/mcp',
+      remoteAddress: '127.0.0.1',
+      headers: { 'x-fireside-room-id': 'room-1' },
+      payload: {
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'tools/call',
+        params: { name: 'agent.list_assignments', arguments: {} },
+      },
+    });
+    expect(response.statusCode).toBe(200);
+    const body = response.json() as {
+      result: {
+        isError: boolean;
+        structuredContent: {
+          status: string;
+          result?: { data?: { agentId?: string } };
+        };
+      };
+    };
+    expect(body.result.isError).toBe(false);
+    expect(body.result.structuredContent.status).toBe('applied');
+    expect(body.result.structuredContent.result?.data?.agentId).toBe('claude');
+  });
+
+  it('keeps the explicit agent header when one is supplied (header wins over inference)', async () => {
+    harness = makeHarness();
+    seedRoomWithAgent(harness.db, 'room-1', 'claude');
+    seedRunningRun(harness.db, { id: 'run-1', roomId: 'room-1', agentId: 'claude' });
+
+    // Send a header for a DIFFERENT agent; inference should not override it.
+    // (The handler will reject because that agent isn't in the room — that's
+    // the correct behavior; we want explicit attribution to be authoritative.)
+    const response = await harness.app.inject({
+      method: 'POST',
+      url: '/api/mcp',
+      remoteAddress: '127.0.0.1',
+      headers: { 'x-fireside-room-id': 'room-1', 'x-fireside-agent-id': 'codex' },
+      payload: {
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'tools/call',
+        params: { name: 'agent.list_assignments', arguments: {} },
+      },
+    });
+    const body = response.json() as {
+      result: { isError: boolean; structuredContent: { status: string; summary: string } };
+    };
+    expect(body.result.isError).toBe(true);
+    expect(body.result.structuredContent.summary).toContain('codex is not in the room');
+  });
+
+  it('falls back to mcp-client when zero or multiple runs are active (caller is ambiguous)', async () => {
+    harness = makeHarness();
+    seedRoomWithAgent(harness.db, 'room-1', 'claude');
+    // Two running runs => can't infer.
+    seedRunningRun(harness.db, { id: 'run-1', roomId: 'room-1', agentId: 'claude' });
+    seedRunningRun(harness.db, { id: 'run-2', roomId: 'room-1', agentId: 'claude' });
+
+    const response = await harness.app.inject({
+      method: 'POST',
+      url: '/api/mcp',
+      remoteAddress: '127.0.0.1',
+      headers: { 'x-fireside-room-id': 'room-1' },
+      payload: {
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'tools/call',
+        params: { name: 'agent.list_assignments', arguments: {} },
+      },
+    });
+    const body = response.json() as {
+      result: { isError: boolean; structuredContent: { summary: string } };
+    };
+    expect(body.result.isError).toBe(true);
+    expect(body.result.structuredContent.summary).toContain('mcp-client is not in the room');
+  });
 });
+
+function seedRoomWithAgent(db: Database, roomId: string, agentId: string): void {
+  db.prepare(
+    `INSERT INTO rooms (id, name, created_at, agents_json, yolo_agents_json)
+     VALUES (?, ?, ?, ?, ?)`,
+  ).run(roomId, 'room', Date.now(), JSON.stringify([agentId]), JSON.stringify([]));
+}
+
+function seedRunningRun(
+  db: Database,
+  input: { id: string; roomId: string; agentId: string },
+): void {
+  // Insert a minimal trigger message so the FK on agent_runs.trigger_message_id
+  // is satisfied.
+  const triggerId = `${input.id}-trigger`;
+  db.prepare(
+    `INSERT OR IGNORE INTO messages (id, room_id, author_id, author_kind, text, created_at)
+     VALUES (?, ?, 'human', 'human', 'seed', ?)`,
+  ).run(triggerId, input.roomId, Date.now());
+  db.prepare(
+    `INSERT INTO agent_runs (
+      id, room_id, task_id, trigger_message_id, agent_id, status, permission_mode,
+      prompt_chars, estimated_prompt_tokens, live_messages, context_artifacts, started_at
+    ) VALUES (?, ?, NULL, ?, ?, 'running', 'full-auto', 0, 0, 0, 0, ?)`,
+  ).run(input.id, input.roomId, triggerId, input.agentId, Date.now());
+}
