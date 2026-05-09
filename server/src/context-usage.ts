@@ -23,6 +23,15 @@ export interface AgentContextUsage {
   quota?: AgentQuotaUsage;
   quotaOnly?: boolean;
   source: string;
+  /** Which turn produced this usage. Mechanical turns ('workflow-repair',
+   *  'maintenance-compaction') are routed to a small bookkeeping model
+   *  (Haiku by default) regardless of the agent's profile, so their usage
+   *  rows must be distinguished from the agent's own conversational
+   *  context — otherwise the UI shows Haiku/full-conversation usage right
+   *  after every Sonnet turn. The client filters mechanical rows out of
+   *  the per-agent "current context" display. Optional for back-compat
+   *  with rows recorded before this field was introduced. */
+  turnKind?: string;
 }
 
 export interface AgentQuotaWindowUsage {

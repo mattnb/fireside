@@ -474,6 +474,16 @@ export class App implements OnDestroy {
       if (daily) merged.daily = daily;
       return merged;
     };
+    // Mechanical bookkeeping turns (workflow-repair, maintenance-compaction)
+    // run on a small Haiku-class model regardless of the agent's profile;
+    // their context-usage rows reflect the bookkeeping model, not the
+    // agent's. Keep them out of the agent's primary used/window/model row
+    // — they only contribute quota fragments. See agent-ring.service.ts
+    // for the canonical filter; this duplicate exists so both consumers
+    // stay in sync.
+    const isMechanicalTurn = (usage: AgentContextUsage): boolean =>
+      usage.turnKind === 'workflow-repair' || usage.turnKind === 'maintenance-compaction';
+
     for (const entry of this.stateSnapshot()?.contextUsage?.byAgent ?? []) {
       usageByAgent.set(entry.agentId, { ...entry.usage });
     }
@@ -482,6 +492,13 @@ export class App implements OnDestroy {
       if (!action.agentId || !action.contextUsage) continue;
       const existing = usageByAgent.get(action.agentId);
       if (action.contextUsage.quotaOnly && existing) {
+        const merged = { ...existing };
+        const quota = mergeQuota(existing.quota, action.contextUsage.quota);
+        if (quota) merged.quota = quota;
+        usageByAgent.set(action.agentId, merged);
+        continue;
+      }
+      if (isMechanicalTurn(action.contextUsage) && existing && !isMechanicalTurn(existing)) {
         const merged = { ...existing };
         const quota = mergeQuota(existing.quota, action.contextUsage.quota);
         if (quota) merged.quota = quota;

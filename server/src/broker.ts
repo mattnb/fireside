@@ -240,6 +240,7 @@ import {
   type WorkLaneScopeContract,
 } from './orchestration/work-lane-planner.js';
 import {
+  annotateContextUsageWithTurnKind,
   createProviderSignalProcessingState,
   describeRunHeartbeat,
   processProviderSignalEvent,
@@ -2794,12 +2795,20 @@ export class Broker extends EventEmitter {
       label: 'agent process started',
       detail: spec.command,
     });
+    const turnKind: AgentTurnKind = workLane
+      ? 'work-lane'
+      : effectiveWorkflowRepair
+        ? 'workflow-repair'
+        : effectivePermission
+          ? 'permission-operation'
+          : 'chat';
     let lastProviderSignalAt = 0;
     const recordProviderSignal = this.buildProviderSignalRecorder({
       roomId,
       taskId: activeTask?.id ?? null,
       runId: run.id,
       agentId,
+      turnKind,
       onSignal: () => {
         lastProviderSignalAt = Date.now();
       },
@@ -2813,13 +2822,6 @@ export class Broker extends EventEmitter {
       startedAt: run.startedAt,
       latestProviderSignalAt: () => lastProviderSignalAt,
     });
-    const turnKind: AgentTurnKind = workLane
-      ? 'work-lane'
-      : effectiveWorkflowRepair
-        ? 'workflow-repair'
-        : effectivePermission
-          ? 'permission-operation'
-          : 'chat';
     const modelSettings = agentModelSettings(agentProfile);
 
     const providerTurn = await executeProviderTurn({
@@ -3916,6 +3918,7 @@ export class Broker extends EventEmitter {
       taskId: input.taskId,
       runId: input.runId,
       agentId: input.agentId,
+      turnKind: 'maintenance-compaction',
       onSignal: () => {
         lastProviderSignalAt = Date.now();
       },
@@ -4616,6 +4619,9 @@ export class Broker extends EventEmitter {
     taskId: string | null;
     runId: string;
     agentId: AgentId;
+    /** Annotated onto contextUsage rows so the UI can filter mechanical
+     *  bookkeeping turns out of the agent's primary context-usage display. */
+    turnKind?: AgentTurnKind;
     onSignal: () => void;
   }): (event: AgentStreamEvent) => void {
     const signalState = createProviderSignalProcessingState();
@@ -4634,6 +4640,10 @@ export class Broker extends EventEmitter {
         });
       }
       if (!processed.action) return;
+      const contextUsage = annotateContextUsageWithTurnKind(
+        processed.action.contextUsage,
+        input.turnKind,
+      );
       this.recordRunAction({
         roomId: input.roomId,
         taskId: input.taskId,
@@ -4643,7 +4653,7 @@ export class Broker extends EventEmitter {
         status: processed.action.status,
         label: processed.action.label,
         detail: processed.action.detail,
-        ...(processed.action.contextUsage ? { contextUsage: processed.action.contextUsage } : {}),
+        ...(contextUsage ? { contextUsage } : {}),
       });
     };
   }

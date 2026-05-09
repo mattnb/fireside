@@ -635,6 +635,12 @@ export interface AgentContextUsage {
   quota?: AgentQuotaUsage;
   quotaOnly?: boolean;
   source: string;
+  /** Which turn produced this row. Mechanical turns ('workflow-repair',
+   *  'maintenance-compaction') are routed to a small bookkeeping model
+   *  (Haiku by default) regardless of the agent's profile, so they must
+   *  be filtered out of the agent's primary "current context" display.
+   *  Optional for back-compat with rows recorded before this field. */
+  turnKind?: string;
 }
 
 export interface RunDiagnostics {

@@ -166,6 +166,16 @@ export class AgentRingService {
       const { quota: _quota, ...rest } = usage;
       return rest;
     };
+    // Mechanical turns are routed to a small bookkeeping model (Haiku by
+    // default) regardless of the agent's profile. Their context-usage rows
+    // therefore reflect the bookkeeping model's view of the conversation,
+    // not the agent's own. We still merge quota fragments from these rows
+    // (quota state belongs to the provider, not the model), but we never
+    // let them overwrite the agent's primary used/window/model row — that
+    // belongs to the most recent NON-mechanical turn.
+    const isMechanicalTurn = (usage: AgentContextUsage): boolean =>
+      usage.turnKind === 'workflow-repair' || usage.turnKind === 'maintenance-compaction';
+
     for (const entry of this.store.stateSnapshot()?.contextUsage?.byAgent ?? []) {
       usageByAgent.set(entry.agentId, { ...entry.usage });
     }
@@ -175,6 +185,19 @@ export class AgentRingService {
       const actionUsage = sanitizeUsage(action.contextUsage, action.createdAt);
       const existing = usageByAgent.get(action.agentId);
       if (actionUsage.quotaOnly && existing) {
+        const merged = { ...existing };
+        const quota = mergeQuota(existing.quota, actionUsage.quota);
+        if (quota) merged.quota = quota;
+        else delete merged.quota;
+        usageByAgent.set(action.agentId, merged);
+        continue;
+      }
+      // Mechanical turn rows: merge quota into the existing primary row,
+      // but never replace the primary used/window/model. If we don't have
+      // a primary yet (cold start), fall through and let it become the
+      // primary so the UI has SOMETHING to show; subsequent non-mechanical
+      // rows will replace it.
+      if (isMechanicalTurn(actionUsage) && existing && !isMechanicalTurn(existing)) {
         const merged = { ...existing };
         const quota = mergeQuota(existing.quota, actionUsage.quota);
         if (quota) merged.quota = quota;

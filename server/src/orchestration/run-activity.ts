@@ -33,6 +33,23 @@ export interface ProviderSignalProcessingResult {
   action: ProviderSignalAction | null;
 }
 
+/**
+ * Tag a context-usage payload with the broker-known turnKind so downstream
+ * consumers (and the UI) can distinguish mechanical bookkeeping turns
+ * (workflow-repair, maintenance-compaction) from the agent's own
+ * conversational turns. Mechanical turns use a different model (Haiku)
+ * regardless of the agent profile, so their used/window/model are not
+ * representative of the agent's actual context state. A pre-existing
+ * `turnKind` on the payload is preserved (so adapters can override).
+ */
+export function annotateContextUsageWithTurnKind(
+  contextUsage: AgentStreamEvent['contextUsage'],
+  turnKind: string | undefined,
+): AgentStreamEvent['contextUsage'] {
+  if (!contextUsage || !turnKind || contextUsage.turnKind) return contextUsage;
+  return { ...contextUsage, turnKind };
+}
+
 export interface ProviderSignalProcessingOptions {
   now?: number;
   runSignalUpdateThrottleMs?: number;

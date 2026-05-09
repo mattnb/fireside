@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  annotateContextUsageWithTurnKind,
   createProviderSignalProcessingState,
   describeRunHeartbeat,
   processProviderSignalEvent,
@@ -47,6 +48,51 @@ describe('run activity orchestration', () => {
 
     expect(duplicate.action).toBeNull();
     expect(duplicate.lifecycleUpdate).toBeNull();
+  });
+
+  it('annotates contextUsage with the broker-known turnKind so the UI can filter mechanical turns', () => {
+    // Without this annotation, workflow-repair / maintenance-compaction
+    // turns (which run on Haiku regardless of agent profile) overwrote
+    // the agent's primary "current context" display with their own
+    // bookkeeping-model usage. Confirmed in the 2026-05-09 compact-modal
+    // bug where a Sonnet 4.6 agent showed claude-haiku-4-5 · 113K/200K.
+    const annotated = annotateContextUsageWithTurnKind(
+      { provider: 'claude', model: 'claude-haiku-4-5', usedTokens: 113000, source: 'stream' },
+      'workflow-repair',
+    );
+    expect(annotated).toMatchObject({
+      provider: 'claude',
+      model: 'claude-haiku-4-5',
+      turnKind: 'workflow-repair',
+    });
+  });
+
+  it('preserves a pre-existing turnKind on the contextUsage payload (adapter override wins)', () => {
+    const annotated = annotateContextUsageWithTurnKind(
+      {
+        provider: 'claude',
+        model: 'claude-sonnet-4-6',
+        usedTokens: 1000,
+        source: 'stream',
+        turnKind: 'chat',
+      },
+      'workflow-repair',
+    );
+    expect(annotated?.turnKind).toBe('chat');
+  });
+
+  it('returns the original payload unchanged when no turnKind is supplied', () => {
+    const usage = {
+      provider: 'codex',
+      model: 'gpt-5-codex',
+      usedTokens: 5000,
+      source: 'stream',
+    } as const;
+    expect(annotateContextUsageWithTurnKind(usage, undefined)).toBe(usage);
+  });
+
+  it('returns undefined when the contextUsage itself is undefined', () => {
+    expect(annotateContextUsageWithTurnKind(undefined, 'workflow-repair')).toBeUndefined();
   });
 
   it('describes heartbeat details relative to the last provider signal', () => {
