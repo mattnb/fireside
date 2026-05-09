@@ -180,16 +180,15 @@ function extractClaudeToolCalls(obj: Record<string, unknown>): NativeProviderToo
   const calls: NativeProviderToolCall[] = [];
   // This bridge observes Claude CLI stdout only; tool_result continuation belongs
   // in the future API/MCP execution loop that actively drives provider turns.
+  // We pull tool_use blocks ONLY from the final `assistant` event — never from
+  // streaming `content_block_start`, which always carries an empty `input: {}`
+  // (the args arrive incrementally via input_json_delta). Attempting to route
+  // the partial state through executeToolCall produced empty-args rejection
+  // rows for every MCP-routed turn until 2026-05-09.
   const type = stringValue(obj.type);
   if (type === 'assistant') {
     const message = asRecord(obj.message);
     calls.push(...extractClaudeContentBlocks(message?.content ?? obj.content));
-  }
-  if (type === 'stream_event') {
-    const event = asRecord(obj.event);
-    if (stringValue(event?.type) === 'content_block_start') {
-      calls.push(...extractClaudeContentBlocks([event?.content_block]));
-    }
   }
   return calls;
 }
@@ -202,6 +201,13 @@ function extractClaudeContentBlocks(value: unknown): NativeProviderToolCall[] {
     if (!obj || stringValue(obj.type) !== 'tool_use') continue;
     const name = stringValue(obj.name);
     if (!name) continue;
+    // MCP-routed tool calls (`mcp__<server>__<tool>`) are already executed
+    // end-to-end through the MCP HTTP endpoint by the spawned Claude CLI;
+    // re-routing the same tool_use record through executeToolCall would
+    // double-execute on success or, when args fail validation here despite
+    // succeeding via MCP, log a misleading rejection row. Skip them so the
+    // provider-tool-call path stays scoped to native (non-MCP) tools only.
+    if (name.startsWith('mcp__')) continue;
     const args = argsRecord(obj.input);
     const providerToolCallId =
       stringValue(obj.id) || fallbackProviderToolCallId('claude', name, args);

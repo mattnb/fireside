@@ -15,9 +15,9 @@ import {
 } from '../../repos/collaboration.js';
 import { defineTool } from '../registry.js';
 import {
+  collabNoteAddSchema,
+  collabNoteUpdateSchema,
   defaultCollabNoteStatus,
-  parseCollabNoteAddArgs,
-  parseCollabNoteUpdateArgs,
   type CollabNoteAddArgs,
   type CollabNoteUpdateArgs,
 } from '../schemas/collab.js';
@@ -129,7 +129,7 @@ export const collabNoteAddTool = defineTool<CollabNoteAddArgs>({
   name: 'collab.note.add',
   summary: 'Record a collaboration note (proposal, challenge, revision, decision, evidence).',
   requiredPermissions: ['collab:write'],
-  schema: { parse: parseCollabNoteAddArgs },
+  schema: collabNoteAddSchema,
   handler: handleCollabNoteAdd,
 });
 
@@ -137,7 +137,7 @@ export const collabNoteUpdateTool = defineTool<CollabNoteUpdateArgs>({
   name: 'collab.note.update',
   summary: 'Update an existing collaboration note (status, title, body, evidence, confidence).',
   requiredPermissions: ['collab:write'],
-  schema: { parse: parseCollabNoteUpdateArgs },
+  schema: collabNoteUpdateSchema,
   handler: handleCollabNoteUpdate,
 });
 

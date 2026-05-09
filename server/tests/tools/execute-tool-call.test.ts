@@ -194,6 +194,61 @@ describe('executeToolCall', () => {
     db.close();
   });
 
+  it('copies the handler-rejection summary into the audit row error column', async () => {
+    // Handler-returned rejections (where the handler returns
+    // `{ status: 'rejected', summary: '...' }` rather than throwing) used to
+    // leave `agent_tool_calls.error` NULL — operators could only discover
+    // the rejection reason by JOINing through result_json. The 2026-05-09
+    // smoke test surfaced this as `agent.checkin -> rejected (err=)` in
+    // `wiki/log.md` triage. Now the audit row's error column carries the
+    // summary text whenever a handler returns a non-applied terminal state.
+    const db = testDb();
+    const registry = createToolRegistry();
+    registry.register(
+      stubTool({
+        handler: () => ({
+          status: 'rejected',
+          summary: 'agent.checkin rejected: caller is not in the room',
+          effects: [],
+        }),
+      }),
+    );
+
+    const outcome = await executeToolCall({
+      db,
+      registry,
+      call: testCall({ idempotencyKey: 'rejection-error-fallback' }),
+      statePermissions: ['mission:write'],
+      now: () => 109,
+    });
+
+    expect(outcome.status).toBe('rejected');
+    const row = auditRow(db, outcome.callId);
+    expect(row.error).toBe('agent.checkin rejected: caller is not in the room');
+    db.close();
+  });
+
+  it('leaves the error column empty on applied calls (no rejection summary leakage)', async () => {
+    const db = testDb();
+    const registry = createToolRegistry();
+    registry.register(stubTool({ handler: () => appliedResult('all good') }));
+
+    const outcome = await executeToolCall({
+      db,
+      registry,
+      call: testCall({ idempotencyKey: 'applied-no-error' }),
+      statePermissions: ['mission:write'],
+      now: () => 110,
+    });
+
+    expect(outcome.status).toBe('applied');
+    const row = auditRow(db, outcome.callId);
+    // Schema default is '', not NULL. Either is fine — the invariant we care
+    // about is that applied calls don't carry the rejection-summary fallback.
+    expect(row.error == null || row.error === '').toBe(true);
+    db.close();
+  });
+
   it('records applied calls with normalized args, result, effects, and applied_at', async () => {
     const db = testDb();
     const registry = createToolRegistry();

@@ -197,3 +197,72 @@ export function defaultCollabNoteStatus(kind: CollaborationKind): CollaborationS
   if (kind === 'revision') return 'resolved';
   return 'open';
 }
+
+const COLLABORATION_KINDS: readonly CollaborationKind[] = [
+  'proposal',
+  'challenge',
+  'revision',
+  'decision',
+  'evidence',
+];
+const COLLABORATION_STATUSES: readonly CollaborationStatus[] = [
+  'open',
+  'blocked',
+  'accepted',
+  'rejected',
+  'resolved',
+  'superseded',
+  'informational',
+];
+const COLLABORATION_CONFIDENCES: readonly CollaborationConfidence[] = ['low', 'medium', 'high'];
+
+export const collabNoteAddSchema = {
+  inputSchema: {
+    type: 'object',
+    additionalProperties: false,
+    required: ['kind'],
+    properties: {
+      kind: { type: 'string', enum: COLLABORATION_KINDS as unknown as string[] },
+      title: { type: 'string', maxLength: TITLE_MAX },
+      body: { type: 'string', maxLength: BODY_MAX },
+      target: {
+        type: 'string',
+        maxLength: TARGET_MAX,
+        description: 'Subject of the note (e.g. checklist item title or path).',
+      },
+      evidence: {
+        type: 'array',
+        maxItems: EVIDENCE_COUNT_MAX,
+        items: { type: 'string', maxLength: EVIDENCE_ITEM_MAX },
+        description: 'Array of evidence strings (paths, citations, command output).',
+      },
+      status: { type: 'string', enum: COLLABORATION_STATUSES as unknown as string[] },
+      confidence: { type: 'string', enum: COLLABORATION_CONFIDENCES as unknown as string[] },
+    },
+  },
+  parse: parseCollabNoteAddArgs,
+};
+
+export const collabNoteUpdateSchema = {
+  inputSchema: {
+    type: 'object',
+    additionalProperties: false,
+    required: ['id'],
+    properties: {
+      id: {
+        type: 'string',
+        description: 'Existing collaboration note id to update.',
+      },
+      title: { type: 'string', maxLength: TITLE_MAX },
+      body: { type: 'string', maxLength: BODY_MAX },
+      evidence: {
+        type: 'array',
+        maxItems: EVIDENCE_COUNT_MAX,
+        items: { type: 'string', maxLength: EVIDENCE_ITEM_MAX },
+      },
+      status: { type: 'string', enum: COLLABORATION_STATUSES as unknown as string[] },
+      confidence: { type: 'string', enum: COLLABORATION_CONFIDENCES as unknown as string[] },
+    },
+  },
+  parse: parseCollabNoteUpdateArgs,
+};

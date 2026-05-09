@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { parsePermissionRequestArgs } from '../../../src/tools/schemas/permission.js';
 import {
+  collabNoteAddSchema,
+  collabNoteUpdateSchema,
   defaultCollabNoteStatus,
   parseCollabNoteAddArgs,
   parseCollabNoteUpdateArgs,
@@ -151,5 +153,58 @@ describe('parseCollabNoteUpdateArgs', () => {
       body: '  closed by tool  ',
     });
     expect(parsed).toEqual({ id: 'note-1', status: 'resolved', body: 'closed by tool' });
+  });
+});
+
+describe('collabNoteAddSchema.inputSchema (MCP tools/list visibility)', () => {
+  // Without an explicit JSON Schema, registry.listTools falls back to
+  // `{ type: 'object', additionalProperties: true }` and MCP-side LLM
+  // clients have no way to learn that `evidence` must be an array of
+  // strings. The 2026-05-09 smoke test surfaced agents repeatedly passing
+  // evidence as a string and getting rejected with no schema-level hint.
+  it('declares the full property surface so MCP clients can validate locally', () => {
+    const schema = collabNoteAddSchema.inputSchema as {
+      type: string;
+      additionalProperties: boolean;
+      required: string[];
+      properties: Record<string, { type: string; items?: { type: string }; enum?: string[] }>;
+    };
+    expect(schema.type).toBe('object');
+    expect(schema.additionalProperties).toBe(false);
+    expect(schema.required).toEqual(['kind']);
+    expect(schema.properties.kind?.enum).toEqual([
+      'proposal',
+      'challenge',
+      'revision',
+      'decision',
+      'evidence',
+    ]);
+    // The bug: `evidence` must surface as an array of strings, not a free
+    // string. Pin the shape so a future refactor can't quietly regress it.
+    expect(schema.properties.evidence?.type).toBe('array');
+    expect(schema.properties.evidence?.items?.type).toBe('string');
+    expect(schema.properties.title?.type).toBe('string');
+    expect(schema.properties.body?.type).toBe('string');
+    expect(schema.properties.target?.type).toBe('string');
+  });
+
+  it('reuses the existing parser so runtime validation is unchanged', () => {
+    expect(collabNoteAddSchema.parse).toBe(parseCollabNoteAddArgs);
+  });
+});
+
+describe('collabNoteUpdateSchema.inputSchema', () => {
+  it('declares evidence as an array of strings and id as required', () => {
+    const schema = collabNoteUpdateSchema.inputSchema as {
+      required: string[];
+      properties: Record<string, { type: string; items?: { type: string } }>;
+    };
+    expect(schema.required).toEqual(['id']);
+    expect(schema.properties.evidence?.type).toBe('array');
+    expect(schema.properties.evidence?.items?.type).toBe('string');
+  });
+
+  it('reuses the existing parser', () => {
+    expect(collabNoteUpdateSchema.parse).toBe(parseCollabNoteUpdateArgs);
   });
 });

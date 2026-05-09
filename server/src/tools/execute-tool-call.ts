@@ -167,13 +167,21 @@ export async function executeToolCall(
   }
 
   // 8. Record audit event with the handler's terminal status.
+  const auditStatus = handlerStatusToAuditStatus(result.status);
+  // For non-success terminal states (rejected, blocked, failed), copy the
+  // handler's summary into the audit row's `error` column so the rejection
+  // reason is visible without having to JOIN through result_json. Applied
+  // and duplicate outcomes leave `error` NULL.
+  const errorForAudit =
+    auditStatus !== 'applied' && auditStatus !== 'duplicate' ? result.summary : undefined;
   return persistTerminal({
     db,
     call,
-    status: handlerStatusToAuditStatus(result.status),
+    status: auditStatus,
     summary: result.summary,
     result,
     normalizedArgs,
+    ...(errorForAudit !== undefined ? { error: errorForAudit } : {}),
     authorization: {
       resolutionSource: permissionResolutionSource(input),
       required: auth.required,
