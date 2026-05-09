@@ -449,7 +449,7 @@ function claudeMcpConfigArgs(roomId?: string): string[] {
           ...servers,
           fireside: {
             ...firesideServer,
-            headers: { 'x-fireside-room-id': roomId },
+            headers: { 'x-fireside-room-id': roomId, 'x-fireside-agent-id': 'claude' },
           },
         },
       };

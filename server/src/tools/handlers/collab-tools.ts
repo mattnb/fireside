@@ -45,16 +45,20 @@ export function handleCollabNoteAdd(
     evidence: args.evidence ?? [],
   });
 
-  createAgentRunAction(db, {
-    roomId: call.roomId,
-    taskId: call.missionId,
-    runId: call.runId ?? call.id,
-    agentId: call.agentId,
-    kind: 'ledger',
-    status: 'completed',
-    label: `recorded ${args.kind}`,
-    detail: title,
-  });
+  // MCP/system callers have no agent_runs row; skip run-action logging so
+  // the FK on agent_run_actions.run_id doesn't trip.
+  if (call.runId) {
+    createAgentRunAction(db, {
+      roomId: call.roomId,
+      taskId: call.missionId,
+      runId: call.runId,
+      agentId: call.agentId,
+      kind: 'ledger',
+      status: 'completed',
+      label: `recorded ${args.kind}`,
+      detail: title,
+    });
+  }
 
   return {
     status: 'applied',
@@ -92,16 +96,18 @@ export function handleCollabNoteUpdate(
     };
   }
 
-  createAgentRunAction(db, {
-    roomId: call.roomId,
-    taskId: call.missionId,
-    runId: call.runId ?? call.id,
-    agentId: call.agentId,
-    kind: 'ledger',
-    status: 'completed',
-    label: `updated ${updated.kind}`,
-    detail: updated.title,
-  });
+  if (call.runId) {
+    createAgentRunAction(db, {
+      roomId: call.roomId,
+      taskId: call.missionId,
+      runId: call.runId,
+      agentId: call.agentId,
+      kind: 'ledger',
+      status: 'completed',
+      label: `updated ${updated.kind}`,
+      detail: updated.title,
+    });
+  }
 
   return {
     status: 'applied',
