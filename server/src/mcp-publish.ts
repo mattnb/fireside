@@ -132,13 +132,22 @@ async function ensureGeminiMcpRegistered(
 ): Promise<PublishMcpResult['gemini']> {
   if (!(await hasCli('gemini'))) return 'cli-missing';
 
+  // gemini-cli on Windows can exit non-zero with a libuv assertion
+  // ("Assertion failed: !(handle->flags & UV_HANDLE_CLOSING) ... src\\win\\async.c")
+  // even when the listing itself succeeded — the MCP probe child it spawns
+  // during `mcp list` races libuv handle cleanup. The stdout is still
+  // correct, so prefer content over exit code: fireside is registered iff
+  // it appears in stdout. Only treat failure as terminal when stdout also
+  // lacks our server name.
   const list = await runCli('gemini', ['mcp', 'list']);
-  if (list.code !== 0) {
-    logger.warn({ stderr: list.stderr }, 'gemini mcp list failed; skipping fireside registration');
-    return 'failed';
-  }
-  if (list.stdout.includes(SERVER_NAME)) {
+  if (geminiListIncludesFireside(list.stdout)) {
     return 'already-configured';
+  }
+  if (list.code !== 0) {
+    logger.warn(
+      { code: list.code, stderr: list.stderr.slice(0, 500) },
+      'gemini mcp list failed and stdout did not include fireside; attempting add anyway',
+    );
   }
 
   // -s user persists at user scope (not the project cwd Fireside happens to
@@ -153,11 +162,27 @@ async function ensureGeminiMcpRegistered(
     '-s',
     'user',
   ]);
-  if (add.code !== 0) {
-    logger.warn({ stderr: add.stderr }, 'gemini mcp add fireside failed');
-    return 'failed';
+  if (add.code === 0) return 'registered';
+
+  // Same libuv-race rule for add: re-list and check stdout. If fireside is
+  // there, we registered successfully; otherwise the failure is real.
+  const reList = await runCli('gemini', ['mcp', 'list']);
+  if (geminiListIncludesFireside(reList.stdout)) {
+    return 'registered';
   }
-  return 'registered';
+  logger.warn(
+    { code: add.code, stderr: add.stderr.slice(0, 500) },
+    'gemini mcp add fireside failed',
+  );
+  return 'failed';
+}
+
+function geminiListIncludesFireside(stdout: string): boolean {
+  // `gemini mcp list` prints e.g. "✓ fireside: http://... - Connected" or
+  // "✗ fireside: ... - Disconnected". A bare substring on the server name
+  // is enough; we don't try to distinguish status here (publish is a write
+  // path, not a health check).
+  return stdout.includes(`${SERVER_NAME}:`) || stdout.includes(`${SERVER_NAME} `);
 }
 
 interface CliResult {
@@ -207,4 +232,4 @@ function runCli(command: string, args: readonly string[], timeoutMs = 30_000): P
 }
 
 // Exported only for unit tests.
-export const __test__ = { codexHasFiresideEntry };
+export const __test__ = { codexHasFiresideEntry, geminiListIncludesFireside };
