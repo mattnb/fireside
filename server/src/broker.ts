@@ -326,6 +326,7 @@ export interface BrokerDeps {
     timeoutMs?: number | null,
     turnKind?: AgentTurnKind,
     modelSettings?: AgentModelSettings,
+    roomId?: string,
   ) => Promise<AgentReply>;
   getSpec: (id: AgentId) => AgentSpec | undefined;
   maxHistory?: number;
@@ -2841,6 +2842,7 @@ export class Broker extends EventEmitter {
       maxRetryAttempts: 3,
       turnKind,
       ...(modelSettings ? { modelSettings } : {}),
+      roomId,
     });
     const currentRun = getAgentRun(this.deps.db, run.id);
     if (currentRun && currentRun.status !== 'running') {
@@ -3944,6 +3946,7 @@ export class Broker extends EventEmitter {
         undefined,
         'maintenance-compaction',
         input.modelSettings,
+        input.roomId,
       );
     } catch (err) {
       this.activeRunAbortControllers.delete(input.runId);

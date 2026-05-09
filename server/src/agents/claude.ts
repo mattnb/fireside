@@ -1,4 +1,6 @@
 // server/src/agents/claude.ts
+import { readFileSync, writeFileSync } from 'node:fs';
+import path from 'node:path';
 import type { AgentReply, AgentRunContext, AgentSpec, AgentStreamEvent } from './types.js';
 import { AgentParseError, isMechanicalTurnKind } from './types.js';
 import { extractTopLevelJsonObject } from './json-extract.js';
@@ -423,14 +425,41 @@ function claudeModelArgs(context?: AgentRunContext): string[] {
 }
 
 // When FIRESIDE_MCP_CONFIG points at a JSON file describing MCP servers,
-// we pass it through verbatim. This guarantees the spawned `claude`
-// subprocess sees the same MCP server set the operator declared, even when
-// the per-room cwd doesn't carry a project-level `.mcp.json`. Unset means
-// "inherit whatever the user's interactive Claude config provides."
-function claudeMcpConfigArgs(): string[] {
-  const path = process.env.FIRESIDE_MCP_CONFIG;
-  if (!path || !path.trim()) return [];
-  return ['--mcp-config', path];
+// we pass it (or a room-scoped variant) to the spawned `claude` subprocess.
+// When roomId is supplied we write a per-room config that adds
+// `x-fireside-room-id` as an HTTP header so the Fireside MCP endpoint can
+// route tool calls to the correct room without a separate lookup.
+function claudeMcpConfigArgs(roomId?: string): string[] {
+  const basePath = process.env.FIRESIDE_MCP_CONFIG;
+  if (!basePath || !basePath.trim()) return [];
+  if (!roomId) return ['--mcp-config', basePath];
+
+  // Build a per-room config alongside the base config file so the spawned
+  // Claude process sends the room ID header on every MCP HTTP request.
+  const dir = path.dirname(basePath);
+  const roomConfigPath = path.join(dir, `fireside-mcp.${roomId}.json`);
+  try {
+    const base = JSON.parse(readFileSync(basePath, 'utf8')) as Record<string, unknown>;
+    const servers = (base.mcpServers ?? {}) as Record<string, Record<string, unknown>>;
+    const firesideServer = servers.fireside;
+    if (firesideServer) {
+      const roomConfig = {
+        ...base,
+        mcpServers: {
+          ...servers,
+          fireside: {
+            ...firesideServer,
+            headers: { 'x-fireside-room-id': roomId },
+          },
+        },
+      };
+      writeFileSync(roomConfigPath, JSON.stringify(roomConfig, null, 2), 'utf8');
+      return ['--mcp-config', roomConfigPath];
+    }
+  } catch {
+    // Fall through to base config if the write fails.
+  }
+  return ['--mcp-config', basePath];
 }
 
 function claudeCacheStabilityArgs(): string[] {
@@ -453,7 +482,7 @@ export const claudeSpec: AgentSpec = {
       'stream-json',
       '--include-partial-messages',
       ...claudeModelArgs(context),
-      ...claudeMcpConfigArgs(),
+      ...claudeMcpConfigArgs(context?.roomId),
       ...claudeCacheStabilityArgs(),
       '--permission-mode',
       claudePermissionMode(context),

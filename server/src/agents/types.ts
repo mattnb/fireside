@@ -79,6 +79,7 @@ export interface AgentRunContext {
   permission?: PermissionGrant;
   turnKind?: AgentTurnKind;
   model?: AgentModelSettings;
+  roomId?: string;
 }
 
 export interface AgentModelSettings {

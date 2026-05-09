@@ -18,6 +18,7 @@ export interface RunAgentOptions {
   permission?: AgentRunContext['permission'];
   turnKind?: AgentRunContext['turnKind'];
   model?: AgentModelSettings;
+  roomId?: string;
   cancelSignal?: AbortSignal;
   onStreamEvent?: (event: AgentStreamEvent) => void;
 }
@@ -59,11 +60,12 @@ function emitStreamEvents(
 export async function runAgentTurn(opts: RunAgentOptions): Promise<AgentReply> {
   const { spec, prompt, sessionId } = opts;
   const context: AgentRunContext | undefined =
-    opts.permission || opts.turnKind || opts.model
+    opts.permission || opts.turnKind || opts.model || opts.roomId
       ? {
           ...(opts.permission ? { permission: opts.permission } : {}),
           ...(opts.turnKind ? { turnKind: opts.turnKind } : {}),
           ...(opts.model ? { model: opts.model } : {}),
+          ...(opts.roomId ? { roomId: opts.roomId } : {}),
         }
       : undefined;
   const args = context

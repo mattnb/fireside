@@ -48,6 +48,7 @@ export async function start(config: Config = loadConfig()): Promise<FiresideServ
       timeoutMs,
       turnKind,
       modelSettings,
+      roomId,
     ) =>
       runAgentTurn({
         spec,
@@ -56,6 +57,7 @@ export async function start(config: Config = loadConfig()): Promise<FiresideServ
         ...(permission !== undefined ? { permission } : {}),
         ...(turnKind !== undefined ? { turnKind } : {}),
         ...(modelSettings !== undefined ? { model: modelSettings } : {}),
+        ...(roomId !== undefined ? { roomId } : {}),
         ...(cancelSignal !== undefined ? { cancelSignal } : {}),
         ...(onStreamEvent !== undefined ? { onStreamEvent } : {}),
         ...(timeoutMs !== undefined ? { timeoutMs } : {}),

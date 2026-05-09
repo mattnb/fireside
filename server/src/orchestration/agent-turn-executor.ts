@@ -19,6 +19,7 @@ export interface ProviderTurnRunAgent {
     timeoutMs?: number | null,
     turnKind?: AgentTurnKind,
     modelSettings?: AgentModelSettings,
+    roomId?: string,
   ): Promise<AgentReply>;
 }
 
@@ -51,6 +52,7 @@ export interface ExecuteProviderTurnInput {
   maxRetryAttempts?: number;
   turnKind?: AgentTurnKind;
   modelSettings?: AgentModelSettings;
+  roomId?: string;
 }
 
 export async function executeProviderTurn(
@@ -77,6 +79,7 @@ export async function executeProviderTurn(
       input.permission?.source === 'yolo' ? null : undefined,
       input.turnKind,
       input.modelSettings,
+      input.roomId,
     );
     return { ok: true, reply };
   } catch (err) {
