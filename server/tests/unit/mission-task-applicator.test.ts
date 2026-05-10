@@ -94,6 +94,128 @@ describe('mission task applicator', () => {
     expect(actions.map((action) => action.label)).toContain('mission task create');
   });
 
+  it('preserves the create-time taskId slug as a title prefix so subsequent updates can resolve by ref', () => {
+    // Real bug surfaced 2026-05-09 by the MCP smoke test: an agent
+    // created a checklist item with taskId="smoke-test-step-2" and
+    // title="Create task via mission.task.update". On the next turn it
+    // tried `update taskId="smoke-test-step-2"` and was rejected with
+    // "smoke-test-step-2 was not updated" — the lookup walked id and
+    // title (prefix) but the slug was discarded on create.
+    //
+    // Now the slug is folded into the title when both are provided and
+    // distinct, so resolveChecklistItem's prefix match finds the item
+    // on the follow-up update.
+    const room = createRoom(db, { name: 'mission' });
+    const task = createTask(db, { roomId: room.id, title: 'Mission' });
+
+    const createResult = applyMissionTaskUpdates({
+      db,
+      roomId: room.id,
+      task,
+      runId: 'run-1',
+      agentId: 'claude',
+      defaultPlanId: null,
+      forcePlanOnUpdates: false,
+      updates: [
+        update({
+          action: 'create',
+          id: 'smoke-test-step-2',
+          title: 'Create task via mission.task.update',
+          status: 'open',
+        }),
+      ],
+      recordRunAction: (action) => actions.push(action),
+    });
+    expect(createResult.applied).toBe(1);
+
+    const [item] = listTaskChecklistItems(db, task.id);
+    expect(item?.title).toBe('smoke-test-step-2: Create task via mission.task.update');
+
+    const updateResult = applyMissionTaskUpdates({
+      db,
+      roomId: room.id,
+      task,
+      runId: 'run-2',
+      agentId: 'claude',
+      defaultPlanId: null,
+      forcePlanOnUpdates: false,
+      updates: [
+        update({
+          action: 'update',
+          id: 'smoke-test-step-2',
+          title: '',
+          status: 'done',
+        }),
+      ],
+      recordRunAction: (action) => actions.push(action),
+    });
+    expect(updateResult.applied).toBe(1);
+    const [updated] = listTaskChecklistItems(db, task.id);
+    expect(updated?.status).toBe('done');
+  });
+
+  it('does not double-prepend when taskId equals title or title already starts with taskId', () => {
+    // Avoids degenerate "X: X" titles when the agent passes the same
+    // value for both fields, or already-prefixed titles like
+    // "smoke-1: ...". The lookup still works in both cases.
+    const room = createRoom(db, { name: 'mission' });
+    const task = createTask(db, { roomId: room.id, title: 'Mission' });
+
+    applyMissionTaskUpdates({
+      db,
+      roomId: room.id,
+      task,
+      runId: 'run-1',
+      agentId: 'claude',
+      defaultPlanId: null,
+      forcePlanOnUpdates: false,
+      updates: [
+        update({ action: 'create', id: 'identical', title: 'identical' }),
+      ],
+      recordRunAction: () => {},
+    });
+
+    applyMissionTaskUpdates({
+      db,
+      roomId: room.id,
+      task,
+      runId: 'run-2',
+      agentId: 'claude',
+      defaultPlanId: null,
+      forcePlanOnUpdates: false,
+      updates: [
+        update({ action: 'create', id: 'slug-1', title: 'slug-1: already prefixed' }),
+      ],
+      recordRunAction: () => {},
+    });
+
+    const items = listTaskChecklistItems(db, task.id);
+    const titles = items.map((item) => item.title).sort();
+    expect(titles).toEqual(['identical', 'slug-1: already prefixed']);
+  });
+
+  it('falls back to the taskId slug as the title when no title is provided on create', () => {
+    const room = createRoom(db, { name: 'mission' });
+    const task = createTask(db, { roomId: room.id, title: 'Mission' });
+
+    applyMissionTaskUpdates({
+      db,
+      roomId: room.id,
+      task,
+      runId: 'run-1',
+      agentId: 'claude',
+      defaultPlanId: null,
+      forcePlanOnUpdates: false,
+      updates: [
+        update({ action: 'create', id: 'lone-slug', title: '' }),
+      ],
+      recordRunAction: () => {},
+    });
+
+    const [item] = listTaskChecklistItems(db, task.id);
+    expect(item?.title).toBe('lone-slug');
+  });
+
   it('marks a mission blocked when a council-required checklist blocker lands', () => {
     const room = createRoom(db, { name: 'blocked mission' });
     const task = createTask(db, { roomId: room.id, title: 'Mission' });

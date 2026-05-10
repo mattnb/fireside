@@ -136,13 +136,34 @@ export function applyMissionTaskUpdates(
       updatedBy: input.agentId,
     };
 
+    // On create, agents reasonably expect the `taskId` they pass to be a
+    // stable reference handle they can look up on subsequent updates (the
+    // schema description literally says "Checklist item id or title/
+    // reference"). Previously `taskId` was silently discarded on create —
+    // only `title` was persisted — so a follow-up
+    // `mission.task.update taskId="<slug>"` got "<slug> was not updated"
+    // because resolveChecklistItem only matches against id and title.
+    //
+    // When the agent supplies both AND they differ, prepend the slug to
+    // the title: "<slug>: <title>". The stable ref then survives as a
+    // title-prefix that resolveChecklistItem's prefix-match finds. When
+    // only one is provided (or they're the same), behavior is unchanged.
+    const titleForCreate = (() => {
+      const slug = update.id.trim();
+      const title = update.title.trim();
+      if (slug && title && slug.toLowerCase() !== title.toLowerCase() && !title.toLowerCase().startsWith(slug.toLowerCase())) {
+        return `${slug}: ${title}`.slice(0, 240);
+      }
+      return (title || slug).slice(0, 240);
+    })();
+
     const item =
       update.action === 'create'
         ? createTaskChecklistItem(input.db, {
             taskId: input.task.id,
             planId,
             phaseId,
-            title: update.title.slice(0, 240),
+            title: titleForCreate,
             detail: update.detail.slice(0, 2000),
             status: effectiveStatus ?? 'open',
             dependencyIds,
