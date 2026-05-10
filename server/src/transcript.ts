@@ -571,7 +571,7 @@ function renderPrompt(
           `Recap file: ${opts.contextFiles.recapPath}`,
           `Bounded transcript file: ${opts.contextFiles.transcriptPath}`,
           ...(opts.contextFiles.protocolsPath
-            ? [`Hidden block protocols: ${opts.contextFiles.protocolsPath}`]
+            ? [`MCP tool protocols: ${opts.contextFiles.protocolsPath}`]
             : []),
           `Large message artifacts: ${opts.contextFiles.artifactCount ?? 0}. Messages over ${opts.contextFiles.largeMessageThresholdChars ?? 'the configured threshold'} chars are stored outside the live prompt and represented here by excerpts plus file paths.`,
           ...(!compactPrompt && opts.contextFiles.fixtureCount && opts.contextFiles.fixtureCount > 0

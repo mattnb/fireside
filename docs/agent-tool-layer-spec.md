@@ -1,5 +1,16 @@
 # Fireside Structured Agent Tool Layer Spec
 
+> **Status: SUPERSEDED (2026-05-09)** — This spec described the migration
+> from slash-block-driven agent commands to a structured tool layer. Phase
+> 2 of the migration is now complete: the slash-block extractor pipeline,
+> `slash-block-adapter.ts`, and the per-block route\* helpers were deleted
+> on 2026-05-09 (commits `04eef92` + `de5a084`). MCP is the canonical and
+> only mission/collab/permission tool entry point. Pseudo-syntax like
+> `/mission-task action: update id: abc status: done` is no longer parsed
+> and is stripped from visible chat by the pipeline's strip-leaked-slash-
+> blocks step. See `protocols-document.ts` for the live agent-facing
+> protocol manifest.
+
 Status: draft
 
 Author: Codex

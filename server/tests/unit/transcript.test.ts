@@ -1216,7 +1216,7 @@ describe('role-sliced active-mission protocol', () => {
         totalMessages: 1,
       },
     });
-    expect(prompt).toContain('Hidden block protocols: data/agent-context/r1/protocols.md');
+    expect(prompt).toContain('MCP tool protocols: data/agent-context/r1/protocols.md');
     expect(prompt).toContain('Plan and phase protocols (MCP):');
     expect(prompt).toContain('Task and receipt protocols (MCP):');
     expect(prompt).toContain('See data/agent-context/r1/protocols.md');
@@ -1259,7 +1259,7 @@ describe('role-sliced active-mission protocol', () => {
     // includeFullProtocols=true used to re-inject inline slash-block schemas.
     // Post-2026-05-09 MCP migration, the "full" protocols are still teaching
     // the same MCP tools — only the protocols-path pointer flips.
-    expect(prompt).toContain('Hidden block protocols: data/agent-context/r1/protocols.md');
+    expect(prompt).toContain('MCP tool protocols: data/agent-context/r1/protocols.md');
     expect(prompt).toContain('Plan and phase protocols (MCP):');
     expect(prompt).toContain('Task and receipt protocols (MCP):');
     expect(prompt).toContain('mission.plan.create');
