@@ -1517,6 +1517,40 @@ function ensureMissionBriefingRetention(db: DbType): void {
   db.pragma('foreign_keys = ON');
 }
 
+function ensureNotificationTables(db: DbType): void {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS notifications (
+      id TEXT PRIMARY KEY,
+      kind TEXT NOT NULL,
+      severity TEXT NOT NULL DEFAULT 'info' CHECK (severity IN ('info', 'warn', 'critical')),
+      room_id TEXT REFERENCES rooms(id) ON DELETE CASCADE,
+      task_id TEXT REFERENCES tasks(id) ON DELETE SET NULL,
+      run_id TEXT REFERENCES agent_runs(id) ON DELETE SET NULL,
+      permission_request_id TEXT REFERENCES permission_requests(id) ON DELETE SET NULL,
+      agent_id TEXT NOT NULL DEFAULT '',
+      summary TEXT NOT NULL,
+      detail TEXT NOT NULL DEFAULT '',
+      payload_json TEXT NOT NULL DEFAULT '{}',
+      dedupe_key TEXT NOT NULL DEFAULT '',
+      created_at INTEGER NOT NULL,
+      read_at INTEGER,
+      dismissed_at INTEGER
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_notifications_created
+      ON notifications(created_at);
+
+    CREATE INDEX IF NOT EXISTS idx_notifications_room_created
+      ON notifications(room_id, created_at);
+
+    CREATE INDEX IF NOT EXISTS idx_notifications_unread
+      ON notifications(read_at, dismissed_at, created_at);
+
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_notifications_dedupe
+      ON notifications(dedupe_key) WHERE dedupe_key <> '';
+  `);
+}
+
 function ensureMissionProposalTables(db: DbType): void {
   db.exec(`
     CREATE TABLE IF NOT EXISTS task_acceptance_criteria (
@@ -1593,5 +1627,6 @@ export function openDatabase(filename: string): DbType {
   repairMalformedHiddenLedgerRows(db);
   ensureMissionBriefingTables(db);
   ensureMissionProposalTables(db);
+  ensureNotificationTables(db);
   return db;
 }

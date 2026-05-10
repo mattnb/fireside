@@ -941,6 +941,38 @@ export interface AuditStreamResponse {
   events: AuditEvent[];
 }
 
+export type NotificationKind =
+  | 'permission-requested'
+  | 'approval-needed'
+  | 'verifier-needed'
+  | 'task-done'
+  | 'task-rejected'
+  | 'run-failed';
+
+export type NotificationSeverity = 'info' | 'warn' | 'critical';
+
+export interface Notification {
+  id: string;
+  kind: NotificationKind;
+  severity: NotificationSeverity;
+  roomId: string | null;
+  taskId: string | null;
+  runId: string | null;
+  permissionRequestId: string | null;
+  agentId: string;
+  summary: string;
+  detail: string;
+  payload: Record<string, unknown>;
+  createdAt: number;
+  readAt: number | null;
+  dismissedAt: number | null;
+}
+
+export interface NotificationsResponse {
+  notifications: Notification[];
+  unread: number;
+}
+
 export type FiresideWsEvent =
   | { type: 'messageAppended'; message: Message }
   | { type: 'messageUpdated'; message: Message }
@@ -976,7 +1008,8 @@ export type FiresideWsEvent =
   | { type: 'agentRunActionCreated'; action: AgentRunAction }
   | { type: 'artifactsUpdated'; roomId: string }
   | { type: 'collaborationItemCreated'; item: CollaborationItem }
-  | { type: 'yoloStatusUpdated'; status: YoloStatus };
+  | { type: 'yoloStatusUpdated'; status: YoloStatus }
+  | { type: 'notificationCreated'; notification: Notification };
 
 export interface PostMessageRequest {
   roomId: string;

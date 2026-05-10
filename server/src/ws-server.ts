@@ -16,6 +16,7 @@ import type { Task } from './repos/tasks.js';
 import type { AgentRunSummary } from './repos/agent-runs.js';
 import type { CollaborationItem } from './repos/collaboration.js';
 import type { AgentRunAction } from './repos/run-actions.js';
+import type { Notification } from './repos/notifications.js';
 import { logger } from './logger.js';
 
 interface ClientState {
@@ -230,6 +231,15 @@ export function attachWebSocketServer(httpServer: HttpServer, broker: Broker): W
   broker.on('projectDeleted', (evt: { projectId: string }) => {
     const payload = JSON.stringify({ type: 'projectDeleted', projectId: evt.projectId });
     for (const [client] of clients.entries()) {
+      if (client.readyState === client.OPEN) client.send(payload);
+    }
+  });
+
+  broker.on('notificationCreated', (notification: Notification) => {
+    const payload = JSON.stringify({ type: 'notificationCreated', notification });
+    for (const [client] of clients.entries()) {
+      // Notifications are global (the inbox is per-user, not per-room) so
+      // broadcast to every connected client without checking subscriptions.
       if (client.readyState === client.OPEN) client.send(payload);
     }
   });

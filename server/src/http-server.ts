@@ -33,6 +33,15 @@ import {
   buildAuditStream,
   type AuditEventKind,
 } from './activity-stream/audit-stream.js';
+import {
+  countUnreadNotifications,
+  dismissNotification,
+  listNotifications,
+  markAllNotificationsRead,
+  markNotificationRead,
+} from './repos/notifications.js';
+import { exportMissionMarkdown } from './export/mission-export.js';
+import { exportTranscriptMarkdown } from './export/transcript-export.js';
 
 const AUDIT_KINDS_SET = new Set<string>(AUDIT_EVENT_KINDS);
 function isAuditKind(value: string): value is AuditEventKind {
@@ -364,6 +373,38 @@ export function buildHttpServer(deps: HttpDeps) {
 
   app.get('/api/state', async () => {
     return buildStatusSnapshot({ db: deps.db });
+  });
+
+  app.get<{ Querystring: { limit?: string; unreadOnly?: string } }>(
+    '/api/notifications',
+    async (req) => {
+      const limit = req.query.limit ? Number.parseInt(req.query.limit, 10) : NaN;
+      const unreadOnly = req.query.unreadOnly === '1' || req.query.unreadOnly === 'true';
+      const opts: Parameters<typeof listNotifications>[1] = {};
+      if (Number.isFinite(limit) && limit > 0) opts.limit = limit;
+      if (unreadOnly) opts.unreadOnly = true;
+      return {
+        notifications: listNotifications(deps.db, opts),
+        unread: countUnreadNotifications(deps.db),
+      };
+    },
+  );
+
+  app.post<{ Params: { id: string } }>('/api/notifications/:id/read', async (req, reply) => {
+    const updated = markNotificationRead(deps.db, req.params.id);
+    if (!updated) return reply.code(404).send({ error: 'not found' });
+    return updated;
+  });
+
+  app.post<{ Params: { id: string } }>('/api/notifications/:id/dismiss', async (req, reply) => {
+    const updated = dismissNotification(deps.db, req.params.id);
+    if (!updated) return reply.code(404).send({ error: 'not found' });
+    return updated;
+  });
+
+  app.post('/api/notifications/read-all', async () => {
+    const count = markAllNotificationsRead(deps.db);
+    return { marked: count };
   });
 
   app.get<{
@@ -1397,6 +1438,30 @@ export function buildHttpServer(deps: HttpDeps) {
       throw err;
     }
   });
+
+  app.get<{ Params: { id: string } }>('/api/tasks/:id/export.md', async (req, reply) => {
+    const result = exportMissionMarkdown(deps.db, req.params.id);
+    if (!result) return reply.code(404).send({ error: 'task not found' });
+    reply.header('Content-Type', 'text/markdown; charset=utf-8');
+    reply.header('Content-Disposition', `attachment; filename="${result.filename}"`);
+    return result.markdown;
+  });
+
+  app.get<{ Params: { id: string }; Querystring: { limit?: string } }>(
+    '/api/rooms/:id/transcript.md',
+    async (req, reply) => {
+      const opts: Parameters<typeof exportTranscriptMarkdown>[2] = {};
+      if (req.query.limit) {
+        const limit = Number.parseInt(req.query.limit, 10);
+        if (Number.isFinite(limit) && limit > 0) opts.limit = limit;
+      }
+      const result = exportTranscriptMarkdown(deps.db, req.params.id, opts);
+      if (!result) return reply.code(404).send({ error: 'room not found' });
+      reply.header('Content-Type', 'text/markdown; charset=utf-8');
+      reply.header('Content-Disposition', `attachment; filename="${result.filename}"`);
+      return result.markdown;
+    },
+  );
 
   // Mission proposal/approve/verify gate — human-side routes. Agents use
   // mission.approve / mission.clarify.answer via MCP; humans don't have an

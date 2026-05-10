@@ -6,6 +6,8 @@
 
 import { ChangeDetectionStrategy, Component, input, output } from '@angular/core';
 
+import { NotificationBell, type BellNavigation } from '../notification-bell/notification-bell';
+
 export type TopbarTab<TId extends string = string> = {
   id: TId;
   label: string;
@@ -15,6 +17,7 @@ export type TopbarTab<TId extends string = string> = {
   selector: 'fs-topbar',
   standalone: true,
   changeDetection: ChangeDetectionStrategy.OnPush,
+  imports: [NotificationBell],
   templateUrl: './topbar.html',
   styleUrl: './topbar.css',
 })
@@ -26,4 +29,5 @@ export class Topbar<TabId extends string = string> {
   readonly selectedTab = input<TabId | null>(null);
 
   readonly tabSelected = output<TabId>();
+  readonly notificationNavigated = output<BellNavigation>();
 }

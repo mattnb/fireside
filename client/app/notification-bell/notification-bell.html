@@ -1,0 +1,106 @@
+<div class="notif-bell">
+  <button
+    type="button"
+    class="notif-bell__btn"
+    [class.has-unread]="visibleUnread() > 0"
+    (click)="toggle(); $event.stopPropagation()"
+    [attr.aria-expanded]="open()"
+    aria-label="notifications"
+  >
+    <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
+      <path
+        d="M12 3a1 1 0 0 1 1 1v.6a6 6 0 0 1 5 5.9V14l1.4 2.1A1 1 0 0 1 18.6 18H5.4a1 1 0 0 1-.8-1.9L6 14v-3.5a6 6 0 0 1 5-5.9V4a1 1 0 0 1 1-1z M9.5 19.5a2.5 2.5 0 0 0 5 0z"
+        fill="currentColor"
+        stroke="none"
+      />
+    </svg>
+    @if (visibleUnread() > 0) {
+    <span class="notif-bell__count">{{ visibleUnread() }}</span>
+    }
+  </button>
+
+  @if (open()) {
+  <section
+    class="notif-bell__panel"
+    role="dialog"
+    aria-label="notifications"
+    (click)="$event.stopPropagation()"
+  >
+    <header class="notif-bell__panel-head">
+      <h2>notifications</h2>
+      <div class="notif-bell__head-actions">
+        <button
+          type="button"
+          class="notif-bell__head-btn"
+          [class.is-active]="showSettings()"
+          (click)="toggleSettings($event)"
+          aria-label="preferences"
+        >
+          settings
+        </button>
+        <button
+          type="button"
+          class="notif-bell__head-btn"
+          [disabled]="visibleUnread() === 0"
+          (click)="markAllRead($event)"
+        >
+          mark all read
+        </button>
+      </div>
+    </header>
+
+    @if (showSettings()) {
+    <div class="notif-bell__settings">
+      <p class="notif-bell__settings-hint">
+        muted kinds still arrive on the server but stay hidden here.
+      </p>
+      @for (kind of allKinds; track kind) {
+      <label class="notif-bell__settings-row">
+        <input
+          type="checkbox"
+          [checked]="!isMuted(kind)"
+          (change)="toggleMuteKind(kind, $event)"
+        />
+        <span>{{ kindLabel[kind] }}</span>
+      </label>
+      }
+    </div>
+    } @else {
+    <div class="notif-bell__list">
+      @if (visibleNotifications().length === 0) {
+      <p class="notif-bell__empty">no notifications.</p>
+      } @else { @for (notification of visibleNotifications(); track notification.id) {
+      <article
+        class="notif-bell__item"
+        [class.is-unread]="isUnread(notification)"
+        [attr.data-severity]="notification.severity"
+        (click)="navigate(notification)"
+      >
+        <header class="notif-bell__item-head">
+          <span class="notif-bell__item-kind">{{ kindLabel[notification.kind] }}</span>
+          @if (isUnread(notification)) {
+          <span class="notif-bell__item-dot" aria-hidden="true"></span>
+          }
+          <time class="notif-bell__item-time">{{ formatRelative(notification.createdAt) }}</time>
+        </header>
+        <div class="notif-bell__item-summary">{{ notification.summary }}</div>
+        @if (notification.detail) {
+        <div class="notif-bell__item-detail">{{ notification.detail }}</div>
+        }
+        <div class="notif-bell__item-actions">
+          @if (notification.readAt === null) {
+          <button type="button" class="notif-bell__item-btn" (click)="markRead(notification, $event)">
+            mark read
+          </button>
+          }
+          <button type="button" class="notif-bell__item-btn" (click)="dismiss(notification, $event)">
+            dismiss
+          </button>
+        </div>
+      </article>
+      } }
+    </div>
+    }
+  </section>
+  }
+</div>

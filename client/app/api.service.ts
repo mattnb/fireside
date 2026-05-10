@@ -13,6 +13,8 @@ import {
   AgentTurnOutcome,
   AuditStreamResponse,
   CollaborationItem,
+  Notification,
+  NotificationsResponse,
   ConversationFixture,
   Message,
   MessageRetractionUpdate,
@@ -220,6 +222,25 @@ export class FiresideApi {
       if (opts.limit !== undefined) params['limit'] = opts.limit;
       return this.http.get<SearchResponse>('/api/search', { params });
     },
+  };
+
+  readonly exports = {
+    missionUrl: (taskId: string) => `/api/tasks/${taskId}/export.md`,
+    transcriptUrl: (roomId: string) => `/api/rooms/${roomId}/transcript.md`,
+  };
+
+  readonly notifications = {
+    list: (opts: { limit?: number; unreadOnly?: boolean } = {}) => {
+      const params: Record<string, string | number> = {};
+      if (opts.limit !== undefined) params['limit'] = opts.limit;
+      if (opts.unreadOnly) params['unreadOnly'] = '1';
+      return this.http.get<NotificationsResponse>('/api/notifications', { params });
+    },
+    markRead: (id: string) =>
+      this.http.post<Notification>(`/api/notifications/${id}/read`, {}),
+    dismiss: (id: string) =>
+      this.http.post<Notification>(`/api/notifications/${id}/dismiss`, {}),
+    markAllRead: () => this.http.post<{ marked: number }>('/api/notifications/read-all', {}),
   };
 
   readonly audit = {

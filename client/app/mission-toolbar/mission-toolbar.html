@@ -179,4 +179,44 @@
     </svg>
     <span>save briefing</span>
   </button>
+
+  @if (activeTask(); as task) {
+  <a
+    class="control-btn control-btn--briefing mission-view-tabs__briefing"
+    [attr.href]="exportMissionUrl(task.id)"
+    [attr.download]="'mission-' + task.id + '.md'"
+    title="Download mission as Markdown"
+  >
+    <svg viewBox="0 0 20 20" aria-hidden="true">
+      <path
+        d="M10 3v9m0 0l-3-3m3 3l3-3M4 14v2.5h12V14"
+        fill="none"
+        stroke="currentColor"
+        stroke-width="1.5"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+      />
+    </svg>
+    <span>export md</span>
+  </a>
+  } @if (store.selectedRoomId(); as roomId) {
+  <a
+    class="control-btn control-btn--briefing mission-view-tabs__briefing"
+    [attr.href]="exportTranscriptUrl(roomId)"
+    [attr.download]="'transcript-' + roomId + '.md'"
+    title="Download chat transcript as Markdown"
+  >
+    <svg viewBox="0 0 20 20" aria-hidden="true">
+      <path
+        d="M4 4.5h12v9H8.5L5 16v-2.5H4z"
+        fill="none"
+        stroke="currentColor"
+        stroke-width="1.5"
+        stroke-linejoin="round"
+      />
+      <path d="M7 8h6M7 11h4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
+    </svg>
+    <span>export chat</span>
+  </a>
+  }
 </nav>

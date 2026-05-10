@@ -52,6 +52,7 @@ import { MissionOutline } from './mission-outline/mission-outline';
 import { TokenBurnPanel } from './token-burn-panel/token-burn-panel';
 import { CompletedRunsModal } from './completed-runs-modal/completed-runs-modal';
 import { CommandPalette, type PaletteSelection } from './command-palette/command-palette';
+import type { BellNavigation } from './notification-bell/notification-bell';
 import type { DraftRoomAgent } from './room-agent-types';
 import type { ChatTimelineItem } from './chat-types';
 import { type EvidenceEvent, type EvidenceEventKind } from './evidence-timeline';
@@ -771,6 +772,24 @@ export class App implements OnDestroy {
 
   closeCommandPalette(): void {
     this.commandPaletteOpen.set(false);
+  }
+
+  onNotificationNavigated(event: BellNavigation): void {
+    const { notification } = event;
+    if (notification.roomId) this.selectRoom(notification.roomId);
+    switch (notification.kind) {
+      case 'permission-requested':
+      case 'run-failed':
+        this.selectTab('chat');
+        break;
+      case 'approval-needed':
+      case 'verifier-needed':
+      case 'task-done':
+      case 'task-rejected':
+        this.selectTab('mission');
+        this.selectMissionView('overview');
+        break;
+    }
   }
 
   onCommandPaletteSelection(selection: PaletteSelection): void {

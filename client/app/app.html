@@ -49,6 +49,7 @@
       [tabs]="tabs"
       [selectedTab]="selectedTab()"
       (tabSelected)="selectTab($event)"
+      (notificationNavigated)="onNotificationNavigated($event)"
     ></fs-topbar>
 
     @if (!selectedRoom() && selectedTab() !== 'briefings') {

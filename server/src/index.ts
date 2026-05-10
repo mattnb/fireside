@@ -11,6 +11,7 @@ import { runAgentTurn } from './agents/runner.js';
 import { getAgentSpec } from './agents/registry.js';
 import { publishFiresideMcp } from './mcp-publish.js';
 import { trimTerminalAgentJobPayloads } from './repos/agent-jobs.js';
+import { NotificationFanout } from './notifications/notification-fanout.js';
 import type { AgentId } from './agents/types.js';
 
 export interface FiresideServer {
@@ -80,6 +81,17 @@ export async function start(config: Config = loadConfig()): Promise<FiresideServ
     },
   });
 
+  const notificationFanout = new NotificationFanout({
+    db,
+    broker,
+    onCreated: (notification) => {
+      // Hand back to the broker so ws-server can broadcast it like every
+      // other room-scoped event.
+      broker.emit('notificationCreated', notification);
+    },
+  });
+  notificationFanout.start();
+
   const app = buildHttpServer({
     db,
     broker,
@@ -103,6 +115,7 @@ export async function start(config: Config = loadConfig()): Promise<FiresideServ
   return {
     address: { host: config.host, port: config.port },
     async shutdown() {
+      notificationFanout.stop();
       await app.close();
       db.close();
     },

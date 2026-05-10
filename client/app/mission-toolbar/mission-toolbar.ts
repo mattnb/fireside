@@ -89,6 +89,14 @@ export class MissionToolbar<ViewId extends string = string> {
 
   protected readonly missionActions = MISSION_ACTIONS;
 
+  protected exportMissionUrl(taskId: string): string {
+    return this.api.exports.missionUrl(taskId);
+  }
+
+  protected exportTranscriptUrl(roomId: string): string {
+    return this.api.exports.transcriptUrl(roomId);
+  }
+
   protected saveBriefing(): void {
     const roomId = this.store.selectedRoomId();
     if (!roomId) return;
