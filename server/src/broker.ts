@@ -273,14 +273,6 @@ import {
 } from './orchestration/run-state-machine.js';
 import { evaluateMissionLiveness } from './orchestration/liveness-policy.js';
 import type { MissionTaskApplyResult } from './mission-state/mission-task-applicator.js';
-import {
-  routeCollaborationNotes,
-  routeMissionPhaseUpdates,
-  routeMissionPlanUpdates,
-  routeMissionReceipts,
-  routeMissionTaskUpdates,
-  routePermissionRequest,
-} from './tools/adapters/slash-block-adapter.js';
 import { routeProviderToolCalls } from './tools/adapters/provider-tool-adapter.js';
 import { applyMissionCreateUpdates as applyMissionCreateUpdatesState } from './mission-state/mission-create-applicator.js';
 import { inferChecklistCompletion } from './mission-state/mission-state-helpers.js';
@@ -3131,87 +3123,24 @@ export class Broker extends EventEmitter {
       }
     }
     const replySignals = runAgentReplySignalPipeline({ text, agentId });
-    const extractedMissionCreates = replySignals.missionCreates;
-    const createdMission = this.applyMissionCreateUpdates({
-      roomId,
-      activeTask: activeTask ?? null,
-      runId: run.id,
-      agentId,
-      updates: extractedMissionCreates.updates,
-    });
-    this.recordMissionCommandEvents({
-      roomId,
-      taskId: createdMission?.id ?? activeTask?.id ?? null,
-      runId: run.id,
-      agentId,
-      commandKind: 'mission-create',
-      updates: extractedMissionCreates.updates,
-      status: createdMission ? 'applied' : 'rejected',
-      summary: createdMission
-        ? `mission created: ${createdMission.title}`
-        : activeTask
-          ? `mission create rejected because active mission exists: ${activeTask.title}`
-          : 'mission create did not produce a mission',
-    });
-    const missionTask = createdMission ?? activeTask ?? null;
-    const extractedMissionPlans = replySignals.missionPlans;
-    const missionPlanRouting = await routeMissionPlanUpdates(
-      {
-        db: this.deps.db,
-        roomId,
-        mission: missionTask,
-        runId: run.id,
-        agentId,
-        permission: effectivePermission ?? null,
-        onTaskUpdated: (task) => this.emit('taskUpdated', task),
-      },
-      extractedMissionPlans.updates,
-    );
-    const sameTurnPlan = missionPlanRouting.activePlan;
-    this.recordMissionCommandEvents({
-      roomId,
-      taskId: missionTask?.id ?? null,
-      runId: run.id,
-      agentId,
-      commandKind: 'mission-plan',
-      updates: extractedMissionPlans.updates,
-      status: missionTask ? 'applied' : 'rejected',
-      summary: missionTask ? 'mission plan command processed' : 'mission plan rejected: no mission',
-    });
-    const defaultPlan =
-      sameTurnPlan ??
-      (missionTask
-        ? (listTaskPlans(this.deps.db, missionTask.id).find((plan) => plan.status === 'active') ??
-          null)
-        : null);
-    const extractedMissionPhases = replySignals.missionPhases;
-    await routeMissionPhaseUpdates(
-      {
-        db: this.deps.db,
-        roomId,
-        mission: missionTask,
-        runId: run.id,
-        agentId,
-        permission: effectivePermission ?? null,
-        defaultPlanId: defaultPlan?.id ?? null,
-        forcePlanOnUpdates: sameTurnPlan !== null,
-        onTaskUpdated: (task) => this.emit('taskUpdated', task),
-        autoAdvancePhase: (phaseInput) => this.autoAdvancePhase(phaseInput),
-      },
-      extractedMissionPhases.updates,
-    );
-    this.recordMissionCommandEvents({
-      roomId,
-      taskId: missionTask?.id ?? null,
-      runId: run.id,
-      agentId,
-      commandKind: 'mission-phase',
-      updates: extractedMissionPhases.updates,
-      status: missionTask ? 'applied' : 'rejected',
-      summary: missionTask
-        ? 'mission phase command processed'
-        : 'mission phase rejected: no mission',
-    });
+    // P2 (2026-05-09): the slash-block extractors / route* / roster /
+    // mission-create-from-text paths are gone. Mission state changes now
+    // arrive exclusively via MCP (`/api/mcp` audit rows) or native
+    // provider tool-use blocks (routeProviderToolCalls below). The broker
+    // wiring downstream still references these "extracted*" / route
+    // result shapes; until that wiring is fully simplified we feed it
+    // empty stubs so the broker behaves as if no slash-block-driven
+    // mission updates ever happened (which is now true).
+    const extractedMissionCreates = { updates: [] as never[] };
+    const extractedMissionPlans = { updates: [] as never[] };
+    const extractedMissionPhases = { updates: [] as never[] };
+    const extractedMissionTasks = { updates: [] as never[] };
+    const missionTask = activeTask ?? null;
+    const sameTurnPlan = missionTask
+      ? (listTaskPlans(this.deps.db, missionTask.id).find((plan) => plan.status === 'active') ??
+        null)
+      : null;
+    const defaultPlan = sameTurnPlan;
     const providerToolRouting = await routeProviderToolCalls({
       db: this.deps.db,
       providerId: agentProfile.providerId,
@@ -3223,35 +3152,17 @@ export class Broker extends EventEmitter {
       permission: effectivePermission ?? null,
       onTaskUpdated: (task) => this.emit('taskUpdated', task),
     });
-    const extractedMissionTasks = replySignals.missionTasks;
-    const hiddenMissionTaskUpdates = filterHiddenMissionTaskFallbacks(
-      extractedMissionTasks.updates,
-      providerToolRouting.hiddenFallbackKeys,
-    );
-    const missionTaskRouting = await routeMissionTaskUpdates(
-      {
-        db: this.deps.db,
-        roomId,
-        mission: missionTask,
-        runId: run.id,
-        agentId,
-        permission: effectivePermission ?? null,
-        defaultPlanId: defaultPlan?.id ?? null,
-        forcePlanOnUpdates: sameTurnPlan !== null,
-        recordRunAction: (action) => this.recordRunAction(action),
-        onTaskUpdated: (task) => this.emit('taskUpdated', task),
-      },
-      hiddenMissionTaskUpdates,
-    );
-    const missionTaskResult = combineMissionTaskApplyResults(
-      providerToolRouting.missionTaskResult,
-      missionTaskRouting.result,
-    );
+    const missionTaskResult = providerToolRouting.missionTaskResult;
+    const rosterResult = { applied: 0, followups: [] as never[] };
+    const missionReceiptRouting = {
+      applied: 0,
+      progressed: 0,
+      touchedItemIds: new Set<string>(),
+    };
     if (
       missionTaskResult.applied > 0 &&
       policyClearsSessionAfterLane(turnSessionPolicy) &&
-      (hiddenMissionTaskUpdates.some((update) => inferChecklistCompletion(update)) ||
-        providerToolRouting.missionTaskResult.progressed > 0)
+      providerToolRouting.missionTaskResult.progressed > 0
     ) {
       deleteCliSessionId(this.deps.db, roomId, agentId);
       this.recordRunAction({
@@ -3265,42 +3176,6 @@ export class Broker extends EventEmitter {
         detail: `Session policy reset-after-lane cleared the stored CLI session for ${agentId} after a checklist item was marked done.`,
       });
     }
-    this.recordMissionCommandEvents({
-      roomId,
-      taskId: missionTask?.id ?? null,
-      runId: run.id,
-      agentId,
-      commandKind: 'mission-task',
-      updates: hiddenMissionTaskUpdates,
-      status: missionTaskResult.applied > 0 ? 'applied' : 'rejected',
-      summary:
-        missionTaskResult.applied > 0
-          ? `${missionTaskResult.applied} checklist command(s) applied`
-          : missionTask
-            ? 'checklist command did not apply'
-            : 'checklist command rejected: no mission',
-    });
-    const extractedAgentRoster = replySignals.agentRoster;
-    const rosterResult = this.applyAgentRosterUpdates({
-      roomId,
-      task: missionTask,
-      runId: run.id,
-      agentId,
-      updates: extractedAgentRoster.updates,
-    });
-    this.recordMissionCommandEvents({
-      roomId,
-      taskId: missionTask?.id ?? null,
-      runId: run.id,
-      agentId,
-      commandKind: 'agent-roster',
-      updates: extractedAgentRoster.updates,
-      status: rosterResult.applied > 0 ? 'applied' : 'rejected',
-      summary:
-        rosterResult.applied > 0
-          ? `${rosterResult.applied} roster command(s) applied`
-          : 'roster command did not apply',
-    });
     const missionWorkDispatches = this.routeMissionWorkDispatches({
       roomId,
       task: missionTask,
@@ -3308,50 +3183,11 @@ export class Broker extends EventEmitter {
       agentId,
       changedItems: missionTaskResult.dispatchCandidates,
     });
-    const extractedMissionReceipts = replySignals.missionReceipts;
-    const missionReceiptRouting = await routeMissionReceipts(
-      {
-        db: this.deps.db,
-        roomId,
-        mission: missionTask,
-        runId: run.id,
-        agentId,
-        permission: effectivePermission ?? null,
-        workLane,
-      },
-      extractedMissionReceipts.receipts,
-    );
-    if (missionReceiptRouting.applied > 0 && missionTask) {
-      const refreshed = getTask(this.deps.db, missionTask.id);
-      if (refreshed) this.emit('taskUpdated', refreshed);
-    }
-    this.recordMissionCommandEvents({
-      roomId,
-      taskId: missionTask?.id ?? null,
-      runId: run.id,
-      agentId,
-      commandKind: 'mission-receipt',
-      updates: extractedMissionReceipts.receipts,
-      status: missionTask ? 'reconciled' : 'rejected',
-      summary: missionTask ? 'mission receipt recorded' : 'mission receipt rejected: no mission',
-    });
-    const missionStateUpdateCount =
-      extractedMissionCreates.updates.length +
-      extractedMissionPlans.updates.length +
-      extractedMissionPhases.updates.length +
-      missionTaskResult.applied +
-      rosterResult.applied;
-    const missionStateProgressCount =
-      extractedMissionCreates.updates.length +
-      extractedMissionPlans.updates.length +
-      extractedMissionPhases.updates.length +
-      missionTaskResult.progressed +
-      rosterResult.applied;
-    const missionReceiptCount = extractedMissionReceipts.receipts.length;
-    const productiveMissionReceiptCount = this.productiveMissionReceiptCount(
-      extractedMissionReceipts.receipts,
-    );
-    const textAfterMissionReceipts = replySignals.textAfterMissionReceipts;
+    const missionStateUpdateCount = missionTaskResult.applied;
+    const missionStateProgressCount = missionTaskResult.progressed;
+    const missionReceiptCount = 0;
+    const productiveMissionReceiptCount = 0;
+    const textAfterMissionReceipts = replySignals.visibleText;
     const reconciliationFallbacks = applyReconciliationFallbacks({
       db: this.deps.db,
       roomId,
@@ -3500,288 +3336,11 @@ export class Broker extends EventEmitter {
         workDispatches: finalWorkDispatches,
       };
     }
-    const extractedPermission = replySignals.permission;
-    if (extractedPermission) {
-      const permissionRequest = extractedPermission.request;
-      const visiblePermissionText = replySignals.collaboration;
-      const cleanedVisibleText = cleanVisibleAgentMessage(
-        agentId,
-        visiblePermissionText.visibleText,
-      );
-      const message = cleanedVisibleText
-        ? this.appendDirect(roomId, agentId, 'agent', cleanedVisibleText)
-        : null;
-      await this.storeCollaborationNotes({
-        roomId,
-        taskId: missionTask?.id ?? null,
-        runId: run.id,
-        messageId: message?.id ?? null,
-        agentId,
-        notes: visiblePermissionText.notes,
-        permission: effectivePermission ?? null,
-      });
-      if (message) {
-        this.recordRunAction({
-          roomId,
-          taskId: missionTask?.id ?? null,
-          runId: run.id,
-          agentId,
-          kind: 'message',
-          status: 'completed',
-          label: 'message emitted',
-          detail: message.text,
-        });
-      }
-      const permissionContinuation = planPermissionRequestContinuation({
-        agentId,
-        request: permissionRequest,
-        effectivePermission,
-        yoloPermissionAutoApprovals,
-      });
-      if (permissionContinuation.kind !== 'manual-approval') {
-        await routePermissionRequest(
-          {
-            db: this.deps.db,
-            roomId,
-            mission: missionTask,
-            runId: run.id,
-            messageId: message?.id ?? null,
-            agentId,
-            permission: effectivePermission ?? null,
-            persistRequest: false,
-          },
-          permissionRequest,
-        );
-        const completedRun = updateAgentRun(this.deps.db, run.id, {
-          status: 'completed',
-          replyMessageId: message?.id ?? null,
-          completedAt: Date.now(),
-          stdout: reply.raw.stdout,
-          stderr: reply.raw.stderr,
-          replyText: rawText,
-          cliSessionId: replySessionIdForStorage,
-          lifecycleState: 'succeeded',
-          lifecycleReason: 'YOLO permission request auto-approved',
-        });
-        if (completedRun) this.emit('agentRunUpdated', completedRun);
-        this.recordRunAction({
-          roomId,
-          taskId: missionTask?.id ?? null,
-          runId: run.id,
-          agentId,
-          kind: 'permission',
-          status: 'completed',
-          label: `${permissionRequest.mode} permission auto-approved in YOLO`,
-          detail: `${permissionRequest.target}: ${permissionRequest.reason}`,
-        });
-        completeAgentJob(this.deps.db, agentJob.id);
-        if (permissionContinuation.kind === 'yolo-auto-approval-limit') {
-          this.recordRunAction({
-            roomId,
-            taskId: missionTask?.id ?? null,
-            runId: run.id,
-            agentId,
-            kind: 'permission',
-            status: 'failed',
-            label: 'YOLO auto-approval limit reached',
-            detail: `Stopped auto-following permission requests after ${permissionContinuation.limit} consecutive YOLO approvals for this turn.`,
-          });
-          await this.runAgentRosterFollowups(roomId, rosterResult.followups);
-          const finalWorkDispatches = this.evaluateMissionLivenessDispatches({
-            roomId,
-            task: missionTask,
-            runId: run.id,
-            agentId,
-            existingDispatches: missionWorkDispatches,
-            allowLiveness: workLane === undefined,
-          });
-          const progressed =
-            Boolean(message) ||
-            reconciliation.progressed > 0 ||
-            rosterResult.applied > 0 ||
-            finalWorkDispatches.length > 0;
-          this.recordTurnOutcome({
-            roomId,
-            taskId: missionTask?.id ?? null,
-            runId: run.id,
-            agentId,
-            visibleMessageId: message?.id ?? null,
-            visibleMessageEmitted: Boolean(message),
-            status: 'completed',
-            progressed,
-            missionUpdates: missionStateUpdateCount,
-            missionReceipts: missionReceiptCount,
-            missionReconciliations: reconciliation.applied,
-            collaborationNotes: visiblePermissionText.notes.length,
-            draftArtifacts: extractedDrafts.drafts.length,
-            permissionAutoApproved: true,
-            workDispatches: finalWorkDispatches,
-            summary: 'YOLO permission auto-approval limit reached',
-            runKind: turnRunKind,
-          });
-          return {
-            message,
-            progressed,
-            runId: run.id,
-            workDispatches: finalWorkDispatches,
-          };
-        }
-        await this.runAgentRosterFollowups(roomId, rosterResult.followups);
-        this.recordTurnOutcome({
-          roomId,
-          taskId: missionTask?.id ?? null,
-          runId: run.id,
-          agentId,
-          visibleMessageId: message?.id ?? null,
-          visibleMessageEmitted: Boolean(message),
-          status: 'completed',
-          progressed: true,
-          missionUpdates: missionStateUpdateCount,
-          missionReceipts: missionReceiptCount,
-          missionReconciliations: reconciliation.applied,
-          collaborationNotes: visiblePermissionText.notes.length,
-          draftArtifacts: extractedDrafts.drafts.length,
-          permissionAutoApproved: true,
-          workDispatches: missionWorkDispatches,
-          nextAgents: [agentId],
-          summary: 'YOLO permission request auto-approved; launching approved follow-up turn',
-          runKind: turnRunKind,
-        });
-        return this.runAgentReply(
-          roomId,
-          agentId,
-          trigger,
-          discussion,
-          permissionContinuation.autoPermission,
-          cancelSignal,
-          permissionContinuation.nextAutoApprovalCount,
-          workLane,
-          attempt,
-          retryOfRunId,
-          effectiveWorkflowRepair,
-        );
-      }
-      const permissionRouting = await routePermissionRequest(
-        {
-          db: this.deps.db,
-          roomId,
-          mission: missionTask,
-          runId: run.id,
-          messageId: message?.id ?? null,
-          agentId,
-          permission: effectivePermission ?? null,
-        },
-        permissionRequest,
-      );
-      const request = permissionRouting.request;
-      if (!request) {
-        const permissionRun = updateAgentRun(this.deps.db, run.id, {
-          status: 'failed',
-          replyMessageId: message?.id ?? null,
-          completedAt: Date.now(),
-          stdout: reply.raw.stdout,
-          stderr: reply.raw.stderr,
-          replyText: rawText,
-          cliSessionId: replySessionIdForStorage,
-          lifecycleState: 'failed',
-          lifecycleReason: permissionRouting.toolCall.summary,
-        });
-        if (permissionRun) this.emit('agentRunUpdated', permissionRun);
-        this.recordRunAction({
-          roomId,
-          taskId: missionTask?.id ?? null,
-          runId: run.id,
-          agentId,
-          kind: 'permission',
-          status: 'failed',
-          label: 'permission request rejected',
-          detail: permissionRouting.toolCall.error ?? permissionRouting.toolCall.summary,
-        });
-        completeAgentJob(this.deps.db, agentJob.id);
-        this.recordTurnOutcome({
-          roomId,
-          taskId: missionTask?.id ?? null,
-          runId: run.id,
-          agentId,
-          visibleMessageId: message?.id ?? null,
-          visibleMessageEmitted: Boolean(message),
-          status: 'failed',
-          progressed: false,
-          missionUpdates: missionStateUpdateCount,
-          missionReceipts: missionReceiptCount,
-          missionReconciliations: reconciliation.applied,
-          collaborationNotes: visiblePermissionText.notes.length,
-          draftArtifacts: extractedDrafts.drafts.length,
-          summary: permissionRouting.toolCall.summary,
-          runKind: turnRunKind,
-        });
-        return {
-          message,
-          progressed: false,
-          runId: run.id,
-          workDispatches: missionWorkDispatches,
-        };
-      }
-      const permissionRun = updateAgentRun(this.deps.db, run.id, {
-        status: 'permission-requested',
-        replyMessageId: message?.id ?? null,
-        completedAt: Date.now(),
-        stdout: reply.raw.stdout,
-        stderr: reply.raw.stderr,
-        replyText: rawText,
-        cliSessionId: replySessionIdForStorage,
-        lifecycleState: 'released',
-        lifecycleReason: `${permissionRequest.mode} permission requested; waiting on human approval`,
-      });
-      if (permissionRun) this.emit('agentRunUpdated', permissionRun);
-      this.recordRunAction({
-        roomId,
-        taskId: missionTask?.id ?? null,
-        runId: run.id,
-        agentId,
-        kind: 'permission',
-        status: 'info',
-        label: `${permissionRequest.mode} permission requested`,
-        detail: `${permissionRequest.target}: ${permissionRequest.reason}`,
-      });
-      this.emit('permissionRequestCreated', request);
-      completeAgentJob(this.deps.db, agentJob.id);
-      await this.runAgentRosterFollowups(roomId, rosterResult.followups);
-      const finalWorkDispatches = this.evaluateMissionLivenessDispatches({
-        roomId,
-        task: missionTask,
-        runId: run.id,
-        agentId,
-        existingDispatches: missionWorkDispatches,
-        allowLiveness: workLane === undefined,
-      });
-      const progressed = rosterResult.applied > 0 || finalWorkDispatches.length > 0;
-      this.recordTurnOutcome({
-        roomId,
-        taskId: missionTask?.id ?? null,
-        runId: run.id,
-        agentId,
-        visibleMessageId: message?.id ?? null,
-        visibleMessageEmitted: Boolean(message),
-        status: 'permission-requested',
-        progressed,
-        missionUpdates: missionStateUpdateCount,
-        missionReceipts: missionReceiptCount,
-        missionReconciliations: reconciliation.applied,
-        collaborationNotes: visiblePermissionText.notes.length,
-        draftArtifacts: extractedDrafts.drafts.length,
-        permissionRequestId: request.id,
-        workDispatches: finalWorkDispatches,
-        summary: `${permissionRequest.mode} permission requested; waiting on human approval`,
-        runKind: turnRunKind,
-      });
-      return {
-        message: null,
-        progressed,
-        runId: run.id,
-        workDispatches: finalWorkDispatches,
-      };
-    }
+    // P2 (2026-05-09): the slash-block /permission-request extractor is
+    // gone. Permission requests now flow through the permission.request
+    // MCP tool. The dead branch that handled  (~280
+    // lines: routing, idempotency, follow-up turns, manual-approval cards)
+    // has been removed; the code below handles every reply.
     const extracted = replySignals.collaboration;
     const visibleText = cleanVisibleAgentMessage(agentId, extracted.visibleText);
     const message = visibleText ? this.appendDirect(roomId, agentId, 'agent', visibleText) : null;
@@ -4733,7 +4292,11 @@ export class Broker extends EventEmitter {
     }
   }
 
-  private async storeCollaborationNotes(input: {
+  // P2 (2026-05-09): collaboration notes flow through the collab.note.add
+  // MCP tool. The slash-block /collab-note extractor + routeCollaborationNotes
+  // adapter are gone; this method exists only as a stub so the broker's
+  // call site (which always passes empty notes now) keeps compiling.
+  private async storeCollaborationNotes(_input: {
     roomId: string;
     taskId: string | null;
     runId: string;
@@ -4742,21 +4305,7 @@ export class Broker extends EventEmitter {
     notes: ParsedCollaborationNote[];
     permission?: PermissionGrant | null;
   }): Promise<void> {
-    if (input.notes.length === 0) return;
-    await routeCollaborationNotes(
-      {
-        db: this.deps.db,
-        roomId: input.roomId,
-        taskId: input.taskId,
-        runId: input.runId,
-        messageId: input.messageId,
-        agentId: input.agentId,
-        permission: input.permission ?? null,
-        recordRunAction: (action) => this.recordRunAction(action),
-        onCollaborationItemCreated: (item) => this.emit('collaborationItemCreated', item),
-      },
-      input.notes,
-    );
+    return;
   }
 
   private autoAdvancePhase(input: {
