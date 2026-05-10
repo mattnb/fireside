@@ -14,6 +14,9 @@ import { getPermissionRequest, listPermissionRequests } from './repos/permission
 import { listRunningAgentRunsForRoom } from './repos/agent-runs.js';
 import type { AgentId, ProviderId, RoomAgentProfile } from './agents/types.js';
 import type { TaskStatus } from './repos/tasks.js';
+import { getTask } from './repos/tasks.js';
+import { getClarifyingQuestion, answerQuestion } from './repos/clarifying-questions.js';
+import { applyMissionApprove } from './mission-state/mission-approve-applicator.js';
 import type { TaskChecklistParallelism, TaskChecklistStatus } from './repos/task-checklist.js';
 import type { TaskPhaseStatus } from './repos/task-phases.js';
 import type { TaskPlanStatus } from './repos/task-plans.js';
@@ -1311,6 +1314,86 @@ export function buildHttpServer(deps: HttpDeps) {
       throw err;
     }
   });
+
+  // Mission proposal/approve/verify gate — human-side routes. Agents use
+  // mission.approve / mission.clarify.answer via MCP; humans don't have an
+  // agentId for MCP, so they go through these loopback-trusted endpoints.
+  // Each route delegates to the same applicator the MCP handler uses.
+
+  app.post<{ Params: { id: string } }>('/api/tasks/:id/approve', async (req, reply) => {
+    if (!getTask(deps.db, req.params.id)) {
+      return reply.code(404).send({ error: 'task not found' });
+    }
+    const result = applyMissionApprove({
+      db: deps.db,
+      taskId: req.params.id,
+      action: 'approve',
+      byAgentId: 'human',
+    });
+    if (result.rejected) return reply.code(409).send({ error: result.reason });
+    return reply.code(200).send({ proposalStatus: result.proposalStatus });
+  });
+
+  app.post<{ Params: { id: string }; Body: { reason?: string } }>(
+    '/api/tasks/:id/reject',
+    async (req, reply) => {
+      const reason = (req.body?.reason ?? '').trim();
+      if (!reason) return reply.code(400).send({ error: 'reason is required' });
+      if (!getTask(deps.db, req.params.id)) {
+        return reply.code(404).send({ error: 'task not found' });
+      }
+      const result = applyMissionApprove({
+        db: deps.db,
+        taskId: req.params.id,
+        action: 'reject',
+        reason,
+        byAgentId: 'human',
+      });
+      if (result.rejected) return reply.code(409).send({ error: result.reason });
+      return reply.code(200).send({ proposalStatus: result.proposalStatus });
+    },
+  );
+
+  app.post<{ Params: { id: string }; Body: { reason?: string } }>(
+    '/api/tasks/:id/request-changes',
+    async (req, reply) => {
+      const reason = (req.body?.reason ?? '').trim();
+      if (!reason) return reply.code(400).send({ error: 'reason is required' });
+      if (!getTask(deps.db, req.params.id)) {
+        return reply.code(404).send({ error: 'task not found' });
+      }
+      const result = applyMissionApprove({
+        db: deps.db,
+        taskId: req.params.id,
+        action: 'request-changes',
+        reason,
+        byAgentId: 'human',
+      });
+      if (result.rejected) return reply.code(409).send({ error: result.reason });
+      return reply.code(200).send({ proposalStatus: result.proposalStatus });
+    },
+  );
+
+  app.post<{ Params: { id: string }; Body: { answer?: string } }>(
+    '/api/clarifying-questions/:id/answer',
+    async (req, reply) => {
+      const answer = (req.body?.answer ?? '').trim();
+      if (!answer) return reply.code(400).send({ error: 'answer is required' });
+      if (!getClarifyingQuestion(deps.db, req.params.id)) {
+        return reply.code(404).send({ error: 'question not found' });
+      }
+      const updated = answerQuestion(deps.db, req.params.id, {
+        answer,
+        answeredBy: 'human',
+      });
+      if (!updated) return reply.code(409).send({ error: 'failed to answer question' });
+      return reply.code(200).send({
+        questionId: updated.id,
+        answeredBy: updated.answeredBy,
+        answeredAt: updated.answeredAt,
+      });
+    },
+  );
 
   ensureDefaultToolsRegistered();
   registerMcpRoute(app, deps);

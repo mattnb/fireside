@@ -10,9 +10,16 @@ import { createRoom } from '../../src/repos/rooms.js';
 import {
   createTask,
   getTask,
+  maybeAdvanceProposalStatus,
   setProposalStatus,
   type ProposalStatus,
 } from '../../src/repos/tasks.js';
+import { createTaskChecklistItem } from '../../src/repos/task-checklist.js';
+import {
+  createAcceptanceCriterion,
+  recordDoerCheck,
+  recordVerifierCheck,
+} from '../../src/repos/acceptance-criteria.js';
 
 describe('tasks proposal_status state machine', () => {
   let db: ReturnType<typeof openDatabase>;
@@ -132,5 +139,75 @@ describe('tasks proposal_status state machine', () => {
       const t = createTask(db, { roomId, title: `t-${s}`, proposalStatus: s });
       expect(getTask(db, t.id)?.proposalStatus).toBe(s);
     }
+  });
+});
+
+describe('maybeAdvanceProposalStatus', () => {
+  let db: ReturnType<typeof openDatabase>;
+  let roomId: string;
+
+  beforeEach(() => {
+    db = openDatabase(':memory:');
+    roomId = createRoom(db, { name: 'r', agents: ['claude', 'codex'] }).id;
+  });
+
+  it('does nothing when there are no checklist items or ACs', () => {
+    const task = createTask(db, { roomId, title: 't', proposalStatus: 'approved' });
+    const result = maybeAdvanceProposalStatus(db, task.id);
+    expect(result?.proposalStatus).toBe('approved');
+  });
+
+  it('advances approved → executing when at least one checklist item is open', () => {
+    const task = createTask(db, { roomId, title: 't', proposalStatus: 'approved' });
+    createTaskChecklistItem(db, { taskId: task.id, title: 'work', status: 'open' });
+    const result = maybeAdvanceProposalStatus(db, task.id);
+    expect(result?.proposalStatus).toBe('executing');
+  });
+
+  it('does not move executing back to approved when items reopen', () => {
+    const task = createTask(db, { roomId, title: 't', proposalStatus: 'executing' });
+    createTaskChecklistItem(db, { taskId: task.id, title: 'work', status: 'open' });
+    const result = maybeAdvanceProposalStatus(db, task.id);
+    expect(result?.proposalStatus).toBe('executing');
+  });
+
+  it('advances executing → verifying when all items closed but ACs remain pending', () => {
+    const task = createTask(db, { roomId, title: 't', proposalStatus: 'executing' });
+    createTaskChecklistItem(db, { taskId: task.id, title: 'work', status: 'done' });
+    createAcceptanceCriterion(db, { taskId: task.id, title: 'AC1' });
+    const result = maybeAdvanceProposalStatus(db, task.id);
+    expect(result?.proposalStatus).toBe('verifying');
+  });
+
+  it('advances verifying → done when all ACs pass', () => {
+    const task = createTask(db, { roomId, title: 't', proposalStatus: 'verifying' });
+    createTaskChecklistItem(db, { taskId: task.id, title: 'work', status: 'done' });
+    const ac = createAcceptanceCriterion(db, { taskId: task.id, title: 'AC1' });
+    recordDoerCheck(db, ac.id, { status: 'pass', evidence: 'd', byAgentId: 'claude' });
+    recordVerifierCheck(db, ac.id, { status: 'pass', evidence: 'v', byAgentId: 'codex' });
+    const result = maybeAdvanceProposalStatus(db, task.id);
+    expect(result?.proposalStatus).toBe('done');
+  });
+
+  it('skips approved → done when there are zero ACs (no verification work)', () => {
+    // If a task has no ACs at all, completing the checklist is enough — but
+    // by spec, allCriteriaPassed returns false when there are no ACs, so the
+    // task stays at executing/verifying. The lead can either add ACs or
+    // close the task manually. Document this rather than auto-shortcut it.
+    const task = createTask(db, { roomId, title: 't', proposalStatus: 'executing' });
+    createTaskChecklistItem(db, { taskId: task.id, title: 'work', status: 'done' });
+    const result = maybeAdvanceProposalStatus(db, task.id);
+    expect(result?.proposalStatus).toBe('executing');
+  });
+
+  it('returns null for an unknown task id', () => {
+    expect(maybeAdvanceProposalStatus(db, 'nope')).toBeNull();
+  });
+
+  it('does not move terminal states', () => {
+    const done = createTask(db, { roomId, title: 'd', proposalStatus: 'done' });
+    const rejected = createTask(db, { roomId, title: 'r', proposalStatus: 'rejected' });
+    expect(maybeAdvanceProposalStatus(db, done.id)?.proposalStatus).toBe('done');
+    expect(maybeAdvanceProposalStatus(db, rejected.id)?.proposalStatus).toBe('rejected');
   });
 });

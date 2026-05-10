@@ -62,6 +62,7 @@ import {
   getActiveTask,
   getTask,
   listTasks as listTasksRepo,
+  maybeAdvanceProposalStatus,
   updateTask as updateTaskRepo,
   type CreateTaskInput,
   type Task,
@@ -232,9 +233,11 @@ import {
 import {
   buildTaskParallelismSummary,
   checklistDependenciesSatisfied,
+  laneBlockReasonForProposalStatus,
   planWorkLanes,
   workLaneConflictReason,
   workLaneScopeContract,
+  type LaneBlockedReason,
   type TaskParallelismSummary,
   type WorkLaneAssignment,
   type WorkLaneScopeContract,
@@ -2341,13 +2344,29 @@ export class Broker extends EventEmitter {
         busyAgents.add(blockedAgent);
       }
     }
+
+    // Proposal-gate precheck: when the task hasn't reached a workable
+    // proposal_status (approved/executing/verifying), only the lead may
+    // dispatch. Workers stay parked until the lead drives the proposal
+    // through clarify → propose → approve. The lead bypasses the gate so
+    // it can run that loop itself.
+    const blockReason = laneBlockReasonForProposalStatus(task.proposalStatus);
+    const leadAgentId = room?.leadAgentId ?? null;
+    const gatedAgents: AgentId[] = blockReason
+      ? uniqueAgents.filter((agent) => agent === leadAgentId)
+      : uniqueAgents;
+    if (blockReason) {
+      this.recordProposalGateDiagnostics(roomId, task, uniqueAgents, leadAgentId, blockReason);
+    }
+    if (gatedAgents.length === 0) return new Map();
+
     const activeItemIds = new Set(
       activeJobs.map((job) => job.checklistItemId).filter((id): id is string => Boolean(id)),
     );
     const activeContracts = this.activeWorkLaneContracts(roomId, task.id);
     const items = listTaskChecklistItems(this.deps.db, task.id);
     const planInput = {
-      agents: uniqueAgents,
+      agents: gatedAgents,
       items,
       activeItemIds,
       activeContracts,
@@ -2371,7 +2390,45 @@ export class Broker extends EventEmitter {
       if (updatedTask) this.emit('taskUpdated', updatedTask);
     }
 
+    // First worker dispatch against an approved task flips it to executing;
+    // idempotent so subsequent calls are no-ops.
+    if (plan.assignments.size > 0) {
+      const advanced = maybeAdvanceProposalStatus(this.deps.db, task.id);
+      if (advanced && advanced.proposalStatus !== task.proposalStatus) {
+        this.emit('taskUpdated', advanced);
+      }
+    }
+
     return plan.assignments;
+  }
+
+  private recordProposalGateDiagnostics(
+    roomId: string,
+    task: Task,
+    blockedAgents: readonly AgentId[],
+    leadAgentId: AgentId | null,
+    reason: LaneBlockedReason,
+  ): void {
+    // Run-actions are FK'd to agent_runs, but proposal-gate diagnostics
+    // surface before any run is created. Using a synthetic run id would
+    // violate the FK; instead, write a single mission_command_event-style
+    // row by hand. Keep the implementation light — the working panel can
+    // already consume agent_run_actions, and PR 3 will surface gate state
+    // in the UI from the task itself. For now, emit a single info-level
+    // logger entry per gate hit (idempotent: only when there are workers
+    // who would otherwise dispatch).
+    const wouldHaveDispatched = blockedAgents.filter((a) => a !== leadAgentId);
+    if (wouldHaveDispatched.length === 0) return;
+    logger.info(
+      {
+        roomId,
+        taskId: task.id,
+        proposalStatus: task.proposalStatus,
+        reason,
+        blockedAgents: wouldHaveDispatched,
+      },
+      'proposal-gate blocked worker dispatch',
+    );
   }
 
   private addSuppressedWorkLane(

@@ -1,11 +1,14 @@
 import { agentTools } from './handlers/agent-tools.js';
 import { collabTools } from './handlers/collab-tools.js';
 import { missionAcceptanceTools } from './handlers/mission-acceptance-tools.js';
+import { missionApproveTools } from './handlers/mission-approve-tools.js';
 import { missionClarifyTools } from './handlers/mission-clarify-tools.js';
 import { missionPhaseTools } from './handlers/mission-phase-tools.js';
 import { missionPlanTools } from './handlers/mission-plan-tools.js';
+import { missionProposeTools } from './handlers/mission-propose-tools.js';
 import { missionReceiptTools } from './handlers/mission-receipt-tools.js';
 import { missionTaskTools } from './handlers/mission-task-tools.js';
+import { missionVerifyTools } from './handlers/mission-verify-tools.js';
 import { permissionRequestTool } from './handlers/permission-tools.js';
 import { searchToolsTool } from './handlers/search-tools.js';
 import { defaultToolRegistry } from './registry.js';
@@ -24,6 +27,9 @@ const DEFAULT_TOOLS: readonly RegisteredToolDefinition[] = [
   ...missionReceiptTools,
   ...missionClarifyTools,
   ...missionAcceptanceTools,
+  ...missionProposeTools,
+  ...missionVerifyTools,
+  ...missionApproveTools,
   ...collabTools,
   permissionRequestTool,
   searchToolsTool,

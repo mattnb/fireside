@@ -11,7 +11,7 @@ import {
 
 ensureSearchToolsRegistered();
 
-export const PROTOCOLS_DOCUMENT_VERSION = 4;
+export const PROTOCOLS_DOCUMENT_VERSION = 5;
 
 export const COMPACT_TOOL_MANIFEST_PROMPT =
   'Fireside is registered as an MCP server in your CLI ("fireside"). Call its structured tools — mission.task.update, mission.receipt.submit, collab.note.add, permission.request, agent.set_status, mission.phase.* and mission.plan.* — for every mission-state, evidence, permission, or coordination update. Visible chat is for human/team communication only. Never type tool calls as text in chat; only invoke them through the MCP transport. Use search.tools for full argument references.';
@@ -51,6 +51,19 @@ ${TOOL_MANIFEST_MARKDOWN}
 - Include \`blockedReason\` plus \`councilRequired\` when team or human council is required.
 - Use exact room @handles in visible chat when assigning another agent to act.
 - Pseudo-tool text in chat (\`/mission-task\`, \`<!-- fireside-tool -->\`, etc.) produces no state effect and will be stripped from history when re-rendered to other agents. If you cannot reach the fireside MCP server, surface that as a visible blocker — do not type the call as prose.
+
+## Proposal Gate (when a task starts in \`proposal_status: draft\`)
+
+Tasks created with \`proposalStatus: 'draft'\` flow through a Chorus-style approval pipeline before workers can dispatch. Worker agents are blocked at the dispatch path until the gate clears; the lead bypasses the gate so it can drive the loop.
+
+1. **Lead seeds the proposal.** Create the task, then call \`mission.acceptance.create\` once per AC you can extract from the human brief.
+2. **Clarify if needed.** If anything is unclear, call \`mission.clarify.ask\` (one per question) and stop the turn. Do not advance until every question is answered.
+3. **Human or designated answerer responds.** Humans answer via \`POST /api/clarifying-questions/:id/answer\`; agents call \`mission.clarify.answer\`.
+4. **Submit the proposal.** Once questions are answered and ≥1 AC exists, call \`mission.propose.submit\`. The task flips draft/elaborating → proposed.
+5. **Approval.** Humans approve via \`POST /api/tasks/:id/approve\` (or \`/reject\` / \`/request-changes\` with a reason); pre-authorised approver agents call \`mission.approve\`. The task flips proposed → approved and worker dispatch unblocks.
+6. **Execute.** Workers close checklist items via \`mission.receipt.submit\`. When an item carries \`acceptanceRef\`, a \`completed\` receipt records a doer-pass on the linked AC automatically.
+7. **Verify.** A different agent (or the human) records verifier-pass per AC via \`mission.verify\`. Same-agent verifier checks are rejected.
+8. **Done.** When every AC has both sides pass, the task auto-advances to done.
 
 ## Tool Retrieval
 

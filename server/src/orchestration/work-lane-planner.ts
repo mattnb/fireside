@@ -1,5 +1,6 @@
 import type { AgentId } from '../agents/types.js';
 import type { TaskChecklistItem } from '../repos/task-checklist.js';
+import type { ProposalStatus } from '../repos/tasks.js';
 
 export interface WorkLaneAssignment {
   item: TaskChecklistItem;
@@ -308,6 +309,41 @@ export function buildTaskParallelismSummary(input: {
     nextBatch,
     cells,
   };
+}
+
+/**
+ * Why a worker dispatch was blocked at the proposal-gate level. Surfaced as
+ * a typed run-action diagnostic so the working panel shows the reason instead
+ * of just silently no-op'ing the turn.
+ */
+export type LaneBlockedReason =
+  | 'awaiting-approval'
+  | 'awaiting-clarification'
+  | 'rejected'
+  | 'done';
+
+/**
+ * Maps a task's proposal_status to a block reason if non-lead workers should
+ * be held off, or null if dispatch should proceed normally.
+ */
+export function laneBlockReasonForProposalStatus(
+  status: ProposalStatus,
+): LaneBlockedReason | null {
+  switch (status) {
+    case 'draft':
+    case 'elaborating':
+      return 'awaiting-clarification';
+    case 'proposed':
+      return 'awaiting-approval';
+    case 'rejected':
+      return 'rejected';
+    case 'done':
+      return 'done';
+    case 'approved':
+    case 'executing':
+    case 'verifying':
+      return null;
+  }
 }
 
 export function planWorkLanes(input: PlanWorkLanesInput): PlanWorkLanesResult {

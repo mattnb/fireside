@@ -15,7 +15,8 @@ import {
   updateTaskPhase,
   type TaskPhase,
 } from '../repos/task-phases.js';
-import { getTask, type Task } from '../repos/tasks.js';
+import { getTask, maybeAdvanceProposalStatus, type Task } from '../repos/tasks.js';
+import { recordDoerCheck } from '../repos/acceptance-criteria.js';
 import type { WorkLaneAssignment } from '../orchestration/work-lane-planner.js';
 import { resolveChecklistItem, resolvePhase } from './mission-state-helpers.js';
 import {
@@ -87,6 +88,27 @@ export function applySingleReceipt(input: ApplySingleReceiptInput): ApplyReceipt
       if (receiptChecklistUpdateCountsAsProgress(input.receipt, item)) {
         result.progressed += updated;
       }
+      // Receipt-completed → fan out a doer-pass on the linked AC, if any.
+      if (input.receipt.status === 'completed' && item.acceptanceRef) {
+        try {
+          recordDoerCheck(input.db, item.acceptanceRef, {
+            status: 'pass',
+            evidence: combineDoerEvidence(input.receipt),
+            byAgentId: input.agentId,
+          });
+        } catch (err) {
+          input.recordRunAction({
+            roomId: input.roomId,
+            taskId: input.task.id,
+            runId: input.runId,
+            agentId: input.agentId,
+            kind: 'diagnostic',
+            status: 'failed',
+            label: 'doer-check fan-out failed',
+            detail: err instanceof Error ? err.message : 'unknown error',
+          });
+        }
+      }
     }
   }
 
@@ -111,7 +133,18 @@ export function applySingleReceipt(input: ApplySingleReceiptInput): ApplyReceipt
     }
   }
 
+  if (result.applied > 0) {
+    maybeAdvanceProposalStatus(input.db, input.task.id);
+  }
+
   return result;
+}
+
+function combineDoerEvidence(receipt: ParsedMissionReceipt): string {
+  const parts: string[] = [];
+  if (receipt.summary) parts.push(receipt.summary);
+  if (receipt.evidence) parts.push(receipt.evidence);
+  return parts.join('\n').trim();
 }
 
 export interface ReconciliationFallbacksInput {
@@ -194,6 +227,7 @@ export function applyReconciliationFallbacks(
   }
 
   if (result.applied > 0) {
+    maybeAdvanceProposalStatus(input.db, input.task.id);
     const refreshed = getTask(input.db, input.task.id);
     if (refreshed) input.onTaskUpdated?.(refreshed);
   }
@@ -340,6 +374,7 @@ export function reconcileMissionState(input: ReconcileMissionStateInput): Missio
   }
 
   if (result.applied > 0) {
+    maybeAdvanceProposalStatus(input.db, task.id);
     input.recordRunAction({
       roomId: input.roomId,
       taskId: task.id,

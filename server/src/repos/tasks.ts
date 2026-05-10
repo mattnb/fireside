@@ -2,6 +2,7 @@ import type { Database } from 'better-sqlite3';
 import { nanoid } from 'nanoid';
 import type { AgentId } from '../agents/types.js';
 import type { PermissionMode } from '../permissions.js';
+import { allCriteriaPassed } from './acceptance-criteria.js';
 
 export type TaskStatus = 'active' | 'paused' | 'blocked' | 'verifying' | 'done';
 
@@ -193,6 +194,77 @@ const LEGAL_PROPOSAL_TRANSITIONS: Record<ProposalStatus, readonly ProposalStatus
   done: [],
   rejected: [],
 };
+
+/**
+ * Auto-advance the proposal_status state machine based on the current
+ * checklist + AC state. Idempotent and forward-only:
+ *   approved  → executing  when ≥1 checklist item exists (i.e. work has been
+ *                            scoped; called by the dispatch path on first
+ *                            worker turn)
+ *   executing → verifying  when all checklist items are done/skipped AND
+ *                            there is ≥1 AC row that has not yet passed
+ *   verifying → done       when allCriteriaPassed(taskId)
+ * Iterates to a fixed point so a single call advances through every edge
+ * the current state warrants (e.g. a final completed receipt can take a
+ * task from approved → executing → verifying in one step). Other states
+ * are left alone (terminal or pre-approval).
+ */
+export function maybeAdvanceProposalStatus(db: Database, taskId: string): Task | null {
+  let current = getTask(db, taskId);
+  if (!current) return null;
+  // Cap the loop to guard against unforeseen cycles; the state machine has
+  // 3 forward edges from any reachable starting state, so 8 is plenty.
+  for (let i = 0; i < 8; i += 1) {
+    const advanced = advanceOne(db, current);
+    if (!advanced || advanced.proposalStatus === current.proposalStatus) return advanced ?? current;
+    current = advanced;
+  }
+  return current;
+}
+
+function advanceOne(db: Database, task: Task): Task | null {
+  if (task.proposalStatus === 'approved') {
+    const checklistRowCount = (
+      db
+        .prepare(`SELECT COUNT(*) AS n FROM task_checklist_items WHERE task_id = ?`)
+        .get(task.id) as { n: number }
+    ).n;
+    if (checklistRowCount > 0) {
+      return setProposalStatus(db, task.id, 'executing', task.proposedByAgentId ?? '');
+    }
+    return task;
+  }
+
+  if (task.proposalStatus === 'executing') {
+    const counts = db
+      .prepare(
+        `SELECT
+           COUNT(*) AS total,
+           SUM(CASE WHEN status IN ('done', 'skipped') THEN 1 ELSE 0 END) AS closed
+         FROM task_checklist_items WHERE task_id = ?`,
+      )
+      .get(task.id) as { total: number; closed: number | null };
+    const total = counts.total;
+    const closed = counts.closed ?? 0;
+    if (total === 0 || closed < total) return task;
+    const acCount = (
+      db
+        .prepare(`SELECT COUNT(*) AS n FROM task_acceptance_criteria WHERE task_id = ?`)
+        .get(task.id) as { n: number }
+    ).n;
+    if (acCount === 0) return task;
+    return setProposalStatus(db, task.id, 'verifying', task.proposedByAgentId ?? '');
+  }
+
+  if (task.proposalStatus === 'verifying') {
+    if (allCriteriaPassed(db, task.id)) {
+      return setProposalStatus(db, task.id, 'done', task.proposedByAgentId ?? '');
+    }
+    return task;
+  }
+
+  return task;
+}
 
 export function setProposalStatus(
   db: Database,

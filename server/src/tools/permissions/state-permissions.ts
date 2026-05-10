@@ -48,6 +48,8 @@ export function requiredStatePermissionsForTool(toolName: string): StatePermissi
   }
   if (toolName === 'mission.phase.list_blockers') return ['mission:read'];
 
+  if (toolName === 'mission.approve') return ['mission:admin'];
+
   if (
     toolName.startsWith('mission.') ||
     toolName.startsWith('mission.plan.') ||

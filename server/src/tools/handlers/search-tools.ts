@@ -395,6 +395,136 @@ export const TOOL_SCHEMA_REFERENCES: readonly ToolSchemaReference[] = [
     ],
   },
   {
+    name: 'mission.clarify.ask',
+    summary:
+      'Lead asks a clarifying question against the active mission while in draft/elaborating; blocks propose until answered.',
+    requiredPermissions: ['mission:write'],
+    args: [
+      {
+        name: 'question',
+        type: 'string',
+        required: true,
+        description: 'The clarifying question to ask. Must be non-empty.',
+      },
+      {
+        name: 'category',
+        type: "scope | data-model | acceptance | out-of-scope | risk | general",
+        description: 'Topic family. Defaults to general.',
+      },
+    ],
+  },
+  {
+    name: 'mission.clarify.answer',
+    summary:
+      'Designated answerer answers a previously-asked clarifying question. Humans answer via HTTP, not MCP.',
+    requiredPermissions: ['mission:write'],
+    args: [
+      { name: 'questionId', type: 'string', required: true, description: 'Question id.' },
+      { name: 'answer', type: 'string', required: true, description: 'Non-empty answer text.' },
+    ],
+  },
+  {
+    name: 'mission.acceptance.create',
+    summary: 'Add an acceptance criterion to the active mission during the proposal phase.',
+    requiredPermissions: ['mission:write'],
+    args: [
+      { name: 'title', type: 'string', required: true, description: 'One-line AC title.' },
+      { name: 'detail', type: 'string', description: 'Optional longer-form detail.' },
+      { name: 'doer', type: 'string', description: 'Optional agent id assigned as doer.' },
+      { name: 'sortOrder', type: 'integer', description: 'Optional sort position.' },
+    ],
+  },
+  {
+    name: 'mission.acceptance.update',
+    summary: 'Patch an AC (title, detail, doer, sortOrder).',
+    requiredPermissions: ['mission:write'],
+    args: [
+      { name: 'id', type: 'string', required: true, description: 'AC id.' },
+      { name: 'title', type: 'string', description: 'Replacement title.' },
+      { name: 'detail', type: 'string', description: 'Replacement detail.' },
+      {
+        name: 'doer',
+        type: 'string | null',
+        description: 'New doer agent id, or null to clear.',
+      },
+      { name: 'sortOrder', type: 'integer', description: 'New sort position.' },
+    ],
+  },
+  {
+    name: 'mission.acceptance.reorder',
+    summary: 'Set the sort order of an AC within its task.',
+    requiredPermissions: ['mission:write'],
+    args: [
+      { name: 'id', type: 'string', required: true, description: 'AC id.' },
+      {
+        name: 'sortOrder',
+        type: 'integer',
+        required: true,
+        description: 'New sort position within the task.',
+      },
+    ],
+  },
+  {
+    name: 'mission.propose.submit',
+    summary:
+      'Lead promotes the active mission from draft/elaborating → proposed once questions are answered and ACs are listed.',
+    requiredPermissions: ['mission:write'],
+    args: [
+      {
+        name: 'reason',
+        type: 'string',
+        description: 'Optional one-line summary of what is being proposed.',
+      },
+    ],
+  },
+  {
+    name: 'mission.verify',
+    summary:
+      'Record a doer or verifier check on an acceptance criterion. Same-agent verifier checks are rejected.',
+    requiredPermissions: ['mission:write'],
+    args: [
+      {
+        name: 'side',
+        type: 'doer | verifier',
+        required: true,
+        description: 'Which side of the dual-path verify is being recorded.',
+      },
+      { name: 'acId', type: 'string', required: true, description: 'AC id.' },
+      {
+        name: 'status',
+        type: 'pass | fail',
+        required: true,
+        description: 'Whether this side passes or fails the AC.',
+      },
+      {
+        name: 'evidence',
+        type: 'string',
+        required: true,
+        description: 'Non-empty evidence supporting the pass/fail.',
+      },
+    ],
+  },
+  {
+    name: 'mission.approve',
+    summary:
+      'Pre-authorised approver agent approves / rejects / requests-changes on a task. Humans use HTTP routes instead.',
+    requiredPermissions: ['mission:admin'],
+    args: [
+      { name: 'taskId', type: 'string', required: true, description: 'Task id to act on.' },
+      {
+        name: 'action',
+        type: 'approve | reject | request-changes',
+        required: true,
+        description: 'Approval verdict.',
+      },
+      {
+        name: 'reason',
+        type: 'string',
+        description: 'Required for reject and request-changes; optional for approve.',
+      },
+    ],
+  },
+  {
     name: 'permission.request',
     summary: 'Request edit, command, network, or full-auto permission for a future turn.',
     requiredPermissions: ['permission:request'],
