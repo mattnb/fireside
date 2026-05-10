@@ -519,6 +519,11 @@ function ensureRoomColumns(db: DbType): void {
   if (!columns.has('lead_agent_id')) {
     db.prepare(`ALTER TABLE rooms ADD COLUMN lead_agent_id TEXT`).run();
   }
+  if (!columns.has('approver_agent_ids_json')) {
+    db.prepare(
+      `ALTER TABLE rooms ADD COLUMN approver_agent_ids_json TEXT NOT NULL DEFAULT '[]'`,
+    ).run();
+  }
   db.prepare(
     `UPDATE rooms SET project_id = 'general' WHERE project_id IS NULL OR project_id = ''`,
   ).run();
@@ -893,6 +898,13 @@ function ensureTaskColumns(db: DbType): void {
     ['summary', "TEXT NOT NULL DEFAULT ''"],
     ['created_at', 'INTEGER NOT NULL DEFAULT 0'],
     ['updated_at', 'INTEGER NOT NULL DEFAULT 0'],
+    // Proposal/Approve/Verify gates (additive — default 'approved' so legacy tasks dispatch unchanged).
+    [
+      'proposal_status',
+      "TEXT NOT NULL DEFAULT 'approved' CHECK (proposal_status IN ('draft', 'elaborating', 'proposed', 'approved', 'executing', 'verifying', 'done', 'rejected'))",
+    ],
+    ['verifier_agent_id', 'TEXT'],
+    ['proposed_by_agent_id', 'TEXT'],
   ];
 
   for (const [name, definition] of additions) {
@@ -1011,6 +1023,9 @@ function ensureTaskChecklistColumns(db: DbType): void {
     ['council_required', 'INTEGER NOT NULL DEFAULT 0'],
     ['updated_by', "TEXT NOT NULL DEFAULT ''"],
     ['completed_at', 'INTEGER'],
+    // Optional link to one acceptance-criterion id; receipts that close this
+    // item fan out a doer-check on the linked AC. Single-ref for v1.
+    ['acceptance_ref', 'TEXT'],
   ];
 
   for (const [name, definition] of additions) {
@@ -1502,6 +1517,50 @@ function ensureMissionBriefingRetention(db: DbType): void {
   db.pragma('foreign_keys = ON');
 }
 
+function ensureMissionProposalTables(db: DbType): void {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS task_acceptance_criteria (
+      id TEXT PRIMARY KEY,
+      task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+      sort_order INTEGER NOT NULL DEFAULT 0,
+      title TEXT NOT NULL,
+      detail TEXT NOT NULL DEFAULT '',
+      doer_agent_id TEXT,
+      status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'pass', 'fail')),
+      doer_check_status TEXT NOT NULL DEFAULT 'pending' CHECK (doer_check_status IN ('pending', 'pass', 'fail')),
+      doer_check_evidence TEXT NOT NULL DEFAULT '',
+      doer_check_at INTEGER,
+      doer_check_by_agent_id TEXT,
+      verifier_check_status TEXT NOT NULL DEFAULT 'pending' CHECK (verifier_check_status IN ('pending', 'pass', 'fail')),
+      verifier_check_evidence TEXT NOT NULL DEFAULT '',
+      verifier_check_at INTEGER,
+      verifier_check_by_agent_id TEXT,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_acceptance_criteria_task
+      ON task_acceptance_criteria(task_id, sort_order);
+
+    CREATE TABLE IF NOT EXISTS task_clarifying_questions (
+      id TEXT PRIMARY KEY,
+      task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+      sort_order INTEGER NOT NULL DEFAULT 0,
+      category TEXT NOT NULL DEFAULT 'general' CHECK (category IN ('scope', 'data-model', 'acceptance', 'out-of-scope', 'risk', 'general')),
+      question TEXT NOT NULL,
+      asked_by_agent_id TEXT NOT NULL,
+      answer TEXT NOT NULL DEFAULT '',
+      answered_by TEXT NOT NULL DEFAULT '',
+      answered_at INTEGER,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_clarifying_questions_task
+      ON task_clarifying_questions(task_id, sort_order);
+  `);
+}
+
 export function openDatabase(filename: string): DbType {
   const db = new Database(filename);
   db.pragma('journal_mode = WAL');
@@ -1533,5 +1592,6 @@ export function openDatabase(filename: string): DbType {
   cleanupEmptyHiddenCommentMessages(db);
   repairMalformedHiddenLedgerRows(db);
   ensureMissionBriefingTables(db);
+  ensureMissionProposalTables(db);
   return db;
 }

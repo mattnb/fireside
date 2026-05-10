@@ -18,6 +18,9 @@ export interface Room {
   yoloAgents: AgentId[];
   leadAgentId: AgentId | null;
   agentProfiles: RoomAgentProfile[];
+  /** Agent ids pre-authorised to call mission.approve. Humans approve via
+   * HTTP routes and don't need to be listed here. */
+  approverAgentIds: AgentId[];
   createdAt: number;
 }
 
@@ -29,6 +32,7 @@ interface RoomRow {
   yolo_agents_json: string;
   agent_profiles_json?: string;
   lead_agent_id?: string | null;
+  approver_agent_ids_json?: string;
   created_at: number;
 }
 
@@ -67,6 +71,9 @@ function rowToRoom(row: RoomRow): Room {
       ? row.lead_agent_id
       : null;
   const agentProfiles = parseRoomAgentProfiles(row.agent_profiles_json ?? '[]', agents);
+  const approverAgentIds = parseAgents(row.approver_agent_ids_json ?? '[]').filter((agent) =>
+    agents.includes(agent),
+  );
   return {
     id: row.id,
     projectId: row.project_id || 'general',
@@ -75,6 +82,7 @@ function rowToRoom(row: RoomRow): Room {
     yoloAgents,
     leadAgentId,
     agentProfiles,
+    approverAgentIds,
     createdAt: row.created_at,
   };
 }
@@ -119,7 +127,34 @@ export function createRoom(
     JSON.stringify(agentProfiles),
     leadAgentId,
   );
-  return { id, projectId, name: input.name, agents, yoloAgents, leadAgentId, agentProfiles, createdAt: now };
+  return {
+    id,
+    projectId,
+    name: input.name,
+    agents,
+    yoloAgents,
+    leadAgentId,
+    agentProfiles,
+    approverAgentIds: [],
+    createdAt: now,
+  };
+}
+
+export function setRoomApproverAgentIds(
+  db: Database,
+  roomId: string,
+  approverAgentIds: AgentId[],
+): Room | null {
+  const room = getRoom(db, roomId);
+  if (!room) return null;
+  const filtered = [
+    ...new Set(approverAgentIds.filter((agent) => room.agents.includes(agent))),
+  ];
+  db.prepare(`UPDATE rooms SET approver_agent_ids_json = ? WHERE id = ?`).run(
+    JSON.stringify(filtered),
+    roomId,
+  );
+  return getRoom(db, roomId);
 }
 
 export function getRoom(db: Database, id: string): Room | null {

@@ -28,6 +28,7 @@ function item(id: string, overrides: Partial<TaskChecklistItem> = {}): TaskCheck
     updatedBy: '',
     completedAt: null,
     sortOrder: 1,
+    acceptanceRef: null,
     createdAt: 1,
     updatedAt: 1,
     ...overrides,

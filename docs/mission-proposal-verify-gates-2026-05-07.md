@@ -1,9 +1,13 @@
 # Mission Proposal/Approve/Verify Gates
 
-**Date:** 2026-05-07
+**Date:** 2026-05-07 (revised 2026-05-09 for MCP-first reality)
 **Owner:** unassigned
-**Status:** spec — not yet scheduled
-**Inspired by:** Chorus AI-DLC pipeline (Idea → Q&A elaboration → Proposal → Admin approval → Execute → dual-path Acceptance Criteria → Done). See `docs/backlog.md` and the harness comparison conducted 2026-05-07.
+**Status:** spec — PR 1 in progress
+**Inspired by:** Chorus AI-DLC pipeline (Idea → Q&A elaboration → Proposal → Admin approval → Execute → dual-path Acceptance Criteria → Done). See `docs/backlog.md` and the harness comparison at `docs/chorus-comparison-2026-05-08.md`.
+
+## 2026-05-09 revision — post-Phase-2 MCP migration
+
+Phase 2 of the MCP-first migration (commits `04eef92` + `de5a084`) deleted the slash-block extractor pipeline. Hidden-block parsers are no longer the canonical input surface — MCP tools are. Sub-deliverable 6 has been rewritten in place to use **5 new MCP tools** (`mission.clarify.ask` / `mission.clarify.answer`, `mission.acceptance.create` / `.update` / `.reorder`, `mission.propose.submit`, `mission.verify`, `mission.approve`) and **2 new HTTP endpoints** (`POST /api/tasks/:id/approve` and `/reject`) for human approval, since humans don't drive MCP. Sub-deliverables 1–5 are unchanged. The sequencing PRs and ~1500 LOC magnitude estimate also stand.
 
 ## Context
 
@@ -188,118 +192,133 @@ CREATE INDEX IF NOT EXISTS idx_clarifying_questions_task ON task_clarifying_ques
 - `server/tests/unit/repos/acceptance-criteria-dual-path.test.ts` — same-agent verify rejected; doer pass + verifier pass advances AC to `pass`; doer pass + verifier fail leaves AC at `fail`.
 - `server/tests/integration/dual-path-verify-end-to-end.test.ts` — task with 3 ACs goes through one verify-fail / fix / re-verify cycle and reaches `done`.
 
-## Sub-deliverable 6 — Hidden-block parsers + skill flow
+## Sub-deliverable 6 — MCP tools + HTTP human-approval routes + skill flow
 
-**Three new block types, matching the existing parser pattern at `server/src/mission-receipts.ts` and `server/src/hidden-blocks.ts`:**
+**Five new MCP tools, mirroring the existing pattern at `server/src/tools/handlers/mission-receipt-tools.ts` and `server/src/tools/schemas/mission-receipt.ts`:**
 
-### `<!-- mission-clarify -->`
+### `mission.clarify.ask`
+Lead asks a clarifying question against the active task.
+- Args: `category` (`scope` | `data-model` | `acceptance` | `out-of-scope` | `risk` | `general`), `question` (required, non-empty).
+- Required permission: `mission:write`.
+- Effect: inserts a row in `task_clarifying_questions`. Returns the question id.
 
-```text
-<!-- mission-clarify
-  action: ask | answer
-  id: <question-id, required for answer>
-  category: scope | data-model | acceptance | out-of-scope | risk | general
-  question: free text (required for ask)
-  answer: free text (required for answer)
--->
+### `mission.clarify.answer`
+The designated answerer answers an open clarifying question.
+- Args: `questionId` (required), `answer` (required, non-empty).
+- Caller may be any agent (the lead designates answerers via prompt convention — no DB-level allowlist for v1). Humans answer via the HTTP route below, not MCP.
+- Effect: writes `answer` + `answered_at` + `answered_by` on the row.
+
+### `mission.acceptance.create` / `.update` / `.reorder`
+Lead manages AC rows on a task.
+- `create`: `title` (required), `detail` (optional), `doer` (optional agent id), `sortOrder` (optional int — appended if absent).
+- `update`: `id` (required), then any of `title` / `detail` / `doer`. Once the task is `approved`, updates are rejected by the handler (AC rows go append-only post-approval; future re-edits go via the verify path).
+- `reorder`: `id` (required) + `sortOrder` (required).
+- Required permission: `mission:write`.
+
+### `mission.propose.submit`
+Lead transitions the task `elaborating → proposed`.
+- Args: none beyond context. Handler validates: all open questions answered, ≥1 AC row exists.
+- Required permission: `mission:write`.
+- Effect: `setProposalStatus(taskId, 'proposed', leadAgentId)`.
+
+### `mission.verify`
+Doer or verifier records a pass/fail check on an AC.
+- Args: `side` (`doer` | `verifier`), `acId` (required), `status` (`pass` | `fail`), `evidence` (required, non-empty).
+- Required permission: `mission:write`.
+- Side-specific rules enforced by handler:
+  - `side: doer` — caller must be the AC's resolved doer (or the agent that closed the linked checklist item if `acceptance_ref` was used).
+  - `side: verifier` — caller must be `task.verifier_agent_id` and **must not equal** the AC's `doer_check_by_agent_id`. Same-agent verify rejected with a diagnostic.
+
+### `mission.approve`
+Pre-authorised approver agent (member of `room.approver_agent_ids`) approves / rejects / requests changes.
+- Args: `action` (`approve` | `reject` | `request-changes`), `reason` (required for reject + request-changes).
+- Required permission: `mission:admin`.
+- Caller validation: caller's `agentId` must be in `room.approver_agent_ids`. Otherwise rejected with diagnostic.
+- Humans approve via the HTTP route below, not MCP — humans don't have an `agentId` to call MCP with.
+
+### HTTP human-approval routes
+Two new routes register in `server/src/http-server.ts`:
+
+```
+POST /api/tasks/:id/approve         body: {}
+POST /api/tasks/:id/reject          body: { reason: string }
+POST /api/tasks/:id/request-changes body: { reason: string }
+POST /api/clarifying-questions/:id/answer body: { answer: string }
 ```
 
-Lead emits `action: ask`; human (or designated agent) replies with `action: answer` referencing the question id.
+These are loopback-trusted (same trust model as the existing `/api/rooms/:id` DELETE). They feed the **same applicator** (`mission-approve-applicator`) the MCP tool's handler does, with `byAgentId = 'human'` baked in. The Angular client gets buttons in the working panel that POST to these — separate UI spec, not in PR 2.
 
-### `<!-- mission-acceptance -->`
+### Skill flow
 
-```text
-<!-- mission-acceptance
-  action: create | update | reorder
-  id: <ac-id, required for update/reorder>
-  sort_order: <int>
-  title: free text (required for create)
-  detail: free text (optional)
-  doer: <agent-id, optional>
--->
-```
-
-Lead emits during `proposed` to declare AC rows. Once `approved`, AC rows are append-only — updates only allowed via the verify path.
-
-### `<!-- mission-verify -->`
-
-```text
-<!-- mission-verify
-  side: doer | verifier
-  ac: <ac-id>
-  status: pass | fail
-  evidence: free text (required, must be non-empty)
--->
-```
-
-### `<!-- mission-approve -->`
-
-```text
-<!-- mission-approve
-  action: approve | reject | request-changes
-  task: <task-id>
-  reason: free text (required for reject and request-changes)
--->
-```
-
-Only the **human user** (any message author equal to the room's human user, identified by `agentId = 'human'`) or an agent listed in a per-room `approver_agent_ids` allowlist (new room field; default empty) can emit this block. Rejected blocks from any other author write a diagnostic run-action and are ignored. `request-changes` returns the task to `elaborating`.
-
-**Skill flow.** New skill at `client/skills/mission-propose.md` (and corresponding lead-prompt edits in `server/src/orchestration/lead-rehydration.ts` so the lead knows the protocol after a reset):
+New skill at `client/skills/mission-propose.md` (and corresponding lead-prompt edits in `server/src/orchestration/lead-rehydration.ts`):
 
 1. Human writes a brief in chat.
-2. Lead emits `<!-- mission-create proposal: draft -->` + an initial `<!-- mission-acceptance action: create -->` row per AC it can extract from the brief.
-3. If anything is unclear, lead emits one or more `<!-- mission-clarify action: ask -->` blocks **and stops** (does not advance to `proposed`). Task is in `elaborating`.
-4. Human (or designated answerer) replies with `<!-- mission-clarify action: answer -->` blocks for each question.
-5. Lead emits revised `<!-- mission-acceptance -->` blocks reflecting answers, then transitions task to `proposed` by emitting a `<!-- mission-create action: update proposal_status: proposed -->` block (or via a dedicated `<!-- mission-propose -->` block — to be decided in the open-questions section below).
-6. Human emits `<!-- mission-approve action: approve -->`. Task flips to `approved`. Worker dispatch unblocks.
-7. Workers execute. Receipts close checklist items, which fan out to `doer_check`s on linked ACs.
-8. Verifier emits `<!-- mission-verify side: verifier -->` per AC.
+2. Lead calls `mission.task.update` with `proposalStatus: 'draft'` to seed the task, then one or more `mission.acceptance.create` for ACs it can extract.
+3. If anything is unclear, lead calls one or more `mission.clarify.ask` and **stops the turn**. Task remains in `elaborating` (set by the first `clarify.ask` handler if `proposal_status = 'draft'`).
+4. Human (or designated answerer agent) answers — human via `POST /api/clarifying-questions/:id/answer`, agent via `mission.clarify.answer`.
+5. Lead revises ACs via `mission.acceptance.update`, then calls `mission.propose.submit`. Task → `proposed`.
+6. Human approves via `POST /api/tasks/:id/approve` (or pre-authorised approver agent calls `mission.approve`). Task → `approved`. Worker dispatch unblocks.
+7. Workers execute. Receipts close checklist items, which fan out to `doer_check`s on linked ACs (via `acceptance_ref`).
+8. Verifier calls `mission.verify side: 'verifier'` per AC.
 9. When all ACs pass, task auto-transitions to `done`.
 
 **Files touched:**
-- New: `server/src/mission-clarify-updates.ts` (parser, ~100 LOC, mirrors `mission-task-updates.ts`).
-- New: `server/src/mission-acceptance-updates.ts` (parser, ~100 LOC).
-- New: `server/src/mission-verify-updates.ts` (parser, ~80 LOC).
-- New: `server/src/mission-approve-updates.ts` (parser, ~80 LOC).
-- New: `server/src/mission-state/mission-clarify-applicator.ts` (~120 LOC).
-- New: `server/src/mission-state/mission-acceptance-applicator.ts` (~150 LOC).
+- New: `server/src/tools/schemas/mission-clarify.ts` (~80 LOC).
+- New: `server/src/tools/schemas/mission-acceptance.ts` (~100 LOC).
+- New: `server/src/tools/schemas/mission-propose.ts` (~40 LOC).
+- New: `server/src/tools/schemas/mission-verify.ts` (~70 LOC).
+- New: `server/src/tools/schemas/mission-approve.ts` (~70 LOC).
+- New: `server/src/tools/handlers/mission-clarify-tools.ts` (~120 LOC) — `mission.clarify.ask`, `mission.clarify.answer`.
+- New: `server/src/tools/handlers/mission-acceptance-tools.ts` (~180 LOC) — `mission.acceptance.create`, `.update`, `.reorder`.
+- New: `server/src/tools/handlers/mission-propose-tools.ts` (~80 LOC) — `mission.propose.submit`.
+- New: `server/src/tools/handlers/mission-verify-tools.ts` (~150 LOC) — wraps `mission-verify-applicator`.
+- New: `server/src/tools/handlers/mission-approve-tools.ts` (~150 LOC) — wraps `mission-approve-applicator`.
 - New: `server/src/mission-state/mission-verify-applicator.ts` — already counted in sub-deliverable 5.
 - New: `server/src/mission-state/mission-approve-applicator.ts` (~120 LOC).
-- `server/src/broker.ts` — wire the four new parsers into the existing post-turn extraction pipeline (search for the existing `extractMissionPhaseUpdates(...)` / `extractMissionReceipts(...)` call sites).
-- `server/src/orchestration/lead-rehydration.ts` — extend the rehydration checkpoint to include open clarifying questions and the proposal status, so a reset lead picks up where it left off.
-- New: `client/skills/mission-propose.md` — the skill the lead loads when `proposal_status = draft`.
+- `server/src/tools/default-tools.ts` — register the new tool arrays.
+- `server/src/http-server.ts` — add 4 HTTP routes that delegate to the applicators.
+- `server/src/orchestration/lead-rehydration.ts` — carry proposal status + open clarifying questions in the checkpoint.
+- New: `client/skills/mission-propose.md` — the skill the lead loads when `proposal_status = 'draft'`.
 
 **Tests:**
-- One unit spec per parser (`server/tests/unit/mission-{clarify,acceptance,verify,approve}-updates.test.ts`) — happy path + malformed-block rejection.
-- One unit spec per applicator (same naming pattern under `server/tests/unit/mission-state/`).
-- `server/tests/integration/mission-proposal-flow.test.ts` — the full sub-deliverable-6 walkthrough end-to-end against a fresh in-memory DB.
+- One unit spec per schema (`server/tests/unit/tools/schemas/mission-{clarify,acceptance,propose,verify,approve}-schema.test.ts`) — happy path + malformed input rejection.
+- One unit spec per handler (same naming pattern under `server/tests/unit/tools/handlers/`) covering CRUD + permission + state-machine guards.
+- One unit spec per applicator under `server/tests/unit/mission-state/`.
+- `server/tests/integration/mission-proposal-flow.test.ts` — the full Idea → clarify → AC → propose → approve → execute → dual-path verify → done loop end-to-end against a fresh in-memory DB.
+- `server/tests/integration/human-approval-http.test.ts` — POST /api/tasks/:id/approve flips proposal_status with `byAgentId = 'human'` and unblocks dispatch.
 
 ## File touch summary
 
 | File | Change |
 |---|---|
-| `server/src/db.ts` | 3 `ALTER TABLE tasks` columns; 2 new `CREATE TABLE`s; 1 `ALTER TABLE task_checklist_items` column |
+| `server/src/db.ts` | 3 `ALTER TABLE tasks` columns; 1 `ALTER TABLE rooms` column; 1 `ALTER TABLE task_checklist_items` column; 2 new `CREATE TABLE`s |
 | `server/src/repos/tasks.ts` | Extend types + `setProposalStatus` + `maybeAdvanceProposalStatus` helpers |
 | `server/src/repos/task-checklist.ts` | Add `acceptance_ref` to types/row-mapper |
 | `server/src/repos/acceptance-criteria.ts` | New module — CRUD + dual-path check helpers |
 | `server/src/repos/clarifying-questions.ts` | New module — CRUD + open-questions helper |
-| `server/src/repos/rooms.ts` | Add `approver_agent_ids` array column (additive) |
-| `server/src/mission-clarify-updates.ts` | New parser |
-| `server/src/mission-acceptance-updates.ts` | New parser |
-| `server/src/mission-verify-updates.ts` | New parser |
-| `server/src/mission-approve-updates.ts` | New parser |
-| `server/src/mission-state/mission-clarify-applicator.ts` | New applicator |
-| `server/src/mission-state/mission-acceptance-applicator.ts` | New applicator |
+| `server/src/repos/rooms.ts` | Add `approver_agent_ids` JSON-array column (additive) |
+| `server/src/tools/schemas/mission-clarify.ts` | New schema |
+| `server/src/tools/schemas/mission-acceptance.ts` | New schema |
+| `server/src/tools/schemas/mission-propose.ts` | New schema |
+| `server/src/tools/schemas/mission-verify.ts` | New schema |
+| `server/src/tools/schemas/mission-approve.ts` | New schema |
+| `server/src/tools/handlers/mission-clarify-tools.ts` | New handler — `mission.clarify.ask` + `.answer` |
+| `server/src/tools/handlers/mission-acceptance-tools.ts` | New handler — `mission.acceptance.create` + `.update` + `.reorder` |
+| `server/src/tools/handlers/mission-propose-tools.ts` | New handler — `mission.propose.submit` |
+| `server/src/tools/handlers/mission-verify-tools.ts` | New handler — wraps `mission-verify-applicator` |
+| `server/src/tools/handlers/mission-approve-tools.ts` | New handler — wraps `mission-approve-applicator` |
+| `server/src/tools/default-tools.ts` | Register the 5 new tool arrays |
 | `server/src/mission-state/mission-verify-applicator.ts` | New applicator |
 | `server/src/mission-state/mission-approve-applicator.ts` | New applicator |
 | `server/src/mission-state/mission-receipt-applicator.ts` | Fan out to `recordDoerCheck` when receipt closes a checklist item with `acceptance_ref`; tail-call `maybeAdvanceProposalStatus` |
 | `server/src/orchestration/work-lane-planner.ts` | Proposal-gate precheck + `LaneBlockedReason` typing |
 | `server/src/orchestration/lead-rehydration.ts` | Carry proposal status + open clarifying questions in the checkpoint |
-| `server/src/broker.ts` | Wire 4 new parsers into post-turn extraction; surface `LaneBlockedReason` as run-action diagnostic |
+| `server/src/http-server.ts` | 4 new routes for human approval / clarification answer |
+| `server/src/broker.ts` | Surface `LaneBlockedReason` as run-action diagnostic |
 | `client/skills/mission-propose.md` | New skill |
 | `client/app/...` (deferred) | Working panel surfaces clarify/approve/verify states — separate UI spec |
 
-**Estimated diff:** ~1500 LOC production + ~1200 LOC tests across two PRs (PR 1: schema + repos + parsers; PR 2: applicators + dispatch gate + skill + integration tests). No data migration required — every change is additive with safe defaults.
+**Estimated diff:** ~1500 LOC production + ~1200 LOC tests across two PRs (PR 1: schema + repos + tool schemas + CRUD handlers; PR 2: applicators + state-machine handlers + dispatch gate + HTTP routes + skill + integration tests). No data migration required — every change is additive with safe defaults.
 
 ## Acceptance criteria (this spec, recursively)
 
@@ -311,28 +330,21 @@ Only the **human user** (any message author equal to the room's human user, iden
 6. Every new parser has a unit test covering happy path + malformed input.
 7. End-to-end integration test exercises the full Idea → Q&A → Proposal → Approve → Execute → Dual-path Verify → Done loop without manual DB edits.
 
-## Open questions (resolve before implementation)
+## Open questions — resolved 2026-05-09
 
-1. **Proposal status transition syntax.** Should the lead transition `elaborating → proposed` via a generic `<!-- mission-create action: update proposal_status: proposed -->`, or a dedicated `<!-- mission-propose -->` block? Recommend the dedicated block — it makes the protocol grep-able and lets the parser emit better diagnostics. Decide before sub-deliverable 6 ships.
-
-2. **Per-AC vs per-checklist-item linkage cardinality.** Spec assumes `task_checklist_items.acceptance_ref` is a single AC id. Is one-checklist-item-to-many-ACs realistic? If yes, change to a join table `task_checklist_acceptance_links`. Recommend single-ref for v1; can split later if observed need.
-
-3. **Verifier reuse across phases.** Spec puts `verifier_agent_id` on `tasks`. Should it be per-phase or per-AC instead? Per-task is the simplest model and matches Chorus's "Admin verifies the whole task" stance. If specific ACs need different verifiers, defer to v2.
-
-4. **Human approval identity.** Fireside currently uses `agentId = 'human'` for human-authored messages. Confirm that the broker's hidden-block extractor sees `human` as the author when a human types in chat, so the approve gate's "must be human or in `approver_agent_ids`" check works without further plumbing.
-
-5. **What happens to the legacy `tasks.acceptance_criteria` blob on the proposal flow path?** Recommend: when a task has any rows in `task_acceptance_criteria`, the blob is hidden in the UI and treated as legacy display-only. The blob stays in the DB for tasks that never opt into the proposal flow. Confirm.
-
-6. **Reviewer-agent skill.** Sub-deliverable 5 assigns a verifier agent but does not say what skill the verifier loads. Should there be a `client/skills/mission-verify.md` that primes the verifier with a "challenge each AC's evidence; the doer is not the source of truth" stance? Recommend yes; spec it as a follow-up doc.
-
-7. **Reject + restart.** When a task hits `rejected`, does the lead spawn a new task carrying forward the clarifying-question history, or is rejection terminal with no carry-forward? Recommend: terminal in v1; carry-forward is a usability follow-up.
-
-8. **Worker dispatch gate exemption for the lead.** Spec says leads bypass the gate. Confirm that no current dispatch path will accidentally treat a worker-role agent as the lead under any edge case (e.g. lead reassignment mid-mission). The `room.leadAgentId` check is the source of truth.
+1. **Proposal status transition syntax.** ✅ Dedicated `mission.propose.submit` MCP tool. Distinct audit trail and grep-able.
+2. **Per-AC vs per-checklist linkage cardinality.** ✅ Single-ref `task_checklist_items.acceptance_ref` for v1. Join table deferred until observed need.
+3. **Verifier reuse across phases.** ✅ `verifier_agent_id` on `tasks` for v1. Per-AC verifiers deferred to v2.
+4. **Human approval identity.** ✅ Humans don't drive MCP — they go through the new HTTP routes (`POST /api/tasks/:id/approve` etc.) which feed the same applicator with `byAgentId = 'human'`. No `agentId = 'human'` plumbing required in the MCP handler path.
+5. **Legacy `tasks.acceptance_criteria` blob.** ✅ When a task has rows in `task_acceptance_criteria`, the blob is treated as legacy display-only. Blob stays in the DB for tasks that never opt in.
+6. **Reviewer-agent skill.** Defer — `client/skills/mission-verify.md` will be specced as a follow-up doc once PR 2 lands and we have a verifier-agent run to observe.
+7. **Reject + restart.** ✅ Terminal in v1. Carry-forward is a usability follow-up.
+8. **Lead exemption.** ✅ `room.leadAgentId` is the source of truth. No edge case in the current dispatch path treats a worker as the lead.
 
 ## Sequencing recommendation
 
-PR 1 (schema + repos + parsers) — sub-deliverables 1, 2, 3, plus the parsers from 6. Lands as a no-op release; no behaviour changes because nothing reads the new tables yet.
+**PR 1 (schema + repos + tool schemas + CRUD handlers)** — sub-deliverables 1, 2, 3, plus the schemas + CRUD-only handlers from 6 (`mission.clarify.ask` / `.answer`, `mission.acceptance.create` / `.update` / `.reorder`). Lands as a no-op release for existing tasks (`proposal_status` defaults to `'approved'`). New tools work — agents can populate the new tables — but nothing reads `proposal_status` for gating yet.
 
-PR 2 (gate + applicators + skill) — sub-deliverables 4, 5, plus the applicators from 6 and the skill. Cuts in the actual gate behind the opt-in `proposal: draft` flag in `mission-create`.
+**PR 2 (gate + applicators + state-machine handlers + HTTP + skill)** — sub-deliverables 4, 5, plus `mission.propose.submit`, `mission.verify`, `mission.approve` handlers, the applicators they wrap, the 4 HTTP routes, and the skill. Cuts in the actual gate behind the opt-in `proposalStatus: 'draft'` flag in `mission.task.update`.
 
-PR 3 (UI surface) — separate spec. Surfaces clarify/approve/verify state in the working panel.
+**PR 3 (UI surface)** — separate spec. Surfaces clarify / approve / verify state in the working panel; adds the buttons that POST to the human-approval routes.

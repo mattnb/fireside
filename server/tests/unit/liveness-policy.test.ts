@@ -15,6 +15,9 @@ const task: Task = {
   status: 'active',
   capabilityProfile: 'edit',
   summary: '',
+  proposalStatus: 'approved',
+  verifierAgentId: null,
+  proposedByAgentId: null,
   createdAt: 1,
   updatedAt: 1,
 };
@@ -40,6 +43,7 @@ function item(overrides: Partial<TaskChecklistItem> = {}): TaskChecklistItem {
     updatedBy: '',
     completedAt: null,
     sortOrder: 1,
+    acceptanceRef: null,
     createdAt: 1,
     updatedAt: 1,
     ...overrides,

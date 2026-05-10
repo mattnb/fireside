@@ -46,6 +46,7 @@ function slateRoom(overrides: Partial<Room> = {}): Room {
         personaSummary: '',
       },
     ],
+    approverAgentIds: [],
     createdAt: 1,
   };
   return { ...room, ...overrides };

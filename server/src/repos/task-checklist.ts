@@ -24,6 +24,9 @@ export interface TaskChecklistItem {
   updatedBy: string;
   completedAt: number | null;
   sortOrder: number;
+  /** Optional link to a task_acceptance_criteria.id; closing this checklist
+   * item fans out a doer-pass on the linked AC. Single-ref for v1. */
+  acceptanceRef: string | null;
   createdAt: number;
   updatedAt: number;
 }
@@ -60,6 +63,7 @@ interface TaskChecklistItemRow {
   updated_by: string;
   completed_at: number | null;
   sort_order: number;
+  acceptance_ref: string | null;
   created_at: number;
   updated_at: number;
 }
@@ -92,6 +96,7 @@ export interface CreateTaskChecklistItemInput {
   councilRequired?: boolean;
   updatedBy?: string;
   sortOrder?: number;
+  acceptanceRef?: string | null;
 }
 
 export interface UpdateTaskChecklistItemInput {
@@ -111,6 +116,7 @@ export interface UpdateTaskChecklistItemInput {
   councilRequired?: boolean;
   updatedBy?: string;
   sortOrder?: number;
+  acceptanceRef?: string | null;
 }
 
 export interface CreateTaskChecklistNoteInput {
@@ -173,6 +179,7 @@ function rowToTaskChecklistItem(row: TaskChecklistItemRow): TaskChecklistItem {
     updatedBy: row.updated_by,
     completedAt: row.completed_at,
     sortOrder: row.sort_order,
+    acceptanceRef: row.acceptance_ref,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -202,8 +209,8 @@ export function createTaskChecklistItem(
       id, task_id, plan_id, phase_id, title, detail, status, dependency_ids_json,
       expected_touches_json, parallelism, conflict_group, work_role, owner_agent_id,
       status_note, blocked_reason, council_required, updated_by, completed_at,
-      sort_order, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      sort_order, acceptance_ref, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     id,
     input.taskId,
@@ -224,6 +231,7 @@ export function createTaskChecklistItem(
     input.updatedBy ?? '',
     status === 'done' ? now : null,
     input.sortOrder ?? 0,
+    input.acceptanceRef ?? null,
     now,
     now,
   );
@@ -277,6 +285,7 @@ export function updateTaskChecklistItem(
     ...('councilRequired' in input ? { councilRequired: input.councilRequired === true } : {}),
     ...('updatedBy' in input ? { updatedBy: input.updatedBy ?? '' } : {}),
     ...('sortOrder' in input ? { sortOrder: input.sortOrder ?? 0 } : {}),
+    ...('acceptanceRef' in input ? { acceptanceRef: input.acceptanceRef ?? null } : {}),
     updatedAt: Date.now(),
   };
   const completedAt =
@@ -290,7 +299,7 @@ export function updateTaskChecklistItem(
      SET plan_id = ?, phase_id = ?, title = ?, detail = ?, status = ?, dependency_ids_json = ?,
          expected_touches_json = ?, parallelism = ?, conflict_group = ?, work_role = ?,
          owner_agent_id = ?, status_note = ?, blocked_reason = ?, council_required = ?,
-         updated_by = ?, completed_at = ?, sort_order = ?, updated_at = ?
+         updated_by = ?, completed_at = ?, sort_order = ?, acceptance_ref = ?, updated_at = ?
      WHERE id = ?`,
   ).run(
     updated.planId,
@@ -310,6 +319,7 @@ export function updateTaskChecklistItem(
     updated.updatedBy,
     completedAt,
     updated.sortOrder,
+    updated.acceptanceRef,
     updated.updatedAt,
     id,
   );

@@ -20,6 +20,9 @@ const activeTask: Task = {
   status: 'active',
   capabilityProfile: 'edit',
   summary: '',
+  proposalStatus: 'approved',
+  verifierAgentId: null,
+  proposedByAgentId: null,
   createdAt: 1,
   updatedAt: 1,
 };

@@ -26,6 +26,7 @@ function item(
     updatedBy: 'codex-project-manager',
     completedAt: null,
     sortOrder: 1,
+    acceptanceRef: null,
     createdAt: 1,
     updatedAt: 1,
     ...overrides,

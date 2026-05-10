@@ -62,6 +62,7 @@ function item(overrides: Partial<TaskChecklistItem>): TaskChecklistItem {
     updatedBy: '',
     completedAt: null,
     sortOrder: 0,
+    acceptanceRef: null,
     createdAt: now,
     updatedAt: now,
     ...overrides,
