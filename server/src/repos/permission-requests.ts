@@ -151,6 +151,22 @@ export function listPermissionRequests(db: Database, roomId: string): Permission
   return rows.map(rowToPermissionRequest);
 }
 
+export function listPermissionRequestsForRoom(
+  db: Database,
+  roomId: string,
+  limit = 100,
+): PermissionRequest[] {
+  const rows = db
+    .prepare(
+      `SELECT * FROM permission_requests
+       WHERE room_id = ?
+       ORDER BY created_at DESC, id DESC
+       LIMIT ?`,
+    )
+    .all(roomId, limit) as PermissionRequestRow[];
+  return rows.map(rowToPermissionRequest);
+}
+
 export function resolvePermissionRequest(
   db: Database,
   input: { id: string; decision: Exclude<PermissionStatus, 'pending'>; decidedBy: string },

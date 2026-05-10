@@ -1,0 +1,186 @@
+:host {
+  display: block;
+  height: 100%;
+  overflow: hidden;
+}
+
+.audit-view {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  gap: 8px;
+  padding: 16px 20px;
+  overflow: hidden;
+}
+
+.audit-view__head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-end;
+  gap: 16px;
+}
+
+.audit-view__head h2 {
+  margin: 0 0 4px;
+  font-size: 14px;
+  letter-spacing: 0.04em;
+  text-transform: lowercase;
+  color: var(--text-primary);
+}
+
+.audit-view__subtitle {
+  margin: 0;
+  color: var(--text-faint);
+  font-size: 12px;
+  line-height: 1.4;
+  max-width: 60ch;
+}
+
+.audit-view__actions {
+  display: flex;
+  gap: 8px;
+}
+
+.audit-view__chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+}
+
+.audit-view__chip {
+  background: transparent;
+  border: 1px solid var(--surface-border, rgba(255, 255, 255, 0.12));
+  color: var(--text-secondary);
+  font-size: 11px;
+  padding: 3px 9px;
+  border-radius: 999px;
+  cursor: pointer;
+  text-transform: lowercase;
+}
+
+.audit-view__chip:hover {
+  color: var(--text-primary);
+  border-color: var(--text-secondary);
+}
+
+.audit-view__chip.is-active {
+  background: var(--accent, #3b82f6);
+  border-color: var(--accent, #3b82f6);
+  color: var(--accent-contrast, white);
+}
+
+.audit-view__body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  border: 1px solid var(--surface-border, rgba(255, 255, 255, 0.06));
+  border-radius: 6px;
+  background: var(--surface-elevated, rgba(255, 255, 255, 0.02));
+}
+
+.audit-view__hint,
+.audit-view__error {
+  padding: 16px;
+  font-size: 12px;
+  color: var(--text-faint);
+}
+
+.audit-view__error {
+  color: var(--danger, #ef4444);
+}
+
+.audit-view__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.audit-view__row {
+  display: grid;
+  gap: 4px;
+  padding: 8px 14px;
+  border-bottom: 1px solid var(--surface-border, rgba(255, 255, 255, 0.04));
+  font-size: 12px;
+}
+
+.audit-view__row:last-child {
+  border-bottom: 0;
+}
+
+.audit-view__row-head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: baseline;
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+
+.audit-view__kind {
+  background: var(--surface-hover, rgba(255, 255, 255, 0.06));
+  color: var(--text-primary);
+  padding: 1px 6px;
+  border-radius: 3px;
+}
+
+.audit-view__sub {
+  color: var(--text-secondary);
+  text-transform: none;
+}
+
+.audit-view__status {
+  padding: 1px 6px;
+  border-radius: 3px;
+  border: 1px solid var(--surface-border, rgba(255, 255, 255, 0.10));
+  text-transform: none;
+}
+
+.audit-view__status[data-status='applied'],
+.audit-view__status[data-status='completed'],
+.audit-view__status[data-status='approved'] {
+  border-color: rgba(34, 197, 94, 0.5);
+  color: rgba(74, 222, 128, 0.95);
+}
+
+.audit-view__status[data-status='rejected'],
+.audit-view__status[data-status='failed'],
+.audit-view__status[data-status='denied'] {
+  border-color: rgba(239, 68, 68, 0.5);
+  color: rgba(248, 113, 113, 0.95);
+}
+
+.audit-view__status[data-status='running'],
+.audit-view__status[data-status='pending'] {
+  border-color: rgba(245, 158, 11, 0.5);
+  color: rgba(252, 211, 77, 0.95);
+}
+
+.audit-view__agent {
+  font-family: var(--font-mono);
+  color: var(--text-secondary);
+  text-transform: none;
+}
+
+.audit-view__time {
+  margin-left: auto;
+  color: var(--text-faint);
+  text-transform: none;
+}
+
+.audit-view__summary {
+  color: var(--text-primary);
+  line-height: 1.4;
+  word-break: break-word;
+}
+
+.audit-view__detail {
+  color: var(--text-secondary);
+  font-size: 11px;
+  line-height: 1.45;
+  word-break: break-word;
+  white-space: pre-wrap;
+}

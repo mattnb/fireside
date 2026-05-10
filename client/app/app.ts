@@ -17,6 +17,7 @@ import { FiresideApi } from './api.service';
 import { PlanView } from './plan-view/plan-view';
 import { SetupView, type MissionsChangedEvent } from './setup-view/setup-view';
 import { EvidenceView } from './evidence-view/evidence-view';
+import { AuditView } from './audit-view/audit-view';
 import { BriefingsTab } from './briefings-tab/briefings-tab';
 import { ChecklistView } from './checklist-view/checklist-view';
 import { BoardView } from './board-view/board-view';
@@ -148,6 +149,7 @@ type MissionViewId =
   | 'roadmap'
   | 'plan'
   | 'evidence'
+  | 'activity'
   | 'setup';
 type AgentRailKind = 'running' | 'yolo' | 'idle' | 'ready' | 'waiting' | 'blocked' | 'stale';
 type MissionBoardColumn = {
@@ -191,6 +193,7 @@ const DEFAULT_AGENT_AUTO_COMPACT_PERCENT = 70;
     PlanView,
     SetupView,
     EvidenceView,
+    AuditView,
     BriefingsTab,
     ChecklistView,
     BoardView,
@@ -262,6 +265,7 @@ export class App implements OnDestroy {
     { id: 'roadmap', label: 'Roadmap', summary: 'phase gates and dependencies' },
     { id: 'plan', label: 'Plan', summary: 'team agreement and rationale' },
     { id: 'evidence', label: 'Evidence', summary: 'runs, artifacts, receipts' },
+    { id: 'activity', label: 'Activity', summary: 'audit stream of every event' },
     { id: 'setup', label: 'Setup', summary: 'mission parameters' },
   ];
   readonly missionActions = MISSION_ACTIONS;
@@ -788,7 +792,8 @@ export class App implements OnDestroy {
         else if (hit.kind === 'checklist') this.selectMissionView('checklist');
         else if (hit.kind === 'phase') this.selectMissionView('roadmap');
         else if (hit.kind === 'acceptance' || hit.kind === 'clarifying') this.selectMissionView('checklist');
-        else if (hit.kind === 'activity' || hit.kind === 'collab') this.selectMissionView('evidence');
+        else if (hit.kind === 'activity') this.selectMissionView('activity');
+        else if (hit.kind === 'collab') this.selectMissionView('evidence');
         else this.selectMissionView('overview');
         break;
       case 'room':

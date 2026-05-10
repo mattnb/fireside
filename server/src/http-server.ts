@@ -28,6 +28,16 @@ import type { ConversationArtifactFile } from './context-files.js';
 import { buildStatusSnapshot } from './status-snapshot.js';
 import { capacityBlockFromContextUsage } from './provider-capacity.js';
 import { runUniversalSearch, SEARCH_KINDS, type SearchKind } from './search/universal-search.js';
+import {
+  AUDIT_EVENT_KINDS,
+  buildAuditStream,
+  type AuditEventKind,
+} from './activity-stream/audit-stream.js';
+
+const AUDIT_KINDS_SET = new Set<string>(AUDIT_EVENT_KINDS);
+function isAuditKind(value: string): value is AuditEventKind {
+  return AUDIT_KINDS_SET.has(value);
+}
 
 const SEARCH_KINDS_SET = new Set<string>(SEARCH_KINDS);
 function isSearchKind(value: string): value is SearchKind {
@@ -1166,6 +1176,40 @@ export function buildHttpServer(deps: HttpDeps) {
       return deps.broker.listAgentRunActions(req.params.id, Number.isFinite(limit) ? limit : 60);
     },
   );
+
+  app.get<{
+    Params: { id: string };
+    Querystring: {
+      limit?: string;
+      kinds?: string | string[];
+      agentId?: string;
+      taskId?: string;
+    };
+  }>('/api/rooms/:id/audit', async (req, reply) => {
+    const room = getRoom(deps.db, req.params.id);
+    if (!room) return reply.code(404).send({ error: 'not found' });
+    const limit = req.query.limit ? Number.parseInt(req.query.limit, 10) : NaN;
+    const rawKinds = req.query.kinds;
+    let kinds: AuditEventKind[] | undefined;
+    if (typeof rawKinds === 'string' && rawKinds.trim()) {
+      kinds = rawKinds
+        .split(',')
+        .map((token) => token.trim())
+        .filter(isAuditKind);
+    } else if (Array.isArray(rawKinds)) {
+      kinds = rawKinds
+        .map((token) => (typeof token === 'string' ? token.trim() : ''))
+        .filter(isAuditKind);
+    }
+    const opts: Parameters<typeof buildAuditStream>[2] = {};
+    if (kinds && kinds.length > 0) opts.kinds = kinds;
+    if (typeof req.query.agentId === 'string' && req.query.agentId)
+      opts.agentId = req.query.agentId;
+    if (typeof req.query.taskId === 'string' && req.query.taskId) opts.taskId = req.query.taskId;
+    if (Number.isFinite(limit) && limit > 0) opts.limit = limit;
+    const events = buildAuditStream(deps.db, req.params.id, opts);
+    return { events };
+  });
 
   app.get<{ Params: { id: string }; Querystring: { limit?: string } }>(
     '/api/rooms/:id/routing-decisions',

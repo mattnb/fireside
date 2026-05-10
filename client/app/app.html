@@ -226,6 +226,8 @@
         [roomId]="selectedRoomId()"
         (openRunRequested)="openRunDetail($event)"
       />
+      } @if (selectedMissionView() === 'activity') {
+      <fs-audit-view [roomId]="selectedRoomId()" [roomAgents]="roomAgents()" />
       }
     </section>
     }

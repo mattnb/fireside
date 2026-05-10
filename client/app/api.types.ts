@@ -916,6 +916,31 @@ export interface SearchResponse {
   hits: SearchHit[];
 }
 
+export type AuditEventKind =
+  | 'run-action'
+  | 'mission-command'
+  | 'routing-decision'
+  | 'tool-call'
+  | 'permission-request'
+  | 'turn-outcome';
+
+export interface AuditEvent {
+  kind: AuditEventKind;
+  id: string;
+  agentId: string;
+  status: string;
+  subKind: string;
+  summary: string;
+  detail: string;
+  taskId: string | null;
+  runId: string | null;
+  createdAt: number;
+}
+
+export interface AuditStreamResponse {
+  events: AuditEvent[];
+}
+
 export type FiresideWsEvent =
   | { type: 'messageAppended'; message: Message }
   | { type: 'messageUpdated'; message: Message }

@@ -11,6 +11,7 @@ import {
   Artifact,
   ArtifactListing,
   AgentTurnOutcome,
+  AuditStreamResponse,
   CollaborationItem,
   ConversationFixture,
   Message,
@@ -218,6 +219,20 @@ export class FiresideApi {
       if (opts.taskId) params['taskId'] = opts.taskId;
       if (opts.limit !== undefined) params['limit'] = opts.limit;
       return this.http.get<SearchResponse>('/api/search', { params });
+    },
+  };
+
+  readonly audit = {
+    stream: (
+      roomId: string,
+      opts: { kinds?: string[]; agentId?: string; taskId?: string; limit?: number } = {},
+    ) => {
+      const params: Record<string, string | number> = {};
+      if (opts.kinds && opts.kinds.length > 0) params['kinds'] = opts.kinds.join(',');
+      if (opts.agentId) params['agentId'] = opts.agentId;
+      if (opts.taskId) params['taskId'] = opts.taskId;
+      if (opts.limit !== undefined) params['limit'] = opts.limit;
+      return this.http.get<AuditStreamResponse>(`/api/rooms/${roomId}/audit`, { params });
     },
   };
 

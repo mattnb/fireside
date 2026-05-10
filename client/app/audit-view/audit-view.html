@@ -1,0 +1,92 @@
+<section class="audit-view" aria-label="Activity & audit stream">
+  <header class="audit-view__head">
+    <div>
+      <h2>activity stream</h2>
+      <p class="audit-view__subtitle">
+        every audited event in this room — tool calls, mission state changes, routing decisions,
+        run actions, permission requests, turn outcomes — newest first.
+      </p>
+    </div>
+    <div class="audit-view__actions">
+      <button
+        type="button"
+        class="control-btn"
+        (click)="refresh()"
+        [disabled]="loading() || !roomId()"
+      >
+        refresh
+      </button>
+    </div>
+  </header>
+
+  <nav class="audit-view__chips" aria-label="event kind filter">
+    @for (chip of kindChips; track chip.id) {
+    <button
+      type="button"
+      class="audit-view__chip"
+      [class.is-active]="activeKind() === chip.id"
+      (click)="setKind(chip.id)"
+    >
+      {{ chip.label }}
+    </button>
+    }
+  </nav>
+
+  @if (roomAgents().length > 0) {
+  <nav class="audit-view__chips" aria-label="agent filter">
+    <button
+      type="button"
+      class="audit-view__chip"
+      [class.is-active]="activeAgent() === 'all'"
+      (click)="setAgent('all')"
+    >
+      all agents
+    </button>
+    @for (agent of roomAgents(); track agent) {
+    <button
+      type="button"
+      class="audit-view__chip"
+      [class.is-active]="activeAgent() === agent"
+      (click)="setAgent(agent)"
+    >
+      {{ agent }}
+    </button>
+    }
+  </nav>
+  }
+
+  <div class="audit-view__body">
+    @if (error(); as message) {
+    <div class="audit-view__error">{{ message }}</div>
+    }
+    @if (loading() && events().length === 0) {
+    <div class="audit-view__hint">loading…</div>
+    } @else if (empty()) {
+    <div class="audit-view__hint">no audit events match the current filter.</div>
+    } @else {
+    <ol class="audit-view__list">
+      @for (event of visibleEvents(); track event.kind + ':' + event.id) {
+      <li class="audit-view__row" [attr.data-kind]="event.kind">
+        <div class="audit-view__row-head">
+          <span class="audit-view__kind">{{ kindLabel[event.kind] }}</span>
+          <span class="audit-view__sub">{{ event.subKind }}</span>
+          <span class="audit-view__status" [attr.data-status]="event.status">{{ event.status }}</span>
+          <span class="audit-view__agent">{{ event.agentId }}</span>
+          <time
+            class="audit-view__time"
+            [attr.title]="formatAbsolute(event.createdAt)"
+            [attr.datetime]="event.createdAt"
+          >
+            {{ formatRelative(event.createdAt) }}
+          </time>
+        </div>
+        <div class="audit-view__summary">{{ event.summary }}</div>
+        @if (event.detail) {
+        <div class="audit-view__detail">{{ event.detail }}</div>
+        }
+      </li>
+      }
+    </ol>
+    }
+  </div>
+</section>
