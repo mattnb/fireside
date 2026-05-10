@@ -156,6 +156,17 @@
             <span class="mb-card__title">{{ card.item.title }}</span>
             <span class="mb-card__status">{{ card.item.status }}</span>
           </div>
+          @if (card.activeRun) {
+          <div class="mb-card__presence" [title]="display.name(card.activeRun.agentId) + ' is running on this card'">
+            <span class="mb-card__presence-pulse" aria-hidden="true"></span>
+            <span class="avatar avatar--tiny" [class]="display.avatarClass(card.activeRun.agentId, 'tiny')">
+              @if (!display.isAgentOwner(card.activeRun.agentId)) { {{
+              card.activeRun.agentId.slice(0, 1).toUpperCase() }} }
+            </span>
+            <span class="mb-card__presence-name">{{ display.name(card.activeRun.agentId) }}</span>
+            <span class="mb-card__presence-tag">live</span>
+          </div>
+          }
           @if (card.item.detail) {
           <p class="mb-card__detail">{{ card.item.detail }}</p>
           } @if (card.dependencies.length) {

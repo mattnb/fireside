@@ -22,6 +22,7 @@ import { BriefingsTab } from './briefings-tab/briefings-tab';
 import { ChecklistView } from './checklist-view/checklist-view';
 import { BoardView } from './board-view/board-view';
 import { RoadmapView } from './roadmap-view/roadmap-view';
+import { GraphView } from './graph-view/graph-view';
 import { AutonomyHealthView } from './autonomy-health-view/autonomy-health-view';
 import { OverviewView, type AttentionItem } from './overview-view/overview-view';
 import { AgentDisplayService } from './agent-display.service';
@@ -145,6 +146,7 @@ type MissionViewId =
   | 'overview'
   | 'health'
   | 'board'
+  | 'graph'
   | 'checklist'
   | 'roadmap'
   | 'plan'
@@ -198,6 +200,7 @@ const DEFAULT_AGENT_AUTO_COMPACT_PERCENT = 70;
     ChecklistView,
     BoardView,
     RoadmapView,
+    GraphView,
     AutonomyHealthView,
     OverviewView,
     ChatPane,
@@ -261,6 +264,7 @@ export class App implements OnDestroy {
     { id: 'overview', label: 'Overview', summary: 'health, blockers, active work' },
     { id: 'health', label: 'Health', summary: 'why autonomy is moving or waiting' },
     { id: 'board', label: 'Board', summary: 'status lanes and phase swimlanes' },
+    { id: 'graph', label: 'Graph', summary: 'dependency DAG with cycle detection' },
     { id: 'checklist', label: 'Checklist', summary: 'task details and ownership' },
     { id: 'roadmap', label: 'Roadmap', summary: 'phase gates and dependencies' },
     { id: 'plan', label: 'Plan', summary: 'team agreement and rationale' },

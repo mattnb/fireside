@@ -1,0 +1,261 @@
+:host {
+  display: block;
+  height: 100%;
+  overflow: hidden;
+}
+
+.graph-view {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  gap: 8px;
+  padding: 16px 20px;
+  overflow: hidden;
+}
+
+.graph-view__head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-end;
+  gap: 16px;
+}
+
+.graph-view__head h2 {
+  margin: 0 0 4px;
+  font-size: 14px;
+  letter-spacing: 0.04em;
+  text-transform: lowercase;
+  color: var(--text-primary);
+}
+
+.graph-view__subtitle {
+  margin: 0;
+  color: var(--text-faint);
+  font-size: 12px;
+  line-height: 1.4;
+  max-width: 70ch;
+}
+
+.graph-view__rollup {
+  display: flex;
+  gap: 12px;
+  font-size: 11px;
+  color: var(--text-secondary);
+  text-transform: lowercase;
+}
+
+.graph-view__rollup strong {
+  color: var(--text-primary);
+  font-size: 14px;
+  margin-right: 4px;
+}
+
+.graph-view__rollup .is-warn strong {
+  color: rgba(248, 113, 113, 0.95);
+}
+
+.graph-view__cycle-banner {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 12px;
+  border-radius: 6px;
+  background: rgba(239, 68, 68, 0.12);
+  border: 1px solid rgba(239, 68, 68, 0.4);
+  color: rgba(248, 113, 113, 0.95);
+  font-size: 12px;
+  flex-wrap: wrap;
+}
+
+.graph-view__cycle-banner strong {
+  color: var(--text-primary);
+}
+
+.graph-view__cycle-banner span {
+  flex: 1;
+  color: var(--text-secondary);
+  word-break: break-word;
+}
+
+.graph-view__cycle-btn {
+  background: transparent;
+  border: 1px solid rgba(239, 68, 68, 0.5);
+  color: rgba(248, 113, 113, 0.95);
+  padding: 3px 9px;
+  border-radius: 999px;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.graph-view__cycle-btn:hover {
+  border-color: rgba(248, 113, 113, 0.95);
+  color: var(--text-primary);
+}
+
+.graph-view__chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.graph-view__chip {
+  background: transparent;
+  border: 1px solid var(--surface-border, rgba(255, 255, 255, 0.12));
+  color: var(--text-secondary);
+  font-size: 11px;
+  padding: 3px 9px;
+  border-radius: 999px;
+  cursor: pointer;
+  text-transform: lowercase;
+}
+
+.graph-view__chip:hover {
+  color: var(--text-primary);
+  border-color: var(--text-secondary);
+}
+
+.graph-view__chip.is-active {
+  background: var(--accent, #3b82f6);
+  border-color: var(--accent, #3b82f6);
+  color: var(--accent-contrast, white);
+}
+
+.graph-view__canvas-wrap {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  border: 1px solid var(--surface-border, rgba(255, 255, 255, 0.06));
+  border-radius: 6px;
+  background: var(--surface-elevated, rgba(255, 255, 255, 0.02));
+}
+
+.graph-view__empty {
+  padding: 24px;
+  font-size: 12px;
+  color: var(--text-faint);
+  text-align: center;
+}
+
+.graph-view__canvas {
+  padding: 4px;
+}
+
+.graph-view__svg {
+  display: block;
+  min-width: 100%;
+  font-family: var(--font-sans);
+}
+
+/* Edges */
+.graph-view__edge {
+  fill: none;
+  stroke: rgba(180, 200, 220, 0.32);
+  stroke-width: 1.5;
+  transition: stroke 120ms ease, opacity 120ms ease;
+}
+
+.graph-view__edge.is-cyclic {
+  stroke: rgba(248, 113, 113, 0.85);
+  stroke-width: 2;
+  stroke-dasharray: 6 3;
+}
+
+.graph-view__edge.is-faded {
+  opacity: 0.18;
+}
+
+#dag-arrow path {
+  fill: rgba(180, 200, 220, 0.5);
+}
+
+.graph-view__arrow-cycle {
+  fill: rgba(248, 113, 113, 0.95);
+}
+
+/* Nodes */
+.graph-view__node {
+  cursor: pointer;
+  transition: opacity 120ms ease, transform 120ms ease;
+}
+
+.graph-view__node.is-faded {
+  opacity: 0.22;
+}
+
+.graph-view__node-bg {
+  fill: rgba(40, 44, 48, 0.95);
+  stroke: rgba(255, 255, 255, 0.12);
+  stroke-width: 1;
+  transition: fill 120ms ease, stroke 120ms ease;
+}
+
+.graph-view__node:hover .graph-view__node-bg,
+.graph-view__node.is-selected .graph-view__node-bg {
+  stroke: var(--accent, #3b82f6);
+  stroke-width: 1.5;
+}
+
+.graph-view__node[data-tone='done'] .graph-view__node-bg {
+  fill: rgba(34, 80, 50, 0.85);
+  stroke: rgba(74, 222, 128, 0.45);
+}
+
+.graph-view__node[data-tone='blocked'] .graph-view__node-bg {
+  fill: rgba(80, 35, 35, 0.85);
+  stroke: rgba(248, 113, 113, 0.55);
+}
+
+.graph-view__node[data-tone='waiting'] .graph-view__node-bg {
+  fill: rgba(75, 60, 30, 0.85);
+  stroke: rgba(252, 211, 77, 0.45);
+}
+
+.graph-view__node[data-tone='ready'] .graph-view__node-bg {
+  fill: rgba(28, 60, 90, 0.85);
+  stroke: rgba(96, 165, 250, 0.55);
+}
+
+.graph-view__node[data-tone='active'] .graph-view__node-bg {
+  fill: rgba(34, 80, 100, 0.95);
+  stroke: rgba(96, 165, 250, 0.85);
+  stroke-width: 1.5;
+}
+
+.graph-view__node.is-cycle .graph-view__node-bg {
+  stroke: rgba(248, 113, 113, 0.95);
+  stroke-width: 1.5;
+}
+
+.graph-view__node-title {
+  fill: var(--text-primary);
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.graph-view__node-status {
+  fill: var(--text-secondary);
+  font-size: 11px;
+  text-transform: lowercase;
+}
+
+.graph-view__node-context {
+  fill: var(--text-faint);
+  font-size: 10.5px;
+  text-transform: lowercase;
+}
+
+.graph-view__node-pulse {
+  fill: rgba(96, 165, 250, 0.95);
+  animation: graph-view-pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes graph-view-pulse {
+  0%, 100% {
+    opacity: 0.55;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.4);
+  }
+}

@@ -658,3 +658,51 @@
   color: var(--text-secondary);
   border-bottom-color: rgba(255, 255, 255, 0.42);
 }
+.mb-card__presence {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  border-radius: 999px;
+  background: rgba(96, 165, 250, 0.12);
+  border: 1px solid rgba(96, 165, 250, 0.42);
+  font-size: 11px;
+  color: var(--text-primary);
+  margin: 4px 0 6px;
+  width: fit-content;
+}
+
+.mb-card__presence-pulse {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: rgba(96, 165, 250, 0.95);
+  animation: mb-card-presence-pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes mb-card-presence-pulse {
+  0%, 100% {
+    opacity: 0.55;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.5);
+    box-shadow: 0 0 6px rgba(96, 165, 250, 0.8);
+  }
+}
+
+.mb-card__presence-name {
+  color: var(--text-primary);
+  font-weight: 500;
+}
+
+.mb-card__presence-tag {
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: rgba(96, 165, 250, 0.95);
+  padding: 1px 5px;
+  border-radius: 3px;
+  background: rgba(96, 165, 250, 0.15);
+}

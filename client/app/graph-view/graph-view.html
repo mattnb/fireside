@@ -1,0 +1,127 @@
+<section class="graph-view" aria-label="Mission dependency graph">
+  <header class="graph-view__head">
+    <div>
+      <div class="section-label">dependency graph</div>
+      <h2>What blocks what</h2>
+      <p class="graph-view__subtitle">
+        Every checklist item across phases, laid out by longest-path level. Edges are dependencies
+        (left → right). Cycles surface as red back-edges; the cycle filter chip isolates them.
+      </p>
+    </div>
+    @if (summary(); as totals) {
+    <div class="graph-view__rollup">
+      <span><strong>{{ totals.total }}</strong>items</span>
+      <span><strong>{{ totals.active }}</strong>active</span>
+      <span><strong>{{ totals.ready }}</strong>ready</span>
+      <span [class.is-warn]="totals.blocked > 0"><strong>{{ totals.blocked }}</strong>blocked</span>
+      <span><strong>{{ totals.done }}</strong>done</span>
+    </div>
+    }
+  </header>
+
+  @if (hasCycles()) {
+  <div class="graph-view__cycle-banner" role="alert">
+    <strong>{{ cycleSummary().count }} item(s) in dependency cycle.</strong>
+    @if (cycleSummary().titles.length > 0) {
+    <span>{{ cycleSummary().titles.slice(0, 4).join(' · ') }}</span>
+    }
+    <button type="button" class="graph-view__cycle-btn" (click)="setFilter('cycles')">
+      isolate cycles
+    </button>
+  </div>
+  }
+
+  <nav class="graph-view__chips" aria-label="filter">
+    @for (chip of filters; track chip.id) {
+    <button
+      type="button"
+      class="graph-view__chip"
+      [class.is-active]="activeFilter() === chip.id"
+      (click)="setFilter(chip.id)"
+    >
+      {{ chip.label }}
+    </button>
+    }
+  </nav>
+
+  <div class="graph-view__canvas-wrap">
+    @if (layout().nodes.length === 0) {
+    <p class="graph-view__empty">no checklist items yet — the graph fills in as the mission grows.</p>
+    } @else {
+    <div class="graph-view__canvas">
+      <svg
+        class="graph-view__svg"
+        [attr.viewBox]="'0 0 ' + layout().width + ' ' + layout().height"
+        [attr.width]="layout().width"
+        [attr.height]="layout().height"
+        role="img"
+        aria-label="dependency graph"
+      >
+        <defs>
+          <marker id="dag-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+            <path d="M 0 0 L 10 5 L 0 10 z" />
+          </marker>
+          <marker id="dag-arrow-cycle" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+            <path d="M 0 0 L 10 5 L 0 10 z" class="graph-view__arrow-cycle" />
+          </marker>
+        </defs>
+
+        <g class="graph-view__edges">
+          @for (edge of layout().edges; track edge.source + '-' + edge.target) {
+          @if (nodeById(edge.source); as source) { @if (nodeById(edge.target); as target) {
+          <path
+            [attr.d]="edgePath(source, target)"
+            class="graph-view__edge"
+            [class.is-cyclic]="edge.cyclic"
+            [class.is-faded]="isFaded(edge.source) && isFaded(edge.target)"
+            [attr.marker-end]="edge.cyclic ? 'url(#dag-arrow-cycle)' : 'url(#dag-arrow)'"
+          />
+          } }
+          }
+        </g>
+
+        <g class="graph-view__nodes">
+          @for (node of layout().nodes; track node.id) {
+          <g
+            [attr.transform]="'translate(' + node.x + ',' + node.y + ')'"
+            class="graph-view__node"
+            [class.is-active]="node.active"
+            [class.is-cycle]="node.inCycle"
+            [class.is-selected]="isSelected(node.id)"
+            [class.is-faded]="isFaded(node.id)"
+            [attr.data-tone]="node.tone"
+            [attr.tabindex]="0"
+            (click)="focus(node.id)"
+            (keydown.enter)="focus(node.id)"
+          >
+            <rect
+              x="0"
+              y="0"
+              [attr.width]="node.width"
+              [attr.height]="node.height"
+              rx="8"
+              ry="8"
+              class="graph-view__node-bg"
+            />
+            <text x="12" y="22" class="graph-view__node-title">
+              {{ node.title.length > 32 ? (node.title.slice(0, 31) + '…') : node.title }}
+            </text>
+            <text x="12" y="44" class="graph-view__node-status">
+              {{ node.status }}@if (node.active) { · live }@if (node.inCycle) { · in cycle }
+            </text>
+            @if (node.context) {
+            <text x="12" y="64" class="graph-view__node-context">
+              {{ node.context.length > 40 ? (node.context.slice(0, 39) + '…') : node.context }}
+            </text>
+            }
+            @if (node.active) {
+            <circle [attr.cx]="node.width - 14" cy="14" r="5" class="graph-view__node-pulse" />
+            }
+          </g>
+          }
+        </g>
+      </svg>
+    </div>
+    }
+  </div>
+</section>

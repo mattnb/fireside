@@ -183,6 +183,12 @@
         (parallelBatchRequested)="dispatchParallelBatch()"
         (idCopied)="copyTaskId($event.id, $event.event)"
       />
+      } @if (selectedMissionView() === 'graph') {
+      <fs-graph-view
+        [lanes]="graph.lanes()"
+        [selectedItemId]="missionActionChecklistItemId()"
+        (itemFocused)="focusMissionGraphItem($event)"
+      />
       } @if (selectedMissionView() === 'roadmap') {
       <fs-roadmap-view
         [lanes]="graph.lanes()"
