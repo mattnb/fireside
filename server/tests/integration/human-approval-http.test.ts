@@ -166,6 +166,97 @@ describe('POST /api/tasks/:id/request-changes', () => {
   });
 });
 
+describe('POST /api/tasks/:id/verifier', () => {
+  let harness: Harness | null = null;
+  afterEach(async () => {
+    if (harness) {
+      await harness.app.close();
+      harness.db.close();
+      harness = null;
+    }
+  });
+
+  it('assigns a verifier when the agent is in the room', async () => {
+    harness = makeHarness();
+    const { taskId } = seedTask(harness.db);
+
+    const response = await harness.app.inject({
+      method: 'POST',
+      url: `/api/tasks/${taskId}/verifier`,
+      remoteAddress: '127.0.0.1',
+      payload: { verifierAgentId: 'codex' },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({ verifierAgentId: 'codex' });
+    expect(getTask(harness.db, taskId)?.verifierAgentId).toBe('codex');
+  });
+
+  it('clears the verifier when null is passed', async () => {
+    harness = makeHarness();
+    const { taskId } = seedTask(harness.db);
+    // Set first.
+    await harness.app.inject({
+      method: 'POST',
+      url: `/api/tasks/${taskId}/verifier`,
+      remoteAddress: '127.0.0.1',
+      payload: { verifierAgentId: 'codex' },
+    });
+
+    const response = await harness.app.inject({
+      method: 'POST',
+      url: `/api/tasks/${taskId}/verifier`,
+      remoteAddress: '127.0.0.1',
+      payload: { verifierAgentId: null },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(getTask(harness.db, taskId)?.verifierAgentId).toBeNull();
+  });
+
+  it('returns 409 for a non-room-member', async () => {
+    harness = makeHarness();
+    const { taskId } = seedTask(harness.db);
+
+    const response = await harness.app.inject({
+      method: 'POST',
+      url: `/api/tasks/${taskId}/verifier`,
+      remoteAddress: '127.0.0.1',
+      payload: { verifierAgentId: 'someone-else' },
+    });
+
+    expect(response.statusCode).toBe(409);
+    expect(response.json()).toMatchObject({ error: expect.stringMatching(/not a member/) });
+  });
+
+  it('returns 400 when the body lacks verifierAgentId', async () => {
+    harness = makeHarness();
+    const { taskId } = seedTask(harness.db);
+
+    const response = await harness.app.inject({
+      method: 'POST',
+      url: `/api/tasks/${taskId}/verifier`,
+      remoteAddress: '127.0.0.1',
+      payload: {},
+    });
+
+    expect(response.statusCode).toBe(400);
+  });
+
+  it('returns 404 for unknown task', async () => {
+    harness = makeHarness();
+
+    const response = await harness.app.inject({
+      method: 'POST',
+      url: '/api/tasks/no-such/verifier',
+      remoteAddress: '127.0.0.1',
+      payload: { verifierAgentId: 'codex' },
+    });
+
+    expect(response.statusCode).toBe(404);
+  });
+});
+
 describe('POST /api/clarifying-questions/:id/answer', () => {
   let harness: Harness | null = null;
   afterEach(async () => {

@@ -20,6 +20,10 @@ export interface TaskPromptContext {
   assignedAgents: string[];
   capabilityProfile: string;
   summary: string;
+  /** Proposal-gate state. 'approved' on legacy tasks. */
+  proposalStatus: string;
+  /** Agent currently assigned as verifier; null when humans verify. */
+  verifierAgentId: string | null;
   missionControl?: MissionControlSnapshot;
 }
 
@@ -37,6 +41,8 @@ export function buildTaskPromptContext(opts: {
     assignedAgents: opts.task.agents,
     capabilityProfile: opts.task.capabilityProfile,
     summary: opts.task.summary,
+    proposalStatus: opts.task.proposalStatus,
+    verifierAgentId: opts.task.verifierAgentId,
     ...(opts.missionControl ? { missionControl: opts.missionControl } : {}),
   };
 }

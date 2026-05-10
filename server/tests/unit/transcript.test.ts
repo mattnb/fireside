@@ -75,6 +75,8 @@ describe('buildTurnPrompt', () => {
       assignedAgents: ['codex-worker', 'claude-pm'],
       capabilityProfile: 'full-auto',
       summary: `Dynamic summary ${phaseTitle}`,
+      proposalStatus: 'approved',
+      verifierAgentId: null,
       missionControl: {
         currentPhase: {
           id: 'phase-1',
@@ -269,6 +271,8 @@ describe('buildTurnPrompt', () => {
       assignedAgents: ['codex'],
       capabilityProfile: 'edit',
       summary: 'A mission with enough checklist state to require context budgeting.',
+      proposalStatus: 'approved',
+      verifierAgentId: null,
       missionControl: {
         currentPhase: {
           id: 'phase-1',
@@ -796,6 +800,8 @@ describe('buildTurnPrompt', () => {
         assignedAgents: ['claude', 'codex'],
         capabilityProfile: 'edit',
         summary: 'A mission with enough state to force prompt compression.',
+        proposalStatus: 'approved',
+        verifierAgentId: null,
         missionControl: {
           currentPhase: {
             id: 'phase-1',
@@ -950,6 +956,8 @@ describe('buildTurnPrompt', () => {
         assignedAgents: ['claude', 'codex'],
         capabilityProfile: 'edit',
         summary: 'Implementation is ready for review.',
+        proposalStatus: 'approved',
+        verifierAgentId: null,
         missionControl: {
           currentPhase: {
             id: 'phase-1',
@@ -1094,6 +1102,8 @@ describe('role-sliced active-mission protocol', () => {
     assignedAgents: ['claude', 'codex'],
     capabilityProfile: 'edit',
     summary: '',
+    proposalStatus: 'approved',
+    verifierAgentId: null,
   };
 
   function build(args: { agentId: string; agentProfile?: any; roomLeadAgentId?: string }) {

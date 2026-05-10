@@ -266,6 +266,21 @@ function advanceOne(db: Database, task: Task): Task | null {
   return task;
 }
 
+export function setVerifierAgentId(
+  db: Database,
+  taskId: string,
+  verifierAgentId: string | null,
+): Task | null {
+  const existing = getTask(db, taskId);
+  if (!existing) return null;
+  db.prepare(`UPDATE tasks SET verifier_agent_id = ?, updated_at = ? WHERE id = ?`).run(
+    verifierAgentId,
+    Date.now(),
+    taskId,
+  );
+  return getTask(db, taskId);
+}
+
 export function setProposalStatus(
   db: Database,
   taskId: string,

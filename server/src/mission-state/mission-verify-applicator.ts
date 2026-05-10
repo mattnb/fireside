@@ -14,7 +14,7 @@ import {
   recordVerifierCheck,
   type AcceptanceCheckStatus,
 } from '../repos/acceptance-criteria.js';
-import { maybeAdvanceProposalStatus } from '../repos/tasks.js';
+import { getTask, maybeAdvanceProposalStatus } from '../repos/tasks.js';
 
 export type VerifySide = 'doer' | 'verifier';
 
@@ -38,6 +38,23 @@ export function applyMissionVerify(input: ApplyMissionVerifyInput): ApplyMission
   const ac = getAcceptanceCriterion(input.db, input.acId);
   if (!ac) {
     return { applied: false, rejected: true, reason: `unknown ac: ${input.acId}` };
+  }
+
+  // Verifier-side identity gate: when the task has an assigned
+  // verifier_agent_id, only that agent (or the human) may record verifier
+  // checks. Doer-side checks are unconstrained at this layer (the doer
+  // ≠ verifier guard already enforces the dual-path invariant inside
+  // recordVerifierCheck).
+  if (input.side === 'verifier' && input.byAgentId !== 'human') {
+    const task = getTask(input.db, ac.taskId);
+    if (task?.verifierAgentId && task.verifierAgentId !== input.byAgentId) {
+      return {
+        applied: false,
+        rejected: true,
+        reason: `only the assigned verifier (${task.verifierAgentId}) or a human may verify, not ${input.byAgentId}`,
+        taskId: ac.taskId,
+      };
+    }
   }
 
   const checkInput = {

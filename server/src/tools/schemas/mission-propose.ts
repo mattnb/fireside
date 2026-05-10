@@ -12,9 +12,11 @@ function isRecord(input: unknown): input is UnknownRecord {
 }
 
 export interface MissionProposeSubmitArgs {
-  // No fields today. Reserved for future overrides (e.g. an explicit
-  // verifier nomination supplied at propose time).
   reason?: string;
+  /** Optional verifier nomination. If unset, the gate auto-picks at approve
+   *  time using the verifier-selection heuristic (first non-lead, non-doer
+   *  agent). */
+  verifierAgentId?: string;
 }
 
 export const missionProposeSubmitSchema = {
@@ -26,6 +28,11 @@ export const missionProposeSubmitSchema = {
         type: 'string',
         description: 'Optional one-line summary of what is being proposed.',
       },
+      verifierAgentId: {
+        type: 'string',
+        description:
+          'Optional agent id nominated as verifier. Falls back to the auto-pick at approve time if omitted.',
+      },
     },
   },
   parse(input: unknown): MissionProposeSubmitArgs {
@@ -34,6 +41,17 @@ export const missionProposeSubmitSchema = {
     const result: MissionProposeSubmitArgs = {};
     if (typeof input.reason === 'string' && input.reason.trim()) {
       result.reason = input.reason.trim();
+    }
+    const verifierRaw =
+      typeof input.verifierAgentId === 'string'
+        ? input.verifierAgentId
+        : typeof input.verifier_agent_id === 'string'
+          ? input.verifier_agent_id
+          : typeof input.verifier === 'string'
+            ? input.verifier
+            : undefined;
+    if (typeof verifierRaw === 'string' && verifierRaw.trim()) {
+      result.verifierAgentId = verifierRaw.trim();
     }
     return result;
   },

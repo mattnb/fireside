@@ -3,7 +3,7 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { openDatabase } from '../../src/db.js';
 import { createRoom } from '../../src/repos/rooms.js';
-import { createTask, getTask } from '../../src/repos/tasks.js';
+import { createTask, getTask, setVerifierAgentId } from '../../src/repos/tasks.js';
 import {
   createAcceptanceCriterion,
   getAcceptanceCriterion,
@@ -130,6 +130,54 @@ describe('applyMissionVerify', () => {
       side: 'verifier',
       status: 'pass',
       evidence: 'eyeballed',
+      byAgentId: 'human',
+    });
+    expect(result.applied).toBe(true);
+  });
+
+  it('rejects verifier-side checks from agents other than the assigned verifier', () => {
+    setVerifierAgentId(db, taskId, 'codex');
+    recordDoerCheck(db, acId, { status: 'pass', evidence: 'd', byAgentId: 'claude' });
+
+    // gemini is in the room but is not the assigned verifier.
+    const result = applyMissionVerify({
+      db,
+      acId,
+      side: 'verifier',
+      status: 'pass',
+      evidence: 'snooping',
+      byAgentId: 'gemini',
+    });
+    expect(result.applied).toBe(false);
+    expect(result.rejected).toBe(true);
+    expect(result.reason).toMatch(/assigned verifier/);
+  });
+
+  it('allows the assigned verifier to verify', () => {
+    setVerifierAgentId(db, taskId, 'codex');
+    recordDoerCheck(db, acId, { status: 'pass', evidence: 'd', byAgentId: 'claude' });
+
+    const result = applyMissionVerify({
+      db,
+      acId,
+      side: 'verifier',
+      status: 'pass',
+      evidence: 'reviewed',
+      byAgentId: 'codex',
+    });
+    expect(result.applied).toBe(true);
+  });
+
+  it('allows a human to verify even when an agent verifier is assigned', () => {
+    setVerifierAgentId(db, taskId, 'codex');
+    recordDoerCheck(db, acId, { status: 'pass', evidence: 'd', byAgentId: 'claude' });
+
+    const result = applyMissionVerify({
+      db,
+      acId,
+      side: 'verifier',
+      status: 'pass',
+      evidence: 'matt eyeballed',
       byAgentId: 'human',
     });
     expect(result.applied).toBe(true);

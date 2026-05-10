@@ -11,7 +11,7 @@ import {
 
 ensureSearchToolsRegistered();
 
-export const PROTOCOLS_DOCUMENT_VERSION = 5;
+export const PROTOCOLS_DOCUMENT_VERSION = 6;
 
 export const COMPACT_TOOL_MANIFEST_PROMPT =
   'Fireside is registered as an MCP server in your CLI ("fireside"). Call its structured tools — mission.task.update, mission.receipt.submit, collab.note.add, permission.request, agent.set_status, mission.phase.* and mission.plan.* — for every mission-state, evidence, permission, or coordination update. Visible chat is for human/team communication only. Never type tool calls as text in chat; only invoke them through the MCP transport. Use search.tools for full argument references.';
@@ -64,6 +64,16 @@ Tasks created with \`proposalStatus: 'draft'\` flow through a Chorus-style appro
 6. **Execute.** Workers close checklist items via \`mission.receipt.submit\`. When an item carries \`acceptanceRef\`, a \`completed\` receipt records a doer-pass on the linked AC automatically.
 7. **Verify.** A different agent (or the human) records verifier-pass per AC via \`mission.verify\`. Same-agent verifier checks are rejected.
 8. **Done.** When every AC has both sides pass, the task auto-advances to done.
+
+## Reviewer Stance (when you are the assigned verifier)
+
+The active mission's prompt context calls out the assigned verifier's id; if it matches your agent id, you own the verifier side of every AC on this task. Treat the role like an independent reviewer, not a teammate sympathetic to the doer.
+
+- **The doer's evidence is a hypothesis, not a conclusion.** Re-run the test suite, re-read the modified files, or re-execute the integration the doer cited. If you cannot reproduce the claim, that is itself a finding — record it as \`mission.verify side: 'verifier' status: 'fail'\` with the gap as evidence.
+- **Probe at the boundaries.** Even when the headline pass is real, look for adjacent regressions, edge cases the AC implies but doesn't name, and silent contract changes. If an AC reads "X works", verify both X-success and X-failure paths before stamping pass.
+- **No self-verification.** The gate rejects same-agent verifier checks; do not try to back-channel a doer-pass into your own verifier-pass. If you authored part of the work yourself, escalate to the human or another agent for that AC.
+- **Pass requires evidence, not absence of evidence.** "I didn't see anything wrong" is not a verifier pass — name what you exercised and what it returned. If you can't name it, the status is pending, not pass.
+- **Fail without drama.** A verifier-fail is a routine finding, not a blocker — record it with concrete evidence, and the lead will reopen or address. Do not soften a fail into a pending or pass.
 
 ## Tool Retrieval
 

@@ -142,6 +142,52 @@ describe('mission.propose.submit', () => {
     expect(outcome.summary).toMatch(/not elaborating\/draft/);
     db.close();
   });
+
+  it('honours an explicit verifierAgentId nomination', async () => {
+    const { db, roomId, registry } = ctx();
+    const task = createTask(db, { roomId, title: 't', proposalStatus: 'elaborating' });
+    createAcceptanceCriterion(db, { taskId: task.id, title: 'AC' });
+
+    const outcome = await executeToolCall({
+      db,
+      registry,
+      call: call({
+        roomId,
+        tool: 'mission.propose.submit',
+        idempotencyKey: 'p-vrfy',
+        args: { verifierAgentId: 'codex' },
+      }),
+      statePermissions: ['mission:write'],
+      now: () => 1,
+    });
+
+    expect(outcome.status).toBe('applied');
+    expect(getTask(db, task.id)?.verifierAgentId).toBe('codex');
+    db.close();
+  });
+
+  it('rejects a nominated verifier who is not in the room', async () => {
+    const { db, roomId, registry } = ctx();
+    const task = createTask(db, { roomId, title: 't', proposalStatus: 'elaborating' });
+    createAcceptanceCriterion(db, { taskId: task.id, title: 'AC' });
+
+    const outcome = await executeToolCall({
+      db,
+      registry,
+      call: call({
+        roomId,
+        tool: 'mission.propose.submit',
+        idempotencyKey: 'p-stranger',
+        args: { verifierAgentId: 'someone-else' },
+      }),
+      statePermissions: ['mission:write'],
+      now: () => 1,
+    });
+
+    expect(outcome.status).toBe('rejected');
+    expect(outcome.summary).toMatch(/not a member of the room/);
+    db.close();
+  });
 });
 
 describe('mission.verify', () => {

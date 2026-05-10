@@ -140,7 +140,9 @@ describe('mission proposal flow (end-to-end)', () => {
     const ac1Id = (ac1.result?.data as { acId: string }).acId;
     const ac2Id = (ac2.result?.data as { acId: string }).acId;
 
-    // 6. mission.propose.submit now succeeds: draft → proposed.
+    // 6. mission.propose.submit now succeeds: draft → proposed. The lead
+    //    nominates codex as verifier; mission-verify-applicator will gate
+    //    verifier-side checks to that agent.
     const proposed = await executeToolCall({
       db,
       registry: defaultToolRegistry,
@@ -148,7 +150,7 @@ describe('mission proposal flow (end-to-end)', () => {
         roomId: room.id,
         tool: 'mission.propose.submit',
         idempotencyKey: 'propose-1',
-        args: {},
+        args: { verifierAgentId: 'codex' },
       }),
       statePermissions: ['mission:write'],
       now: () => 5,
@@ -156,6 +158,7 @@ describe('mission proposal flow (end-to-end)', () => {
     expect(proposed.status).toBe('applied');
     expect(getTask(db, task.id)?.proposalStatus).toBe('proposed');
     expect(getTask(db, task.id)?.proposedByAgentId).toBe('claude');
+    expect(getTask(db, task.id)?.verifierAgentId).toBe('codex');
 
     // 7. Human approves via HTTP.
     const approveRes = await app.inject({

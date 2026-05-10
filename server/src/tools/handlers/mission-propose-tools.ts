@@ -7,7 +7,13 @@
 
 import { listAcceptanceCriteria } from '../../repos/acceptance-criteria.js';
 import { openQuestions } from '../../repos/clarifying-questions.js';
-import { getActiveTask, getTask, setProposalStatus } from '../../repos/tasks.js';
+import { getRoom } from '../../repos/rooms.js';
+import {
+  getActiveTask,
+  getTask,
+  setProposalStatus,
+  setVerifierAgentId,
+} from '../../repos/tasks.js';
 import { defineTool } from '../registry.js';
 import {
   missionProposeSubmitSchema,
@@ -56,6 +62,33 @@ export function handleMissionProposeSubmit(
     };
   }
 
+  // Validate optional verifier nomination — must be a member of the room
+  // and not the lead (lead can't review their own proposal).
+  if (input.args.verifierAgentId !== undefined) {
+    const room = getRoom(input.db, mission.roomId);
+    if (!room) {
+      return {
+        status: 'rejected',
+        summary: `mission.propose.submit rejected: room ${mission.roomId} not found`,
+        effects: [],
+      };
+    }
+    if (!room.agents.includes(input.args.verifierAgentId)) {
+      return {
+        status: 'rejected',
+        summary: `mission.propose.submit rejected: nominated verifier ${input.args.verifierAgentId} is not a member of the room`,
+        effects: [],
+      };
+    }
+    if (room.leadAgentId && input.args.verifierAgentId === room.leadAgentId) {
+      return {
+        status: 'rejected',
+        summary: 'mission.propose.submit rejected: lead cannot self-verify',
+        effects: [],
+      };
+    }
+  }
+
   // From draft we hop through elaborating implicitly so the spec's
   // documented edge (elaborating → proposed) is preserved. Same-state on
   // elaborating is idempotent.
@@ -70,6 +103,9 @@ export function handleMissionProposeSubmit(
       effects: [],
     };
   }
+  if (input.args.verifierAgentId) {
+    setVerifierAgentId(input.db, updated.id, input.args.verifierAgentId);
+  }
 
   return {
     status: 'applied',
@@ -79,6 +115,9 @@ export function handleMissionProposeSubmit(
       proposalStatus: updated.proposalStatus,
       proposedByAgentId: updated.proposedByAgentId,
       acceptanceCriteriaCount: acs.length,
+      ...(input.args.verifierAgentId
+        ? { verifierAgentId: input.args.verifierAgentId }
+        : {}),
     },
     effects: [
       {

@@ -9,7 +9,13 @@
 import type { Database } from 'better-sqlite3';
 
 import { getRoom } from '../repos/rooms.js';
-import { getTask, setProposalStatus, type ProposalStatus } from '../repos/tasks.js';
+import {
+  getTask,
+  setProposalStatus,
+  setVerifierAgentId,
+  type ProposalStatus,
+} from '../repos/tasks.js';
+import { defaultVerifierForTask } from './verifier-selection.js';
 
 export type ApproveAction = 'approve' | 'reject' | 'request-changes';
 
@@ -71,6 +77,15 @@ export function applyMissionApprove(input: ApplyMissionApproveInput): ApplyMissi
     const updated = setProposalStatus(input.db, input.taskId, next, input.byAgentId);
     if (!updated) {
       return { applied: false, rejected: true, reason: 'task vanished mid-update' };
+    }
+    // On the proposed → approved edge, default the verifier if the task
+    // has none assigned. Humans always remain a valid verifier regardless
+    // of this stamp; this just tells the harness which agent the verifier
+    // *role* belongs to so we can prime its prompt and gate verifier-side
+    // checks accordingly.
+    if (input.action === 'approve' && updated.verifierAgentId === null) {
+      const candidate = defaultVerifierForTask(input.db, input.taskId);
+      if (candidate) setVerifierAgentId(input.db, input.taskId, candidate);
     }
     return { applied: true, rejected: false, proposalStatus: updated.proposalStatus };
   } catch (err) {

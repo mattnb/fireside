@@ -654,10 +654,18 @@ function renderPrompt(
         opts.task.status === 'verifying'
           ? `This mission is in verification. Prefer concrete review findings, test evidence, risks, and pass/fail recommendations over new implementation unless the human asks otherwise.`
           : `The mission is not in verification yet; focus on the next concrete execution or collaboration step.`,
+        `Proposal gate: ${opts.task.proposalStatus}${
+          opts.task.verifierAgentId
+            ? ` (verifier: ${opts.task.verifierAgentId})`
+            : ' (verifier: human / unset)'
+        }.`,
+        opts.task.verifierAgentId === opts.agentId
+          ? `Reviewer stance: you are the assigned verifier on this mission. Treat the doer's evidence as a hypothesis, not a conclusion — independently exercise each acceptance criterion and challenge any claim that you cannot reproduce. Use mission.verify with side='verifier' to record pass/fail per AC; same-agent self-verification is rejected by the gate.`
+          : null,
         `Lane rule: all problems are shared responsibility, but lane ownership prevents conflicts. For a cross-lane issue, fix only if it blocks you or is safe and small; otherwise record evidence, hand it off, and continue your next unblocked task.`,
         `Workpad invariant: visible chat is not the source of truth. When you take ownership, finish work, block, change direction, or satisfy a phase gate, update Mission Control by calling the relevant fireside MCP tools (mission.task.update / mission.phase.* / mission.receipt.submit) before ending the turn.`,
         `Continuation invariant: after completing one concrete subtask, either take the next unblocked checklist item, hand off to a named agent, mark the relevant phase/mission done, or state the exact blocker that requires human or team action.`,
-      ]
+      ].filter((line): line is string => line !== null)
     : [];
   const workflowProfileLines = opts.workflowProfile
     ? [

@@ -2,7 +2,7 @@
 
 import { describe, it, expect, beforeEach } from 'vitest';
 import { openDatabase } from '../../src/db.js';
-import { createRoom, setRoomApproverAgentIds } from '../../src/repos/rooms.js';
+import { createRoom, setRoomApproverAgentIds, setRoomLeadAgent } from '../../src/repos/rooms.js';
 import { createTask, getTask } from '../../src/repos/tasks.js';
 import { applyMissionApprove } from '../../src/mission-state/mission-approve-applicator.js';
 
@@ -129,5 +129,52 @@ describe('applyMissionApprove', () => {
     expect(result.applied).toBe(false);
     expect(result.rejected).toBe(true);
     expect(result.reason).toMatch(/unknown task/i);
+  });
+
+  it('auto-picks a verifier on approve when verifierAgentId is null', () => {
+    setRoomLeadAgent(db, roomId, 'claude');
+    const task = createTask(db, { roomId, title: 't', proposalStatus: 'proposed' });
+    expect(getTask(db, task.id)?.verifierAgentId).toBeNull();
+
+    const result = applyMissionApprove({
+      db,
+      taskId: task.id,
+      action: 'approve',
+      byAgentId: 'human',
+    });
+    expect(result.applied).toBe(true);
+
+    // codex is the only non-lead agent; it should be auto-selected.
+    expect(getTask(db, task.id)?.verifierAgentId).toBe('codex');
+  });
+
+  it('does not overwrite a pre-set verifierAgentId on approve', () => {
+    const task = createTask(db, {
+      roomId,
+      title: 't',
+      proposalStatus: 'proposed',
+      verifierAgentId: 'claude',
+    });
+    const result = applyMissionApprove({
+      db,
+      taskId: task.id,
+      action: 'approve',
+      byAgentId: 'human',
+    });
+    expect(result.applied).toBe(true);
+    expect(getTask(db, task.id)?.verifierAgentId).toBe('claude');
+  });
+
+  it('leaves verifierAgentId null when no candidate exists (single-agent room)', () => {
+    const id = createRoom(db, { name: 'solo', agents: ['claude'] }).id;
+    const task = createTask(db, { roomId: id, title: 't', proposalStatus: 'proposed' });
+    const result = applyMissionApprove({
+      db,
+      taskId: task.id,
+      action: 'approve',
+      byAgentId: 'human',
+    });
+    expect(result.applied).toBe(true);
+    expect(getTask(db, task.id)?.verifierAgentId).toBeNull();
   });
 });

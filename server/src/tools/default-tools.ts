@@ -8,6 +8,7 @@ import { missionPlanTools } from './handlers/mission-plan-tools.js';
 import { missionProposeTools } from './handlers/mission-propose-tools.js';
 import { missionReceiptTools } from './handlers/mission-receipt-tools.js';
 import { missionTaskTools } from './handlers/mission-task-tools.js';
+import { missionTaskSetVerifierTools } from './handlers/mission-task-set-verifier-tools.js';
 import { missionVerifyTools } from './handlers/mission-verify-tools.js';
 import { permissionRequestTool } from './handlers/permission-tools.js';
 import { searchToolsTool } from './handlers/search-tools.js';
@@ -24,6 +25,7 @@ const DEFAULT_TOOLS: readonly RegisteredToolDefinition[] = [
   ...missionPlanTools,
   ...missionPhaseTools,
   ...missionTaskTools,
+  ...missionTaskSetVerifierTools,
   ...missionReceiptTools,
   ...missionClarifyTools,
   ...missionAcceptanceTools,

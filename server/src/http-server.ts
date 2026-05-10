@@ -14,7 +14,7 @@ import { getPermissionRequest, listPermissionRequests } from './repos/permission
 import { listRunningAgentRunsForRoom } from './repos/agent-runs.js';
 import type { AgentId, ProviderId, RoomAgentProfile } from './agents/types.js';
 import type { TaskStatus } from './repos/tasks.js';
-import { getTask } from './repos/tasks.js';
+import { getTask, setVerifierAgentId } from './repos/tasks.js';
 import { getClarifyingQuestion, answerQuestion } from './repos/clarifying-questions.js';
 import { applyMissionApprove } from './mission-state/mission-approve-applicator.js';
 import type { TaskChecklistParallelism, TaskChecklistStatus } from './repos/task-checklist.js';
@@ -1373,6 +1373,41 @@ export function buildHttpServer(deps: HttpDeps) {
       return reply.code(200).send({ proposalStatus: result.proposalStatus });
     },
   );
+
+  app.post<{
+    Params: { id: string };
+    Body: { verifierAgentId?: string | null };
+  }>('/api/tasks/:id/verifier', async (req, reply) => {
+    const task = getTask(deps.db, req.params.id);
+    if (!task) return reply.code(404).send({ error: 'task not found' });
+    if (!('verifierAgentId' in (req.body ?? {}))) {
+      return reply.code(400).send({ error: 'verifierAgentId is required (use null to clear)' });
+    }
+    const target = req.body?.verifierAgentId;
+    let normalized: string | null;
+    if (target === null) normalized = null;
+    else if (typeof target === 'string') {
+      const trimmed = target.trim();
+      normalized = trimmed === '' ? null : trimmed;
+    } else {
+      return reply.code(400).send({ error: 'verifierAgentId must be a string or null' });
+    }
+    if (normalized !== null) {
+      const room = getRoom(deps.db, task.roomId);
+      if (!room) return reply.code(404).send({ error: 'room not found' });
+      if (!room.agents.includes(normalized)) {
+        return reply.code(409).send({ error: `${normalized} is not a member of the room` });
+      }
+      if (room.leadAgentId && normalized === room.leadAgentId) {
+        return reply.code(409).send({ error: 'lead cannot self-verify' });
+      }
+    }
+    const updated = setVerifierAgentId(deps.db, req.params.id, normalized);
+    return reply.code(200).send({
+      taskId: req.params.id,
+      verifierAgentId: updated?.verifierAgentId ?? null,
+    });
+  });
 
   app.post<{ Params: { id: string }; Body: { answer?: string } }>(
     '/api/clarifying-questions/:id/answer',

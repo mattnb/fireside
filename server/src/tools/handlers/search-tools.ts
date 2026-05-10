@@ -475,6 +475,27 @@ export const TOOL_SCHEMA_REFERENCES: readonly ToolSchemaReference[] = [
         type: 'string',
         description: 'Optional one-line summary of what is being proposed.',
       },
+      {
+        name: 'verifierAgentId',
+        type: 'string',
+        description:
+          'Optional verifier nomination. Falls back to the auto-pick at approve time if omitted.',
+      },
+    ],
+  },
+  {
+    name: 'mission.task.set_verifier',
+    summary:
+      'Assign or clear the verifier agent on a task. Pass null to clear (humans verify by default).',
+    requiredPermissions: ['mission:write'],
+    args: [
+      { name: 'taskId', type: 'string', description: 'Task id; defaults to the active task.' },
+      {
+        name: 'verifierAgentId',
+        type: 'string | null',
+        required: true,
+        description: 'Agent id to assign, or null to clear.',
+      },
     ],
   },
   {
