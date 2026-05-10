@@ -748,13 +748,11 @@ fs-root {
 }
 
 .room-row:hover .room-pill__delete,
-.room-row.is-active .room-pill__delete,
-.room-pill__delete.is-confirming {
+.room-row.is-active .room-pill__delete {
   opacity: 1;
 }
 
-.room-pill__delete:hover,
-.room-pill__delete.is-confirming {
+.room-pill__delete:hover {
   color: #ffd1cc;
   border-color: rgba(248, 81, 73, 0.42);
   background: rgba(248, 81, 73, 0.14);

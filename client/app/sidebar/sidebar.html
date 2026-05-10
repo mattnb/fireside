@@ -165,14 +165,9 @@
         <button
           type="button"
           class="room-pill__delete"
-          [class.is-confirming]="deletingRoomId() === room.id"
-          [title]="
-            deletingRoomId() === room.id ? 'Click again to delete' : 'Delete mission'
-          "
-          [attr.aria-label]="
-            deletingRoomId() === room.id ? 'Confirm delete mission' : 'Delete mission'
-          "
-          (click)="roomDeleted.emit({ room, event: $event })"
+          title="Delete mission"
+          aria-label="Delete mission"
+          (click)="$event.stopPropagation(); roomDeleted.emit(room)"
         >
           x
         </button>

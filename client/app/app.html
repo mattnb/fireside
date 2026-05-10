@@ -5,7 +5,6 @@
     [selectedRoomId]="selectedRoomId()"
     [creatingProject]="creatingProject()"
     [creatingMissionProjectId]="creatingMissionProjectId()"
-    [deletingRoomId]="deletingRoomId()"
     [briefingsCount]="briefings().length"
     [isBriefingsActive]="selectedTab() === 'briefings'"
     [archivesCount]="archivedProjectsCount()"
@@ -21,7 +20,7 @@
     (projectDeleted)="requestDeleteProject($event)"
     (roomCreationToggled)="toggleCreateRoom($event)"
     (roomSelected)="selectRoom($event)"
-    (roomDeleted)="deleteRoom($event.room, $event.event)"
+    (roomDeleted)="requestDeleteRoom($event)"
     (authorChanged)="setAuthor($event)"
   ></fs-sidebar>
 
@@ -351,6 +350,12 @@
   [project]="pending"
   (closed)="cancelDeleteProject()"
   (confirmed)="confirmDeleteProject($event)"
+/>
+} @if (pendingRoomDeletion(); as pendingRoom) {
+<fs-delete-room-modal
+  [room]="pendingRoom"
+  (closed)="cancelDeleteRoom()"
+  (confirmed)="confirmDeleteRoom($event)"
 />
 } @if (completedRunsModalOpen()) {
 <fs-completed-runs-modal

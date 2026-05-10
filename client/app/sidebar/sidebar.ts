@@ -55,7 +55,6 @@ export class Sidebar {
   readonly selectedRoomId = input<string | null>(null);
   readonly creatingProject = input<boolean>(false);
   readonly creatingMissionProjectId = input<string | null>(null);
-  readonly deletingRoomId = input<string | null>(null);
   readonly briefingsCount = input<number>(0);
   readonly isBriefingsActive = input<boolean>(false);
   readonly archivesCount = input<number>(0);
@@ -72,7 +71,7 @@ export class Sidebar {
   readonly projectDeleted = output<Project>();
   readonly roomCreationToggled = output<string>();
   readonly roomSelected = output<string>();
-  readonly roomDeleted = output<{ room: Room; event: Event }>();
+  readonly roomDeleted = output<Room>();
   readonly authorChanged = output<HTMLInputElement>();
 }
 

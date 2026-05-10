@@ -1,0 +1,21 @@
+:host {
+  display: contents;
+}
+
+.delete-room {
+  padding: 14px 16px;
+  display: grid;
+  gap: 10px;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text-secondary);
+}
+
+.delete-room strong {
+  color: var(--text-primary);
+}
+
+.delete-room__hint {
+  color: var(--text-faint);
+  font-size: 12px;
+}

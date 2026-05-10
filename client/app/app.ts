@@ -37,6 +37,7 @@ import { ToastHost } from './toast-host/toast-host';
 import { ToastService } from './toast.service';
 import { ArchivesView } from './archives-view/archives-view';
 import { DeleteProjectModal } from './delete-project-modal/delete-project-modal';
+import { DeleteRoomModal } from './delete-room-modal/delete-room-modal';
 import { Topbar } from './topbar/topbar';
 import {
   MissionToolbar,
@@ -210,6 +211,7 @@ const DEFAULT_AGENT_AUTO_COMPACT_PERCENT = 70;
     CompletedRunsModal,
     ArchivesView,
     DeleteProjectModal,
+    DeleteRoomModal,
     ToastHost,
   ],
   templateUrl: './app.html',
@@ -237,7 +239,6 @@ export class App implements OnDestroy {
   protected readonly ring = inject(AgentRingService);
   protected readonly graph = inject(MissionGraphService);
   private scrollFrame: number | null = null;
-  private deleteConfirmTimer: number | null = null;
   private draftAgentCounter = 0;
   private newRoomProviderScoreRequest = 0;
   private editRoomProviderScoreRequest = 0;
@@ -284,7 +285,7 @@ export class App implements OnDestroy {
   readonly newRoomProviderRecommendations = signal<
     Record<string, ProviderScoreSlotResult | undefined>
   >({});
-  readonly deletingRoomId = signal<string | null>(null);
+  readonly pendingRoomDeletion = signal<Room | null>(null);
   readonly editingAgents = signal(false);
   readonly editRoomAgentRows = signal<DraftRoomAgent[]>([]);
   readonly editRoomLeadClientId = signal<string>('');
@@ -734,7 +735,6 @@ export class App implements OnDestroy {
   ngOnDestroy(): void {
     window.clearInterval(this.clockTimer);
     if (this.scrollFrame !== null) cancelAnimationFrame(this.scrollFrame);
-    if (this.deleteConfirmTimer !== null) window.clearTimeout(this.deleteConfirmTimer);
   }
 
   selectRoom(roomId: string): void {
@@ -1566,26 +1566,25 @@ export class App implements OnDestroy {
     });
   }
 
-  deleteRoom(room: Room, event: Event): void {
-    event.preventDefault();
-    event.stopPropagation();
+  requestDeleteRoom(room: Room): void {
+    this.pendingRoomDeletion.set(room);
+  }
 
-    if (this.deletingRoomId() !== room.id) {
-      this.deletingRoomId.set(room.id);
-      if (this.deleteConfirmTimer !== null) window.clearTimeout(this.deleteConfirmTimer);
-      this.deleteConfirmTimer = window.setTimeout(() => {
-        if (this.deletingRoomId() === room.id) this.deletingRoomId.set(null);
-        this.deleteConfirmTimer = null;
-      }, 2500);
-      return;
-    }
+  cancelDeleteRoom(): void {
+    this.pendingRoomDeletion.set(null);
+  }
 
-    if (this.deleteConfirmTimer !== null) {
-      window.clearTimeout(this.deleteConfirmTimer);
-      this.deleteConfirmTimer = null;
-    }
-    this.deletingRoomId.set(null);
-    this.api.rooms.delete(room.id).subscribe(() => this.handleRoomDeleted(room.id));
+  confirmDeleteRoom(room: Room): void {
+    this.pendingRoomDeletion.set(null);
+    this.api.rooms.delete(room.id).subscribe({
+      next: () => {
+        this.handleRoomDeleted(room.id);
+        this.toasts.push({ message: `deleted "${room.name}"` });
+      },
+      error: () => {
+        this.toasts.push({ message: `failed to delete "${room.name}"` });
+      },
+    });
   }
 
   setAuthor(input: HTMLInputElement): void {
