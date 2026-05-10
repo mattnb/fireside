@@ -884,6 +884,38 @@ export interface CollaborationItem {
   createdAt: number;
 }
 
+export type SearchKind =
+  | 'room'
+  | 'project'
+  | 'task'
+  | 'phase'
+  | 'plan'
+  | 'checklist'
+  | 'acceptance'
+  | 'clarifying'
+  | 'message'
+  | 'activity'
+  | 'collab';
+
+export interface SearchHit {
+  kind: SearchKind;
+  id: string;
+  title: string;
+  snippet: string;
+  matches: Array<{ start: number; end: number }>;
+  score: number;
+  roomId: string | null;
+  taskId: string | null;
+  timestamp: number | null;
+  context: string;
+}
+
+export interface SearchResponse {
+  query: string;
+  scope: SearchKind[] | null;
+  hits: SearchHit[];
+}
+
 export type FiresideWsEvent =
   | { type: 'messageAppended'; message: Message }
   | { type: 'messageUpdated'; message: Message }

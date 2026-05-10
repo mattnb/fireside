@@ -27,6 +27,12 @@ import { logger } from './logger.js';
 import type { ConversationArtifactFile } from './context-files.js';
 import { buildStatusSnapshot } from './status-snapshot.js';
 import { capacityBlockFromContextUsage } from './provider-capacity.js';
+import { runUniversalSearch, SEARCH_KINDS, type SearchKind } from './search/universal-search.js';
+
+const SEARCH_KINDS_SET = new Set<string>(SEARCH_KINDS);
+function isSearchKind(value: string): value is SearchKind {
+  return SEARCH_KINDS_SET.has(value);
+}
 import { AGENT_PERSONAS, AGENT_PROVIDERS, isProviderId } from './agents/personas.js';
 import {
   defaultAgentProfile,
@@ -348,6 +354,39 @@ export function buildHttpServer(deps: HttpDeps) {
 
   app.get('/api/state', async () => {
     return buildStatusSnapshot({ db: deps.db });
+  });
+
+  app.get<{
+    Querystring: {
+      q?: string;
+      scope?: string | string[];
+      roomId?: string;
+      taskId?: string;
+      limit?: string;
+    };
+  }>('/api/search', async (req, reply) => {
+    const query = typeof req.query.q === 'string' ? req.query.q.trim() : '';
+    if (!query) return reply.code(400).send({ error: 'q is required' });
+    const rawScope = req.query.scope;
+    let scope: SearchKind[] | undefined;
+    if (typeof rawScope === 'string' && rawScope.trim()) {
+      scope = rawScope
+        .split(',')
+        .map((token) => token.trim().toLowerCase())
+        .filter(isSearchKind);
+    } else if (Array.isArray(rawScope)) {
+      scope = rawScope
+        .map((token) => (typeof token === 'string' ? token.trim().toLowerCase() : ''))
+        .filter(isSearchKind);
+    }
+    const limit = typeof req.query.limit === 'string' ? Number.parseInt(req.query.limit, 10) : NaN;
+    const opts: Parameters<typeof runUniversalSearch>[2] = {};
+    if (scope && scope.length > 0) opts.scope = scope;
+    if (typeof req.query.roomId === 'string' && req.query.roomId) opts.roomId = req.query.roomId;
+    if (typeof req.query.taskId === 'string' && req.query.taskId) opts.taskId = req.query.taskId;
+    if (Number.isFinite(limit) && limit > 0) opts.limit = limit;
+    const hits = runUniversalSearch(deps.db, query, opts);
+    return { query, scope: scope ?? null, hits };
   });
 
   app.post<{ Body: { initialPath?: string } }>('/api/system/folder-picker', async (req, reply) => {

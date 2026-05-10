@@ -24,6 +24,7 @@ import {
   Project,
   RoutingDecision,
   Room,
+  SearchResponse,
   StatusSnapshot,
   Task,
   TaskChecklistItem,
@@ -204,6 +205,20 @@ export class FiresideApi {
       this.http.get<CollaborationItem[]>(`/api/rooms/${roomId}/collaboration`, {
         params: taskId ? { taskId } : {},
       }),
+  };
+
+  readonly search = {
+    universal: (
+      query: string,
+      opts: { scope?: string[]; roomId?: string; taskId?: string; limit?: number } = {},
+    ) => {
+      const params: Record<string, string | number> = { q: query };
+      if (opts.scope && opts.scope.length > 0) params['scope'] = opts.scope.join(',');
+      if (opts.roomId) params['roomId'] = opts.roomId;
+      if (opts.taskId) params['taskId'] = opts.taskId;
+      if (opts.limit !== undefined) params['limit'] = opts.limit;
+      return this.http.get<SearchResponse>('/api/search', { params });
+    },
   };
 
   readonly diagnostics = {

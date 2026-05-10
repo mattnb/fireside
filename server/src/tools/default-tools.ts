@@ -12,6 +12,7 @@ import { missionTaskSetVerifierTools } from './handlers/mission-task-set-verifie
 import { missionVerifyTools } from './handlers/mission-verify-tools.js';
 import { permissionRequestTool } from './handlers/permission-tools.js';
 import { searchToolsTool } from './handlers/search-tools.js';
+import { searchUniversalTools } from './handlers/search-universal-tools.js';
 import { defaultToolRegistry } from './registry.js';
 import type { AgentToolDefinition } from './types.js';
 
@@ -35,6 +36,7 @@ const DEFAULT_TOOLS: readonly RegisteredToolDefinition[] = [
   ...collabTools,
   permissionRequestTool,
   searchToolsTool,
+  ...searchUniversalTools,
 ];
 
 let registered = false;

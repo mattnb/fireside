@@ -11,10 +11,10 @@ import {
 
 ensureSearchToolsRegistered();
 
-export const PROTOCOLS_DOCUMENT_VERSION = 6;
+export const PROTOCOLS_DOCUMENT_VERSION = 7;
 
 export const COMPACT_TOOL_MANIFEST_PROMPT =
-  'Fireside is registered as an MCP server in your CLI ("fireside"). Call its structured tools — mission.task.update, mission.receipt.submit, collab.note.add, permission.request, agent.set_status, mission.phase.* and mission.plan.* — for every mission-state, evidence, permission, or coordination update. Visible chat is for human/team communication only. Never type tool calls as text in chat; only invoke them through the MCP transport. Use search.tools for full argument references.';
+  'Fireside is registered as an MCP server in your CLI ("fireside"). Call its structured tools — mission.task.update, mission.receipt.submit, collab.note.add, permission.request, agent.set_status, mission.phase.* and mission.plan.* — for every mission-state, evidence, permission, or coordination update. Visible chat is for human/team communication only. Never type tool calls as text in chat; only invoke them through the MCP transport. Use search.tools for full argument references and search.universal for cross-room/task content search.';
 
 const PRIMARY_TOOL_NAMES = TOOL_SCHEMA_REFERENCES.map((tool) => tool.name).join(', ');
 

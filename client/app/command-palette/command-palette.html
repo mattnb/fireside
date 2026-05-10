@@ -1,0 +1,88 @@
+<div class="modal cmd-palette" role="dialog" aria-modal="true" aria-labelledby="cmd-palette-title">
+  <div class="modal__scrim" (click)="closed.emit()"></div>
+  <section class="modal__panel cmd-palette__panel" (click)="$event.stopPropagation()">
+    <header class="cmd-palette__head">
+      <h2 id="cmd-palette-title" class="visually-hidden">search fireside</h2>
+      <input
+        #input
+        type="text"
+        class="cmd-palette__input"
+        [value]="query()"
+        (input)="onQueryInput($any($event.target).value)"
+        placeholder="search rooms, missions, messages, activity…"
+        autocomplete="off"
+        spellcheck="false"
+        aria-label="search query"
+      />
+      <button type="button" class="cmd-palette__close" (click)="closed.emit()" aria-label="close palette">
+        ✕
+      </button>
+    </header>
+
+    <nav class="cmd-palette__chips" aria-label="search scope">
+      @for (chip of scopeChips; track chip.id) {
+      <button
+        type="button"
+        class="cmd-palette__chip"
+        [class.is-active]="activeScope() === chip.id"
+        (click)="setScope(chip.id)"
+      >
+        {{ chip.label }}
+      </button>
+      }
+    </nav>
+
+    <div class="cmd-palette__body">
+      @if (error(); as message) {
+      <div class="cmd-palette__error">{{ message }}</div>
+      }
+
+      @if (loading()) {
+      <div class="cmd-palette__hint">searching…</div>
+      } @else if (empty()) {
+      <div class="cmd-palette__hint">no matches for "{{ query() }}"</div>
+      } @else if (query().trim().length === 0) {
+      <div class="cmd-palette__hint">
+        type to search across rooms, missions, mission state, messages, run activity, and notes.
+        <br />
+        ↑/↓ to navigate · Tab to cycle scope · Enter to open · Esc to close
+      </div>
+      } @else {
+      <ol class="cmd-palette__results">
+        @for (group of groupedHits(); track group.label) {
+        <li class="cmd-palette__group">
+          <header class="cmd-palette__group-label">{{ group.label }}</header>
+          <ul>
+            @for (hit of group.hits; track hit.id) {
+            <li
+              class="cmd-palette__hit"
+              [class.is-current]="isCurrent(hit)"
+              (click)="selectHit(hit)"
+              (mouseenter)="cursor.set(flatHits().indexOf(hit))"
+            >
+              <div class="cmd-palette__hit-row">
+                <span class="cmd-palette__hit-kind">{{ kindLabel[hit.kind] }}</span>
+                <span class="cmd-palette__hit-title">{{ hit.title }}</span>
+              </div>
+              <div class="cmd-palette__hit-snippet">
+                @for (segment of renderSnippetSegments(hit); track $index) {
+                @if (segment.mark) {
+                <mark>{{ segment.text }}</mark>
+                } @else {
+                <span>{{ segment.text }}</span>
+                }
+                }
+              </div>
+              @if (hit.context) {
+              <div class="cmd-palette__hit-context">{{ hit.context }}</div>
+              }
+            </li>
+            }
+          </ul>
+        </li>
+        }
+      </ol>
+      }
+    </div>
+  </section>
+</div>

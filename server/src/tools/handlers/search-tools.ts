@@ -66,6 +66,44 @@ export const TOOL_SCHEMA_REFERENCES: readonly ToolSchemaReference[] = [
     ],
   },
   {
+    name: 'search.universal',
+    summary:
+      'Cross-room search over rooms, tasks, mission state, messages, activity, and collaboration notes.',
+    requiredPermissions: ['search:read'],
+    args: [
+      {
+        name: 'query',
+        type: 'string',
+        required: true,
+        description: 'Free-text query. Trimmed; empty queries are rejected.',
+      },
+      {
+        name: 'scope',
+        type: 'string | string[]',
+        description:
+          'Optional kind filter. Allowed: room, project, task, phase, plan, checklist, acceptance, clarifying, message, activity, collab.',
+      },
+      {
+        name: 'roomId',
+        type: 'string',
+        description: 'Restrict to one room.',
+      },
+      {
+        name: 'taskId',
+        type: 'string',
+        description: 'Restrict to one task.',
+      },
+      {
+        name: 'limit',
+        type: 'integer',
+        description: 'Maximum hits to return. Defaults to 50, capped at 200.',
+      },
+    ],
+    notes: [
+      'Read-only. Returns SearchHit objects with snippet text and match offsets so the caller can highlight matches without re-running the query.',
+    ],
+  },
+  {
     name: 'agent.checkin',
     summary: 'Record a lightweight liveness check-in and optionally return current assignments.',
     requiredPermissions: ['agent:write-self'],

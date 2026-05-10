@@ -362,6 +362,11 @@
   (closed)="closeCompletedRunsModal()"
   (runOpened)="closeCompletedRunsModal(); openRunDetail($event)"
 />
+} @if (commandPaletteOpen()) {
+<fs-command-palette
+  (closed)="closeCommandPalette()"
+  (selected)="onCommandPaletteSelection($event)"
+/>
 }
 
 <fs-toast-host />

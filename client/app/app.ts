@@ -49,6 +49,7 @@ import {
 import { MissionOutline } from './mission-outline/mission-outline';
 import { TokenBurnPanel } from './token-burn-panel/token-burn-panel';
 import { CompletedRunsModal } from './completed-runs-modal/completed-runs-modal';
+import { CommandPalette, type PaletteSelection } from './command-palette/command-palette';
 import type { DraftRoomAgent } from './room-agent-types';
 import type { ChatTimelineItem } from './chat-types';
 import { type EvidenceEvent, type EvidenceEventKind } from './evidence-timeline';
@@ -212,6 +213,7 @@ const DEFAULT_AGENT_AUTO_COMPACT_PERCENT = 70;
     ArchivesView,
     DeleteProjectModal,
     DeleteRoomModal,
+    CommandPalette,
     ToastHost,
   ],
   templateUrl: './app.html',
@@ -376,6 +378,7 @@ export class App implements OnDestroy {
     return this.store.missionActionChecklistItemId;
   }
   readonly openRunDetailId = signal<string | null>(null);
+  readonly commandPaletteOpen = signal(false);
   get runDetail() {
     return this.store.runDetail;
   }
@@ -735,6 +738,65 @@ export class App implements OnDestroy {
   ngOnDestroy(): void {
     window.clearInterval(this.clockTimer);
     if (this.scrollFrame !== null) cancelAnimationFrame(this.scrollFrame);
+    window.removeEventListener('keydown', this.globalKeydownHandler);
+  }
+
+  private readonly globalKeydownHandler = (event: KeyboardEvent): void => {
+    // Ctrl+K (Cmd+K on macOS) toggles the command palette. Skip when the
+    // user is typing in a non-text-aware input that wants to handle the key
+    // itself (none today, but be defensive).
+    const isToggle = (event.ctrlKey || event.metaKey) && (event.key === 'k' || event.key === 'K');
+    if (isToggle) {
+      event.preventDefault();
+      this.commandPaletteOpen.update((open) => !open);
+      return;
+    }
+    if (event.key === 'Escape' && this.commandPaletteOpen()) {
+      event.preventDefault();
+      this.commandPaletteOpen.set(false);
+    }
+  };
+
+  ngOnInit(): void {
+    window.addEventListener('keydown', this.globalKeydownHandler);
+  }
+
+  closeCommandPalette(): void {
+    this.commandPaletteOpen.set(false);
+  }
+
+  onCommandPaletteSelection(selection: PaletteSelection): void {
+    this.commandPaletteOpen.set(false);
+    const { hit } = selection;
+    if (hit.roomId) this.selectRoom(hit.roomId);
+    // Choose the most useful tab/view per kind so the user lands on the
+    // section that contains the hit instead of having to navigate further.
+    switch (hit.kind) {
+      case 'message':
+        this.selectTab('chat');
+        break;
+      case 'task':
+      case 'phase':
+      case 'plan':
+      case 'checklist':
+      case 'acceptance':
+      case 'clarifying':
+      case 'collab':
+      case 'activity':
+        this.selectTab('mission');
+        if (hit.kind === 'plan') this.selectMissionView('plan');
+        else if (hit.kind === 'checklist') this.selectMissionView('checklist');
+        else if (hit.kind === 'phase') this.selectMissionView('roadmap');
+        else if (hit.kind === 'acceptance' || hit.kind === 'clarifying') this.selectMissionView('checklist');
+        else if (hit.kind === 'activity' || hit.kind === 'collab') this.selectMissionView('evidence');
+        else this.selectMissionView('overview');
+        break;
+      case 'room':
+      case 'project':
+      default:
+        this.selectTab('chat');
+        break;
+    }
   }
 
   selectRoom(roomId: string): void {
